@@ -1,0 +1,16 @@
+*.VC.opendb
+*.sdf
+*.vsp
+*.vspx
+*.psess
+*.zip
+.vs/
+x64/
+Base/
+Test/
+Releases/
+/RocTuning.csv
+/TunerParams.inc
+/RocTuning.txt
+/Tuner_SortOf.xlsm
+/~$Tuner_SortOf.xlsm
