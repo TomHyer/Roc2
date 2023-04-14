@@ -9,7 +9,7 @@
 #define MP_NPS
 //#define TIME_TO_DEPTH
 #define TB 1
-//#define HNI
+#define HNI
 //#define VERBOSE
 
 #ifdef W32_BUILD
@@ -336,11 +336,11 @@ namespace Futility
 #ifdef HNI
 inline uint64 BishopAttacks(int sq, const uint64& occ)
 {
-	return  RO->magic_.MagicAttacks[RO->magic_.BOffset[sq] + _pext_u64(occ, RO->magic_.BMagicMask[sq])];
+	return  RO->magic_.MagicAttacks[Magic::BOffset[sq] + _pext_u64(occ, RO->magic_.BMagicMask[sq])];
 }
 inline uint64 RookAttacks(int sq, const uint64& occ)
 {
-	return RO->magic_.MagicAttacks[RO->magic_.ROffset[sq] + _pext_u64(occ, RO->magic_.RMagicMask[sq])];
+	return RO->magic_.MagicAttacks[Magic::ROffset[sq] + _pext_u64(occ, RO->magic_.RMagicMask[sq])];
 }
 #else
 inline uint64 BishopAttacks(int sq, const uint64& occ)
@@ -1763,7 +1763,7 @@ void init_magic(const std::array<std::array<uint64, 64>, 64>& between, Magic::Ma
 #ifndef HNI
 			int index = static_cast<int>(Magic::BOffset[i] + ((Magic::BMagic[i] * u) >> Magic::BShift[i]));
 #else
-			int index = static_cast<int>(Magic::BOffset[i] + _pext_u64(u, data->magic_.BMagicMask[i]));
+			int index = static_cast<int>(Magic::BOffset[i] + _pext_u64(u, magic->BMagicMask[i]));
 #endif
 			magic->MagicAttacks[index] = XBMagicAttacks(between, i, u);
 		}
@@ -1779,7 +1779,7 @@ void init_magic(const std::array<std::array<uint64, 64>, 64>& between, Magic::Ma
 #ifndef HNI
 			int index = static_cast<int>(Magic::ROffset[i] + ((Magic::RMagic[i] * u) >> Magic::RShift[i]));
 #else
-			int index = static_cast<int>(Magic::ROffset[i] + _pext_u64(u, data->magic_.RMagicMask[i]));
+			int index = static_cast<int>(Magic::ROffset[i] + _pext_u64(u, magic->RMagicMask[i]));
 #endif
 			magic->MagicAttacks[index] = XRMagicAttacks(between, i, u);
 		}
@@ -4234,7 +4234,7 @@ template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI)
 
 // weight constants
 constexpr array<uint16, 16> KingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19, 23, 28, 34, 39, 39, 39 };
-constexpr array<int, 8> KingCenterScale = { 64, 65, 74, 70, 68, 70, 61, 62 };	// would be better if this were symmetric, but I want to keep king off queenside
+constexpr array<int, 8> KingCenterShift = { -5, -4, 5, 1 };	// only first half is used in 2.0.0
 
 template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 {
@@ -4250,10 +4250,11 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 			score += KingNoMoves;
 	}
 	int adjusted = ((score * KingAttackScale[cnt]) >> 3) + EI.PawnEntry->shelter[opp];
-	int kf = FileOf(EI.king[opp]);
+	int kf = FileOf(EI.king[opp]), kr = OwnRank<opp>(EI.king[opp]);
 	if (kf > 3)
 		kf = 7 - kf;
-	adjusted = (adjusted * KingCenterScale[kf]) / 64;
+	if (kr < 3)
+		adjusted += (adjusted * (3 - kr) * KingCenterShift[kf]) / 160;
 	if (!Queen(me))
 		adjusted = (adjusted * KingSafetyNoQueen) / 16;
 	// add a correction for defense-in-depth
@@ -4270,8 +4271,8 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 		adjusted += (adjusted * (max(0, nAwol - nGuards) + max(0, 3 * nIncursions + nHoles - 10))) / 32;
 	}
 
-	static constexpr array<int, 4> PHASE = { 24, 20, 3, 0 };
-	int op = ((PHASE[0] + OwnRank<opp>(EI.king[opp])) * adjusted) / 32;
+	static constexpr array<int, 4> PHASE = { 21, 18, 3, -2 };
+	int op = ((PHASE[0] + kr) * adjusted) / 32;
 	int md = (PHASE[1] * adjusted) / 32;
 	int eg = (PHASE[2] * adjusted) / 32;
 	int cl = (PHASE[3] * adjusted) / 32;
@@ -6627,7 +6628,7 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 
 	// done with hash 
 	bool can_hash_d0 = !exclusion && !evasion;
-	int margin = 0;
+	const int margin = evasion ? 0 : RazoringThreshold(Current->score, depth, height);	// not used if evasion
 	if (evasion)
 	{
 		Current->ref[0] = RefM(Current->move).check_ref[0];
@@ -6641,7 +6642,6 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 		Current->gen_flags = 0;
 		Current->ref[0] = RefM(Current->move).ref[0];
 		Current->ref[1] = RefM(Current->move).ref[1];
-		margin = RazoringThreshold(Current->score, depth, height);
 		if (margin < beta)
 		{
 			can_hash_d0 = false;
@@ -8295,4 +8295,3 @@ bool tb_init_fwd(const char* path)
 }
 
 #endif
-#pragma optimize("", on)
