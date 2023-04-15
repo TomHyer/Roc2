@@ -13,9 +13,10 @@ from collections import defaultdict
 
 ResultFile = "TestResults.csv"
 TcecFile = 'D:/data/Ethereal_12_00_64-bit.commented.[1535].pgn'
-ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 2, 2500
+ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 11, 2500
 ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Gull 3 x64 syzygy.exe', 'Ethereal11.25-x64-nopopcnt.exe']
 #ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Ethereal11.25-x64-nopopcnt.exe']
+#ENGINES = ['Base/Roc.exe', 'Test/Roc.exe']
 SENTINEL_FN, HALT_MSG = 'tester.live', "No sentinel; halting"
 
 # courtesy of Stack Overflow
@@ -86,10 +87,11 @@ def _report_all(all_w1, all_w2, all_d):
     print("\n")
 
 if __name__ == "__main__":
-    debug = len(sys.argv) > 1 and sys.argv[1] == 'debug'
-    tc = debug and '40+0.1' or '5+0.08'
-    # tc = debug and '40+0.1' or '5+0.08'
-    # tc = '60+1.0'
+    tc_scale = int(sys.argv[1]) if len(sys.argv) > 1 else 8
+    tc = f"{0.6*tc_scale:.2f}+{0.01*tc_scale:.2f}"
+    print("tc = ", tc)
+    n_proc = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+    print("n_proc = ", n_proc)
 
     tasks = []
     for e1 in ENGINES:
@@ -102,7 +104,7 @@ if __name__ == "__main__":
     random.shuffle(tasks)
     print(len(tasks), "total tasks")
 
-    pool = multiprocessing.Pool(8)
+    pool = multiprocessing.Pool(n_proc)
     print("Multiprocessing matches")
     all_results = pool.map(RunMatch, [(e1, e2, tc) for e1, e2 in tasks])
     print("Generated all results, there are", len(all_results))
@@ -164,3 +166,4 @@ if __name__ == "__main__":
                 done = (done[:1] == 'y')
 
     _report_all(all_w1, all_w2, all_d)
+    print("tc = ", tc)

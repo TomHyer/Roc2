@@ -815,10 +815,10 @@ namespace Values
 	constexpr packed_t BishopPawnBlock = Pack(0, 6, 14, 6);
 	constexpr packed_t BishopOutpostNoMinor = Pack(60, 60, 45, 0);
 
-	constexpr packed_t KnightOutpost = Pack(40, 40, 24, 0);
-	constexpr packed_t KnightOutpostProtected = Pack(41, 40, 0, 0);
-	constexpr packed_t KnightOutpostPawnAtt = Pack(44, 44, 18, 0);
-	constexpr packed_t KnightOutpostNoMinor = Pack(41, 40, 0, 0);
+	constexpr packed_t KnightOutpost = Pack(40, 36, 24, 0);
+	constexpr packed_t KnightOutpostProtected = Pack(41, 31, 0, 0);
+	constexpr packed_t KnightOutpostPawnAtt = Pack(44, 38, 18, 0);
+	constexpr packed_t KnightOutpostNoMinor = Pack(41, 31, 0, 0);
 	constexpr packed_t KnightPawnSpread = Pack(0, 4, 15, -10);
 	constexpr packed_t KnightPawnGap = Pack(0, 2, 5, 0);
 
@@ -2809,8 +2809,8 @@ void calc_material(int index, GMaterial& material)
 	}
 	if (bishops[White] == 1 && bishops[Black] == 1 && light[White] != light[Black])
 	{
-		mul[White] = Min(mul[White], 19 + 5 * knights[Black] + 2 * major[Black]);
-		mul[Black] = Min(mul[Black], 19 + 5 * knights[White] + 2 * major[White]);
+		mul[White] = Min(mul[White], 20 + 3 * knights[Black] + major[Black]);
+		mul[Black] = Min(mul[Black], 20 + 3 * knights[White] + major[White]);
 	}
 	else if (!minor[White] && !minor[Black] && major[White] == 1 && major[Black] == 1 && rooks[White] == rooks[Black])
 	{
@@ -6648,7 +6648,7 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 			score = Max(margin, score);
 			Current->stage = stage_razoring;
 			Current->mask = Piece(opp);
-			int value = margin + 200 * CP_SEARCH;
+			int value = margin + (200 + 8 * depth) * CP_SEARCH;
 			if (value < beta)
 			{
 				score = Max(value, score);
