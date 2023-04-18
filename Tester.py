@@ -13,7 +13,7 @@ from collections import defaultdict
 
 ResultFile = "TestResults.csv"
 TcecFile = 'D:/data/Ethereal_12_00_64-bit.commented.[1535].pgn'
-ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 11, 2500
+ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 12, [1000, 2500]
 ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Gull 3 x64 syzygy.exe', 'Ethereal11.25-x64-nopopcnt.exe']
 #ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Ethereal11.25-x64-nopopcnt.exe']
 #ENGINES = ['Base/Roc.exe', 'Test/Roc.exe']
@@ -93,6 +93,9 @@ if __name__ == "__main__":
     n_proc = int(sys.argv[2]) if len(sys.argv) > 2 else 8
     print("n_proc = ", n_proc)
 
+    if os.path.exists(SENTINEL_FN.replace("live", "die")):
+        os.rename(SENTINEL_FN.replace("live", "die"), SENTINEL_FN)
+
     tasks = []
     for e1 in ENGINES:
         for e2 in ENGINES:
@@ -100,7 +103,8 @@ if __name__ == "__main__":
                 continue
             if 'roc' not in (e1 + e2).lower():
                 continue
-            tasks += [(e1, e2)] * (MATCHES_PER_PAIR // 2)
+            matches = MATCHES_PER_PAIR[1 if 'test' in (e1 + e1).lower() else 0]
+            tasks += [(e1, e2)] * matches
     random.shuffle(tasks)
     print(len(tasks), "total tasks")
 
@@ -166,4 +170,3 @@ if __name__ == "__main__":
                 done = (done[:1] == 'y')
 
     _report_all(all_w1, all_w2, all_d)
-    print("tc = ", tc)

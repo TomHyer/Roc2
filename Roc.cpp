@@ -4150,7 +4150,7 @@ template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI)
 					if (katt && F(att & EI.area[opp]))
 						EI.king_att[me] += KingAttack;
 				}
-				else if (F(v & ~Knight(opp) & ~Major(opp)))
+				else if (F(v & ~(Knight(opp) | Major(opp))))
 					IncV(EI.score, Values::BKingRay);
 	}
 }
@@ -4233,8 +4233,8 @@ template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI)
 }
 
 // weight constants
-constexpr array<uint16, 16> KingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19, 23, 28, 34, 39, 39, 39 };
-constexpr array<int, 8> KingCenterShift = { -5, -4, 5, 1 };	// only first half is used in 2.0.0
+constexpr array<uint16, 16> KingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19, 23, 28, 33, 37, 39, 39 };
+constexpr array<int, 8> KingCenterShift = { -5, -4, 5, 1 };	
 
 template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 {
@@ -5811,11 +5811,10 @@ template<bool me> int* gen_checks(int* list)
 {
 	static const int MvvLvaXray = RO->MvvLva[WhiteQueen][WhitePawn];
 
-	int king;
-	uint64 u, v, target, b_target, r_target, clear;
+	uint64 u, v, target;
 
-	clear = ~(Piece(me) | Current->mask);
-	king = lsb(King(opp));
+	uint64 clear = ~(Piece(me) | Current->mask);
+	int king = lsb(King(opp));
 	// discovered checks
 	for (u = Current->xray[me] & Piece(me); T(u); Cut(u))
 	{
@@ -5861,17 +5860,29 @@ template<bool me> int* gen_checks(int* list)
 		for (v = NAtt[king] & NAtt[lsb(u)] & clear; T(v); Cut(v))
 			list = AddCaptureP(list, IKnight[me], lsb(u), lsb(v), 0);
 
-	for (u = KAttAtt[king] & Pawn(me) & (~OwnLine<me>(6)) & nonDiscover; T(u); Cut(u))
+	if (int kr = OwnRank<me>(king); kr > 2)
 	{
-		int from = lsb(u);
-		for (v = PAtt[me][from] & PAtt[opp][king] & clear & Piece(opp); T(v); Cut(v))
-			list = AddCaptureP(list, IPawn[me], from, lsb(v), 0);
-		if (F(PieceAt(from + Push[me])) && HasBit(PAtt[opp][king], from + Push[me]))
-			list = AddMove(list, from, from + Push[me], 0, 0);
+		for (u = KAttAtt[king] & Pawn(me) & OwnLine<me>(kr - 2) & nonDiscover; T(u); Cut(u))
+		{
+			int from = lsb(u);
+			for (v = PAtt[me][from] & PAtt[opp][king] & clear & Piece(opp); T(v); Cut(v))
+				list = AddCaptureP(list, IPawn[me], from, lsb(v), 0);
+			if (F(PieceAt(from + Push[me])) && HasBit(PAtt[opp][king] & clear, from + Push[me]))
+				list = AddMove(list, from, from + Push[me], 0, 0);
+		}
+		if (kr == 4)
+		{
+			for (u = Shift<opp>(Shift<opp>(PAtt[opp][king] & clear)) & Pawn(me); T(u); Cut(u))
+			{
+				int from = lsb(u);
+				if (int to = from + 2 * Push[me]; F(PieceAt(to)) && F(PieceAt(from + Push[me])))
+					list = AddMove(list, from, to, 0, 0);
+			}
+		}
 	}
 
-	b_target = BishopAttacks(king, PieceAll()) & clear;
-	r_target = RookAttacks(king, PieceAll()) & clear;
+	uint64 b_target = BishopAttacks(king, PieceAll()) & clear;
+	uint64 r_target = RookAttacks(king, PieceAll()) & clear;
 	for (u = Board->bb[(T(King(opp) & LightArea) ? WhiteLight : WhiteDark) | me] & nonDiscover; T(u); Cut(u))
 		for (v = BishopAttacks(lsb(u), PieceAll()) & b_target; T(v); Cut(v))
 			list = AddCapture(list, lsb(u), lsb(v));
