@@ -145,33 +145,10 @@ constexpr int FlagNeatSearch = FlagHashCheck | FlagHaltCheck | FlagCallEvaluatio
 constexpr int FlagNoKillerUpdate = 1 << 24;
 constexpr int FlagReturnBestMove = 1 << 25;
 
-typedef struct
-{
-	array<uint64, 16> bb;
-	array<uint8, 64> square;
-} GBoard;
-__declspec(align(64)) GBoard Board[1];
 array<uint64, 2048> Stack;
 int sp, save_sp;
 //uint64 nodes, tb_hits, check_node, check_node_smp;
-GBoard SaveBoard[1];
-
-// macros using global "Board"
-INLINE uint64& Piece(int i) { return Board->bb[i]; }
-INLINE uint64& Pawn(int me) { return Piece(WhitePawn | me); }
-INLINE uint64& Knight(int me) { return Piece(WhiteKnight | me); }
-INLINE uint64 Bishop(int me) { return Piece(WhiteLight | me) | Piece(WhiteDark | me); }
-INLINE uint64& Rook(int me) { return Piece(WhiteRook | me); }
-INLINE uint64& Queen(int me) { return Piece(WhiteQueen | me); }
-INLINE uint64& King(int me) { return Piece(WhiteKing | me); }
-INLINE uint64 NonPawn(int me) { return Piece(me) ^ Pawn(me); }
-INLINE uint64 NonPawnKing(int me) { return NonPawn(me) ^ King(me); }
-INLINE uint64 Major(int me) { return Rook(me) | Queen(me); }
-INLINE uint64 Minor(int me) { return Knight(me) | Bishop(me); }
-INLINE uint64 PieceAll() { return Piece(White) | Piece(Black); }
-INLINE uint64 PawnAll() { return Pawn(White) | Pawn(Black); }
-INLINE uint64 NonPawnKingAll() { return NonPawnKing(White) | NonPawnKing(Black); }
-INLINE uint8& PieceAt(int sq) { return Board->square[sq]; }
+Board_ SaveBoard[1];
 
 typedef struct
 {
@@ -181,20 +158,6 @@ typedef struct
 	uint16 move;
 	uint8 turn, castle_flags, ply, ep_square, piece, capture;
 } GPosData;
-typedef struct
-{
-	array<uint64, 2> att, patt, dbl_att, xray;
-	uint64 key, pawn_key, eval_key, passer, threat, mask;
-	packed_t material, pst;
-	int *start, *current;
-	int best;
-	score_t score;
-	array<uint16, N_KILLER + 1> killer;
-	array<uint16, 2> ref;
-	uint16 move;
-	uint8 turn, castle_flags, ply, ep_square, capture, gen_flags, piece, stage, mul;
-	sint32 moves[230];
-} GData;
 __declspec(align(64)) GData Data[MAX_HEIGHT];
 GData* Current = Data;
 constexpr uint8 FlagSort = 1 << 0;
@@ -214,15 +177,15 @@ bool tb_init_fwd(const char*);
 #define TB_CUSTOM_POP_COUNT pop1
 #define TB_CUSTOM_LSB lsb
 #define TB_CUSTOM_BSWAP32 _byteswap_ulong 
-template<class F_, typename... Args_> int TBProbe(F_ func, bool me, const Args_&&... args)
+template<class F_, typename... Args_> int TBProbe(F_ func, const Board_& board, bool me, const Args_&&... args)
 {
-	return func(Piece(White), Piece(Black),
-		King(White) | King(Black),
-		Queen(White) | Queen(Black),
-		Rook(White) | Rook(Black),
-		Bishop(White) | Bishop(Black),
-		Knight(White) | Knight(Black),
-		Pawn(White) | Pawn(Black),
+	return func(board.Piece(White), board.Piece(Black),
+		board.King(White) | board.King(Black),
+		board.Queen(White) | board.Queen(Black),
+		board.Rook(White) | board.Rook(Black),
+		board.Bishop(White) | board.Bishop(Black),
+		board.Knight(White) | board.Knight(Black),
+		board.Pawn(White) | board.Pawn(Black),
 		Current->ply,
 		Current->castle_flags,
 		Current->ep_square,
@@ -253,14 +216,7 @@ enum
 };
 constexpr int StageNone = (1 << s_none) | (1 << e_none) | (1 << r_none);
 
-struct Progress_
-{
-	uint8 count_;	// packed W,B
-	constexpr Progress_() : count_(0) {}
-	constexpr Progress_(uint8 nw, uint8 nb) : count_((nw - 1) << 4 | (nb - 1)) {}
-	bool Reachable() const;	// implementation after SHARED is declared
-};
-inline Progress_ Progress() { return Progress_(popcnt(Piece(White)), popcnt(Piece(Black))); }
+inline Progress_ Progress(const Board_& board) { return Progress_(popcnt(board.Piece(White)), popcnt(board.Piece(Black))); }
 
 struct GEntry
 {
@@ -307,29 +263,29 @@ namespace Futility
 	constexpr std::array<sint16, 10> PieceThreshold = { 12, 18, 22, 24, 25, 26, 27, 26, 40, 40 };	// in CP
 	constexpr std::array<sint16, 8> PasserThreshold = { 0, 0, 0, 0, 0, 20, 40, 0 };
 
-	template<bool me> inline sint16 x()
+	template<bool me> inline sint16 x(const Board_& board)
 	{
-		sint16 retval = PieceThreshold[pop0(NonPawnKing(me))];
-		if (uint64 passer = Current->passer & Pawn(me))
+		sint16 retval = PieceThreshold[pop0(board.NonPawnKing(me))];
+		if (uint64 passer = Current->passer & board.Pawn(me))
 			retval = Max(retval, PasserThreshold[OwnRank<me>(NB<opp>(passer))]);
 		return retval;
 	}
 
-	template<bool me> inline sint16 HashCut(bool did_delta_moves)
+	template<bool me> inline sint16 HashCut(const Board_& board, bool did_delta_moves)
 	{
-		return (did_delta_moves ? 4 : 8) * x<me>();
+		return (did_delta_moves ? 4 : 8) * x<me>(board);
 	}
-	template<bool me> inline sint16 CheckCut()
+	template<bool me> inline sint16 CheckCut(const Board_& board)
 	{
-		return 11 * x<me>();
+		return 11 * x<me>(board);
 	}
-	template<bool me> inline sint16 DeltaCut()
+	template<bool me> inline sint16 DeltaCut(const Board_& board)
 	{
-		return HashCut<me>(false);
+		return HashCut<me>(board, false);
 	}
-	template<bool me> inline sint16 ScoutCut(int depth)
+	template<bool me> inline sint16 ScoutCut(const Board_& board, int depth)
 	{
-		return (depth > 3 ? 4 : 7) * x<me>();
+		return (depth > 3 ? 4 : 7) * x<me>(board);
 	}
 };
 
@@ -377,17 +333,17 @@ INLINE int* AddCapturePP(int* list, int att, int vic, int from, int to)
 {
 	return AddMove(list, from, to, 0, RO->MvvLva[att][vic]);
 }
-INLINE int* AddCaptureP(int* list, int piece, int from, int to)
+INLINE int* AddCaptureP(int* list, const Board_& board, int piece, int from, int to)
 {
-	return AddCapturePP(list, piece, PieceAt(to), from, to);
+	return AddCapturePP(list, piece, board.PieceAt(to), from, to);
 }
-INLINE int* AddCaptureP(int* list, int piece, int from, int to, uint8 min_vic)
+INLINE int* AddCaptureP(int* list, const Board_& board, int piece, int from, int to, uint8 min_vic)
 {
-	return AddCapturePP(list, piece, Max(min_vic, PieceAt(to)), from, to);
+	return AddCapturePP(list, piece, Max(min_vic, board.PieceAt(to)), from, to);
 }
-INLINE int* AddCapture(int* list, int from, int to)
+INLINE int* AddCapture(int* list, const Board_& board, int from, int to)
 {
-	return AddCaptureP(list, PieceAt(from), from, to);
+	return AddCaptureP(list, board, board.PieceAt(from), from, to);
 }
 
 INLINE uint16 JoinFlag(uint16 move)
@@ -406,13 +362,13 @@ INLINE int HistoryP(int join, int piece, int from, int to)
 {
 	return HistoryMerit(HistoryScore(join, piece, from, to)) << 16;
 }
-INLINE int History(int join, int from, int to)
+INLINE int History(const Board_& board, int join, int from, int to)
 {
-	return HistoryP(join, PieceAt(from), from, to);
+	return HistoryP(join, board.PieceAt(from), from, to);
 }
-INLINE uint16& HistoryM(int move)
+INLINE uint16& HistoryM(const Board_& board, int move)
 {
-	return HistoryScore(JoinFlag(move), PieceAt(From(move)), From(move), To(move));
+	return HistoryScore(JoinFlag(move), board.PieceAt(From(move)), From(move), To(move));
 }
 INLINE int HistoryInc(int depth)
 {
@@ -424,18 +380,18 @@ INLINE void HistoryBad(uint16* hist, int inc)
 		*hist = ((*hist & 0xFEFE) >> 1);
 	*hist += inc;
 }
-INLINE void HistoryBad(int move, int depth)
+INLINE void HistoryBad(const Board_& board, int move, int depth)
 {
-	HistoryBad(&HistoryM(move), HistoryInc(depth));
+	HistoryBad(&HistoryM(board, move), HistoryInc(depth));
 }
 INLINE void HistoryGood(uint16* hist, int inc)
 {
 	HistoryBad(hist, inc);
 	*hist += inc << 8;
 }
-INLINE void HistoryGood(int move, int depth)
+INLINE void HistoryGood(const Board_& board, int move, int depth)
 {
-	HistoryGood(&HistoryM(move), HistoryInc(depth));
+	HistoryGood(&HistoryM(board, move), HistoryInc(depth));
 }
 INLINE int* AddHistoryP(int* list, int piece, int from, int to, int flags)
 {
@@ -451,13 +407,13 @@ INLINE sint16& DeltaScore(int piece, int from, int to)
 {
 	return DeltaVals[(piece << 12) | (from << 6) | to];
 }
-INLINE sint16& Delta(int from, int to)
+INLINE sint16& Delta(const Board_& board, int from, int to)
 {
-	return DeltaScore(PieceAt(from), from, to);
+	return DeltaScore(board.PieceAt(from), from, to);
 }
-INLINE sint16& DeltaM(int move)
+INLINE sint16& DeltaM(const Board_& board, int move)
 {
-	return Delta(From(move), To(move));
+	return Delta(board, From(move), To(move));
 }
 INLINE int* AddCDeltaP(int* list, int margin, int piece, int from, int to, int flags)
 {
@@ -476,22 +432,22 @@ INLINE GRef& RefPointer(int piece, int from, int to)
 {
 	return Ref[((piece) << 6) | (to)];
 }
-INLINE GRef& RefM(int move)
+INLINE GRef& RefM(const Board_& board, int move)
 {
-	return RefPointer(PieceAt(To(move)), From(move), To(move));
+	return RefPointer(board.PieceAt(To(move)), From(move), To(move));
 }
-INLINE void UpdateRef(int ref_move)
+INLINE void UpdateRef(const Board_& board, int ref_move)
 {
-	auto& dst = RefM(Current->move).ref;
+	auto& dst = RefM(board, Current->move).ref;
 	if (T(Current->move) && dst[0] != ref_move)
 	{
 		dst[1] = dst[0];
 		dst[0] = ref_move;
 	}
 }
-INLINE void UpdateCheckRef(int ref_move)
+INLINE void UpdateCheckRef(const Board_& board, int ref_move)
 {
-	auto& dst = RefM(Current->move).check_ref;
+	auto& dst = RefM(board, Current->move).check_ref;
 	if (T(Current->move) && dst[0] != ref_move)
 	{
 		dst[1] = dst[0];
@@ -875,15 +831,6 @@ constexpr array<uint16, 16> XKingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19
 // tuner: stop
 
 // END EVAL WEIGHTS
-time_point now()
-{
-	return std::chrono::high_resolution_clock::now();
-}
-uint32 millisecs(const time_point& t1, const time_point& t2)
-{
-	auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
-	return static_cast<uint32>(fabs(time_span.count()) * 1000.0);
-}
 
 #define log_msg(...)
 #define error_msg(format, ...)                                              \
@@ -1221,16 +1168,6 @@ void event_signal(event_t* event)
 	ResetEvent(*event);
 }
 
-#ifdef DEBUG
-constexpr int maxNumThreads = 1;
-#else
-#ifdef W32_BUILD
-constexpr int maxNumThreads = 32;  // mustn't exceed 32
-#else
-constexpr int maxNumThreads = 256;
-#endif
-#endif
-
 constexpr int MAX_PV_LEN = 256;
 struct ThreadOwn_
 {
@@ -1263,52 +1200,6 @@ struct Settings_
 };
 Settings_* SETTINGS = 0;
 
-struct WorkerList_
-{
-	struct Record_
-	{
-		int pvs_, next_;
-	};
-	array<Record_, maxNumThreads + 1> vals_;
-	void Init()
-	{
-		for (int jj = 0; jj <= maxNumThreads; ++jj)
-			vals_[jj] = { jj, jj };
-	}
-	void Insert(int iw);
-	void Remove(int iw);
-	bool Empty() const
-	{
-		return vals_[maxNumThreads].pvs_ == maxNumThreads;
-	}
-};
-
-struct SharedInfo_
-{
-	WorkerList_ working;
-	Progress_ rootProgress;
-	mutex_t mutex = NULL;
-	mutex_t outMutex = NULL;
-	event_t goEvent = NULL;
-	int rootDepth;
-	int depthLimit;
-	time_point startTime;
-	uint64_t softTimeLimit;
-	uint64_t hardTimeLimit;
-	GBoard rootBoard;
-	GData rootData;
-	struct {
-		int depth, value, move, worker;
-		bool failLow;
-	} best;
-	uint64_t rootStack[1024];
-	unsigned rootSp;
-	bool stopAll;
-	uint16_t date;
-	volatile bool ponder;
-};
-
-SharedInfo_* SHARED = 0;
 inline bool Progress_::Reachable() const
 {
 	assert(SHARED);
@@ -1368,34 +1259,9 @@ void Say(const string& what)
 #ifdef VERBOSE
 #define VSAY Say
 static int debug_loc = 0;
-#define HERE debug_loc = __LINE__;
 #else
 #define VSAY(x)
-#define HERE
 #endif
-
-void WorkerList_::Insert(int iw)
-{
-	assert(iw >= 0 && iw < maxNumThreads);
-	assert(vals_[iw].pvs_ == iw && vals_[iw].next_ == iw);	// double insertion
-	VSAY("Adding worker " + Str(iw) + "\n");
-	int last = vals_[maxNumThreads].pvs_;
-	vals_[iw].pvs_ = last;
-	vals_[iw].next_ = maxNumThreads;
-	vals_[last].next_ = iw;
-	vals_[maxNumThreads].pvs_ = iw;
-}
-void WorkerList_::Remove(int iw)
-{
-	assert(iw >= 0 && iw < maxNumThreads);
-	assert(vals_[iw].pvs_ != iw && vals_[iw].next_ != iw);	// double deletion
-	VSAY("Removing worker " + Str(iw) + "\n");
-	vals_[vals_[iw].pvs_].next_ = vals_[iw].next_;
-	vals_[vals_[iw].next_].pvs_ = vals_[iw].pvs_;
-	vals_[iw].pvs_ = vals_[iw].next_ = iw;
-	//if (Empty()) VSAY("No more workers\n");
-}
-
 
 GEntry* HASH = 0;
 GPVEntry* PVHASH = 0;
@@ -1423,13 +1289,13 @@ void move_to_string(int move, char string[])
 	string[pos] = 0;
 }
 
-int move_from_string(char string[])
+int move_from_string(const Board_& board, char string[])
 {
 	int from, to, move;
 	from = ((string[1] - '1') * 8) + (string[0] - 'a');
 	to = ((string[3] - '1') * 8) + (string[2] - 'a');
 	move = (from << 6) | to;
-	if (Board->square[from] >= WhiteKing && abs(to - from) == 2)
+	if (board.square[from] >= WhiteKing && abs(to - from) == 2)
 		move |= FlagCastling;
 	if (T(Current->ep_square) && to == Current->ep_square)
 		move |= FlagEP;
@@ -1488,22 +1354,22 @@ INLINE int FileSpan(const uint64& occ)
 }
 
 
-bool IsIllegal(bool me, int move)
+bool IsIllegal(const Board_& board, bool me, int move)
 {
-	return ((HasBit(Current->xray[opp], From(move)) && F(Bit(To(move)) & RO->FullLine[lsb(King(me))][From(move)])) ||
-		(IsEP(move) && T(Line[RankOf(From(move))] & King(me)) && T(Line[RankOf(From(move))] & Major(opp)) &&
-			T(RookAttacks(lsb(King(me)), PieceAll() ^ Bit(From(move)) ^ Bit(Current->ep_square - Push[me])) & Major(opp))));
+	return ((HasBit(Current->xray[opp], From(move)) && F(Bit(To(move)) & RO->FullLine[lsb(board.King(me))][From(move)])) ||
+		(IsEP(move) && T(Line[RankOf(From(move))] & board.King(me)) && T(Line[RankOf(From(move))] & board.Major(opp)) &&
+			T(RookAttacks(lsb(board.King(me)), board.PieceAll() ^ Bit(From(move)) ^ Bit(Current->ep_square - Push[me])) & board.Major(opp))));
 };
-INLINE bool IsCheck(bool me)
+INLINE bool IsCheck(const Board_& board, bool me)
 {
-	return T(Current->att[(me) ^ 1] & King(me));
+	return T(Current->att[(me) ^ 1] & board.King(me));
 };
-INLINE bool IsRepetition(int margin, int move)
+INLINE bool IsRepetition(const Board_& board, int margin, int move)
 {
 	return margin > 0
 		&& Current->ply >= 2
 		&& (Current - 1)->move == ((To(move) << 6) | From(move))
-		&& F(PieceAt(To(move)))
+		&& F(board.PieceAt(To(move)))
 		&& F((move) & 0xF000);
 };
 
@@ -1535,7 +1401,7 @@ constexpr int TheMemorySize = 200;
 struct MemEntry_
 {
 	GData d_;
-	GBoard b_;
+	Board_ b_;
 	int line_;
 };
 array<MemEntry_, TheMemorySize> TheImages;
@@ -1554,12 +1420,12 @@ void AccessViolation(uint64 seed)	// any nonzero input should fail
 {
 	Say(Str(Current->patt[(seed >> 32) | (seed << 32)]));
 }
-void UpdateDebug(int line)
+void UpdateDebug(const Board_& board, int line)
 {
 	debugLine = line;
 	//AccessViolation(boardExists && !King(0));
 	//AccessViolation(boardExists && !King(1));
-	TheImages[TheImageLoc].b_ = *Board;
+	TheImages[TheImageLoc].b_ = board;
 	TheImages[TheImageLoc].d_ = *Current;
 	TheImages[TheImageLoc].line_ = line;
 	if (++TheImageLoc == TheMemorySize)
@@ -1940,12 +1806,12 @@ template<int DEN, int SINK = DEN> struct Div_
 	}
 };
 
-packed_t eval_pst()
+packed_t eval_pst(const Board_& board)
 {
 	packed_t retval = 0;
 	for (int i = 0; i < 64; ++i)
-		if (PieceAt(i))
-			retval += Pst(PieceAt(i), i);
+		if (auto p = board.PieceAt(i))
+			retval += Pst(p, i);
 	return retval;
 }
 
@@ -1998,7 +1864,7 @@ void init_pst(CommonData_* data)
 			XPst(data, j, i) = Pack(-Opening(src), -Middle(src), -Endgame(src), -Closed(src));
 		}
 
-	Current->pst = eval_pst();
+	Current->pst = 0;
 }
 
 template<class T_> void init_mobility
@@ -2095,65 +1961,65 @@ void init_eval(CommonData_* data)
 
 // all these special-purpose endgame evaluators
 
-template<bool me> uint16 krbkrx()
+template<bool me> uint16 krbkrx(const Board_& board)
 {
-	if (King(opp) & Interior)
+	if (board.King(opp) & Interior)
 		return 1;
 	return 16;
 }
 
-template<bool me> uint16 kpkx()
+template<bool me> uint16 kpkx(const Board_& board)
 {
-	uint64 u = me == White ? RO->Kpk[Current->turn][lsb(Pawn(White))][lsb(King(White))] & Bit(lsb(King(Black)))
-		: RO->Kpk[Current->turn ^ 1][63 - lsb(Pawn(Black))][63 - lsb(King(Black))] & Bit(63 - lsb(King(White)));
-	return T(u) ? 32 : T(Piece(opp) ^ King(opp));
+	uint64 u = me == White ? RO->Kpk[Current->turn][lsb(board.Pawn(White))][lsb(board.King(White))] & Bit(lsb(board.King(Black)))
+		: RO->Kpk[Current->turn ^ 1][63 - lsb(board.Pawn(Black))][63 - lsb(board.King(Black))] & Bit(63 - lsb(board.King(White)));
+	return T(u) ? 32 : T(board.Piece(opp) ^ board.King(opp));
 }
 
-template<bool me> uint16 knpkx()
+template<bool me> uint16 knpkx(const Board_& board)
 {
-	if (Pawn(me) & OwnLine<me>(6) & (File[0] | File[7]))
+	if (board.Pawn(me) & OwnLine<me>(6) & (File[0] | File[7]))
 	{
-		int sq = lsb(Pawn(me));
-		if (KAtt[sq] & King(opp) & (OwnLine<me>(6) | OwnLine<me>(7)))
+		int sq = lsb(board.Pawn(me));
+		if (KAtt[sq] & board.King(opp) & (OwnLine<me>(6) | OwnLine<me>(7)))
 			return 0;
-		if (PieceAt(sq + Push[me]) == IKing[me] && (KAtt[lsb(King(me))] & KAtt[lsb(King(opp))] & OwnLine<me>(7)))
+		if (board.PieceAt(sq + Push[me]) == IKing[me] && (KAtt[lsb(board.King(me))] & KAtt[lsb(board.King(opp))] & OwnLine<me>(7)))
 			return 0;
 	}
-	else if (Pawn(me) & OwnLine<me>(5) & (File[0] | File[7]))
+	else if (board.Pawn(me) & OwnLine<me>(5) & (File[0] | File[7]))
 	{
-		int sq = lsb(Pawn(me)), to = sq + Push[me];
-		if (PieceAt(sq + Push[me]) == IPawn[opp])
+		int sq = lsb(board.Pawn(me)), to = sq + Push[me];
+		if (board.PieceAt(sq + Push[me]) == IPawn[opp])
 		{
-			if (KAtt[to] & King(opp) & OwnLine<me>(7))
+			if (KAtt[to] & board.King(opp) & OwnLine<me>(7))
 				return 0;
-			if ((KAtt[to] & KAtt[lsb(King(opp))] & OwnLine<me>(7)) && (!(NAtt[to] & Knight(me)) || Current->turn == opp))
+			if ((KAtt[to] & KAtt[lsb(board.King(opp))] & OwnLine<me>(7)) && (!(NAtt[to] & board.Knight(me)) || Current->turn == opp))
 				return 0;
 		}
 	}
 	return 32;
 }
 
-template<bool me> uint16 krpkrx()
+template<bool me> uint16 krpkrx(const Board_& board)
 {
 	int mul = 32;
-	int sq = lsb(Pawn(me));
+	int sq = lsb(board.Pawn(me));
 	int rrank = OwnRank<me>(sq);
-	int o_king = lsb(King(opp));
-	int o_rook = lsb(Rook(opp));
-	int m_king = lsb(King(me));
-	int add_mat = T(Piece(opp) ^ King(opp) ^ Rook(opp));
-	int clear = F(add_mat) || F((PWay[opp][sq] | RO->PIsolated[FileOf(sq)]) & Forward[opp][RankOf(sq + Push[me])] & (Piece(opp) ^ King(opp) ^ Rook(opp)));
+	int o_king = lsb(board.King(opp));
+	int o_rook = lsb(board.Rook(opp));
+	int m_king = lsb(board.King(me));
+	int add_mat = T(board.Piece(opp) ^ board.King(opp) ^ board.Rook(opp));
+	int clear = F(add_mat) || F((PWay[opp][sq] | RO->PIsolated[FileOf(sq)]) & Forward[opp][RankOf(sq + Push[me])] & (board.Piece(opp) ^ board.King(opp) ^ board.Rook(opp)));
 
 	if (!clear)
 		return 32;
-	if (!add_mat && !(Pawn(me) & (File[0] | File[7])))
+	if (!add_mat && !(board.Pawn(me) & (File[0] | File[7])))
 	{
-		int m_rook = lsb(Rook(me));
+		int m_rook = lsb(board.Rook(me));
 		if (OwnRank<me>(o_king) < OwnRank<me>(m_rook) && OwnRank<me>(m_rook) < rrank && OwnRank<me>(m_king) >= rrank - 1 &&
 			OwnRank<me>(m_king) > OwnRank<me>(m_rook) &&
-			((KAtt[m_king] & Pawn(me)) || (MY_TURN && abs(FileOf(sq) - FileOf(m_king)) <= 1 && abs(rrank - OwnRank<me>(m_king)) <= 2)))
+			((KAtt[m_king] & board.Pawn(me)) || (MY_TURN && abs(FileOf(sq) - FileOf(m_king)) <= 1 && abs(rrank - OwnRank<me>(m_king)) <= 2)))
 			return 127;
-		if (KAtt[m_king] & Pawn(me))
+		if (KAtt[m_king] & board.Pawn(me))
 		{
 			if (rrank >= 4)
 			{
@@ -2162,35 +2028,35 @@ template<bool me> uint16 krpkrx()
 			}
 			else if (rrank >= 2)
 			{
-				if (!(Pawn(me) & (File[1] | File[6])) && rrank + abs(FileOf(sq) - FileOf(m_rook)) > 4 &&
+				if (!(board.Pawn(me) & (File[1] | File[6])) && rrank + abs(FileOf(sq) - FileOf(m_rook)) > 4 &&
 					((FileOf(sq) < FileOf(m_rook) && FileOf(m_rook) < FileOf(o_king)) || (FileOf(sq) > FileOf(m_rook) && FileOf(m_rook) > FileOf(o_king))))
 					return 127;
 			}
 		}
 	}
 
-	if (PWay[me][sq] & King(opp))
+	if (PWay[me][sq] & board.King(opp))
 	{
-		if (Pawn(me) & (File[0] | File[7]))
+		if (board.Pawn(me) & (File[0] | File[7]))
 			mul = Min(mul, add_mat << 3);
 		if (rrank <= 3)
 			mul = Min(mul, add_mat << 3);
-		if (rrank == 4 && OwnRank<me>(m_king) <= 4 && OwnRank<me>(o_rook) == 5 && T(King(opp) & (OwnLine<me>(6) | OwnLine<me>(7))) &&
-			(!MY_TURN || F(PAtt[me][sq] & RookAttacks(lsb(Rook(me)), PieceAll()) & (~KAtt[o_king]))))
+		if (rrank == 4 && OwnRank<me>(m_king) <= 4 && OwnRank<me>(o_rook) == 5 && T(board.King(opp) & (OwnLine<me>(6) | OwnLine<me>(7))) &&
+			(!MY_TURN || F(PAtt[me][sq] & RookAttacks(lsb(board.Rook(me)), board.PieceAll()) & (~KAtt[o_king]))))
 			mul = Min(mul, add_mat << 3);
-		if (rrank >= 5 && OwnRank<me>(o_rook) <= 1 && (!MY_TURN || IsCheck(me) || Dist(m_king, sq) >= 2))
+		if (rrank >= 5 && OwnRank<me>(o_rook) <= 1 && (!MY_TURN || IsCheck(board, me) || Dist(m_king, sq) >= 2))
 			mul = Min(mul, add_mat << 3);
-		if (T(King(opp) & (File[1] | File[2] | File[6] | File[7])) && T(Rook(opp) & OwnLine<me>(7)) && T(RO->Between[o_king][o_rook] & (File[3] | File[4])) &&
-			F(Rook(me) & OwnLine<me>(7)))
+		if (T(board.King(opp) & (File[1] | File[2] | File[6] | File[7])) && T(board.Rook(opp) & OwnLine<me>(7)) && T(RO->Between[o_king][o_rook] & (File[3] | File[4])) &&
+			F(board.Rook(me) & OwnLine<me>(7)))
 			mul = Min(mul, add_mat << 3);
 		return mul;
 	}
-	else if (rrank == 6 && (Pawn(me) & (File[0] | File[7])) && ((RO->PSupport[me][sq] | PWay[opp][sq]) & Rook(opp)) && OwnRank<me>(o_king) >= 6)
+	else if (rrank == 6 && (board.Pawn(me) & (File[0] | File[7])) && ((RO->PSupport[me][sq] | PWay[opp][sq]) & board.Rook(opp)) && OwnRank<me>(o_king) >= 6)
 	{
 		int dist = abs(FileOf(sq) - FileOf(o_king));
 		if (dist <= 3)
 			mul = Min(mul, add_mat << 3);
-		if (dist == 4 && ((RO->PSupport[me][o_king] & Rook(me)) || Current->turn == opp))
+		if (dist == 4 && ((RO->PSupport[me][o_king] & board.Rook(me)) || Current->turn == opp))
 			mul = Min(mul, add_mat << 3);
 	}
 
@@ -2198,31 +2064,31 @@ template<bool me> uint16 krpkrx()
 	{
 		if (rrank <= 4 && OwnRank<me>(m_king) <= 4 && OwnRank<me>(o_rook) == 5)
 			mul = Min(mul, add_mat << 3);
-		if (rrank == 5 && OwnRank<me>(o_rook) <= 1 && !MY_TURN || (F(KAtt[m_king] & PAtt[me][sq] & (~KAtt[o_king])) && (IsCheck(me) || Dist(m_king, sq) >= 2)))
+		if (rrank == 5 && OwnRank<me>(o_rook) <= 1 && !MY_TURN || (F(KAtt[m_king] & PAtt[me][sq] & (~KAtt[o_king])) && (IsCheck(board, me) || Dist(m_king, sq) >= 2)))
 			mul = Min(mul, add_mat << 3);
 	}
 
-	if (T(PWay[me][sq] & Rook(me)) && T(PWay[opp][sq] & Rook(opp)))
+	if (T(PWay[me][sq] & board.Rook(me)) && T(PWay[opp][sq] & board.Rook(opp)))
 	{
-		if (King(opp) & (File[0] | File[1] | File[6] | File[7]) & OwnLine<me>(6))
+		if (board.King(opp) & (File[0] | File[1] | File[6] | File[7]) & OwnLine<me>(6))
 			mul = Min(mul, add_mat << 3);
-		else if ((Pawn(me) & (File[0] | File[7])) && (King(opp) & (OwnLine<me>(5) | OwnLine<me>(6))) && abs(FileOf(sq) - FileOf(o_king)) <= 2 &&
+		else if ((board.Pawn(me) & (File[0] | File[7])) && (board.King(opp) & (OwnLine<me>(5) | OwnLine<me>(6))) && abs(FileOf(sq) - FileOf(o_king)) <= 2 &&
 			FileOf(sq) != FileOf(o_king))
 			mul = Min(mul, add_mat << 3);
 	}
 
 	if (abs(FileOf(sq) - FileOf(o_king)) <= 1 && abs(FileOf(sq) - FileOf(o_rook)) <= 1 && OwnRank<me>(o_rook) > rrank && OwnRank<me>(o_king) > rrank)
-		mul = Min(mul, (Pawn(me) & (File[3] | File[4])) ? 12 : 16);
+		mul = Min(mul, (board.Pawn(me) & (File[3] | File[4])) ? 12 : 16);
 
 	return mul;
 }
 
-template<bool me> uint16 krpkbx()
+template<bool me> uint16 krpkbx(const Board_& board)
 {
-	if (!(Pawn(me) & OwnLine<me>(5)))
+	if (!(board.Pawn(me) & OwnLine<me>(5)))
 		return 32;
-	int sq = lsb(Pawn(me));
-	if (!(PWay[me][sq] & King(opp)))
+	int sq = lsb(board.Pawn(me));
+	if (!(PWay[me][sq] & board.King(opp)))
 		return 32;
 	int diag_sq = NB<me>(BMask[sq + Push[me]]);
 	if (OwnRank<me>(diag_sq) > 1)
@@ -2230,227 +2096,235 @@ template<bool me> uint16 krpkbx()
 	uint64 mdiag = RO->FullLine[sq + Push[me]][diag_sq] | Bit(sq + Push[me]) | Bit(diag_sq);
 	int check_sq = NB<me>(BMask[sq - Push[me]]);
 	uint64 cdiag = RO->FullLine[sq - Push[me]][check_sq] | Bit(sq - Push[me]) | Bit(check_sq);
-	if ((mdiag | cdiag) & (Piece(opp) ^ King(opp) ^ Bishop(opp)))
+	if ((mdiag | cdiag) & (board.Piece(opp) ^ board.King(opp) ^ board.Bishop(opp)))
 		return 32;
-	if (cdiag & Bishop(opp))
+	if (cdiag & board.Bishop(opp))
 		return 0;
-	if ((mdiag & Bishop(opp)) && (Current->turn == opp || !(King(me) & PAtt[opp][sq + Push[me]])))
+	if ((mdiag & board.Bishop(opp)) && (Current->turn == opp || !(board.King(me) & PAtt[opp][sq + Push[me]])))
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 kqkp()
+template<bool me> uint16 kqkp(const Board_& board)
 {
-	if (F(KAtt[lsb(King(opp))] & Pawn(opp) & OwnLine<me>(1) & (File[0] | File[2] | File[5] | File[7])))
+	if (F(KAtt[lsb(board.King(opp))] & board.Pawn(opp) & OwnLine<me>(1) & (File[0] | File[2] | File[5] | File[7])))
 		return 32;
-	if (PWay[opp][lsb(Pawn(opp))] & (King(me) | Queen(me)))
+	if (PWay[opp][lsb(board.Pawn(opp))] & (board.King(me) | board.Queen(me)))
 		return 32;
-	if (Pawn(opp) & Boundary)
+	if (board.Pawn(opp) & Boundary)
 		return 1;
 	else
 		return 4;
 }
 
-template<bool me> uint16 kqkrpx()
+template<bool me> uint16 kqkrpx(const Board_& board)
 {
-	int rsq = lsb(Rook(opp));
-	uint64 pawns = KAtt[lsb(King(opp))] & PAtt[me][rsq] & Pawn(opp) & Interior & OwnLine<me>(6);
-	if (pawns && OwnRank<me>(lsb(King(me))) <= 4)
+	int rsq = lsb(board.Rook(opp));
+	uint64 pawns = KAtt[lsb(board.King(opp))] & PAtt[me][rsq] & board.Pawn(opp) & Interior & OwnLine<me>(6);
+	if (pawns && OwnRank<me>(lsb(board.King(me))) <= 4)
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 krkpx()
+template<bool me> uint16 krkpx(const Board_& board)
 {
-	if (T(KAtt[lsb(King(opp))] & Pawn(opp) & OwnLine<me>(1)) & F(PWay[opp][NB<me>(Pawn(opp))] & King(me)))
+	if (T(KAtt[lsb(board.King(opp))] & board.Pawn(opp) & OwnLine<me>(1)) & F(PWay[opp][NB<me>(board.Pawn(opp))] & board.King(me)))
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 krppkrpx()
+template<bool me> uint16 krppkrpx(const Board_& board)
 {
-	if (Current->passer & Pawn(me))
+	if (auto passer = Current->passer & board.Pawn(me))
 	{
-		if (Single(Current->passer & Pawn(me)))
+		if (Single(passer))
 		{
-			int sq = lsb(Current->passer & Pawn(me));
-			if (PWay[me][sq] & King(opp) & (File[0] | File[1] | File[6] | File[7]))
+			int sq = lsb(passer);
+			if (PWay[me][sq] & board.King(opp) & (File[0] | File[1] | File[6] | File[7]))
 			{
-				int opp_king = lsb(King(opp));
-				if (KAtt[opp_king] & Pawn(opp))
+				int opp_king = lsb(board.King(opp));
+				if (KAtt[opp_king] & board.Pawn(opp))
 				{
 					int king_file = FileOf(opp_king);
-					if (!((~(File[king_file] | RO->PIsolated[king_file])) & Pawn(me)))
+					if (!((~(File[king_file] | RO->PIsolated[king_file])) & board.Pawn(me)))
 						return 1;
 				}
 			}
 		}
 		return 32;
 	}
-	if (F((~(PWay[opp][lsb(King(opp))] | RO->PSupport[me][lsb(King(opp))])) & Pawn(me)))
+	if (F((~(PWay[opp][lsb(board.King(opp))] | RO->PSupport[me][lsb(board.King(opp))])) & board.Pawn(me)))
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 krpppkrppx()
+template<bool me> uint16 krpppkrppx(const Board_& board)
 {
-	if (T(Current->passer & Pawn(me)) || F((KAtt[lsb(Pawn(opp))] | KAtt[msb(Pawn(opp))]) & Pawn(opp)))
+	if (T(Current->passer & board.Pawn(me)) || F((KAtt[lsb(board.Pawn(opp))] | KAtt[msb(board.Pawn(opp))]) & board.Pawn(opp)))
 		return 32;
-	if (F((~(PWay[opp][lsb(King(opp))] | RO->PSupport[me][lsb(King(opp))])) & Pawn(me)))
+	if (int kOpp = lsb(board.King(opp)); F((~(PWay[opp][kOpp] | RO->PSupport[me][kOpp])) & board.Pawn(me)))
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 kbpkbx()
+template<bool me> uint16 kbpkbx(const Board_& board)
 {
-	int sq = lsb(Pawn(me));
+	int sq = lsb(board.Pawn(me));
 	uint64 u;
-	if ((T(Board->bb[ILight[me]]) && T(Board->bb[IDark[opp]])) || (T(Board->bb[IDark[me]]) && T(Board->bb[ILight[opp]])))
+	if (T(board.Piece(ILight[me])) != T(board.Piece(ILight[opp])))
 	{
 		if (OwnRank<me>(sq) <= 4)
 			return 0;
-		if (T(PWay[me][sq] & King(opp)) && OwnRank<me>(sq) <= 5)
+		if (T(PWay[me][sq] & board.King(opp)) && OwnRank<me>(sq) <= 5)
 			return 0;
-		for (u = Bishop(opp); T(u); Cut(u))
+		for (u = board.Bishop(opp); T(u); Cut(u))
 		{
-			if (OwnRank<me>(lsb(u)) <= 4 && T(BishopAttacks(lsb(u), PieceAll()) & PWay[me][sq]))
+			if (OwnRank<me>(lsb(u)) <= 4 && T(BishopAttacks(lsb(u), board.PieceAll()) & PWay[me][sq]))
 				return 0;
-			if (Current->turn == opp && T(BishopAttacks(lsb(u), PieceAll()) & Pawn(me)))
+			if (Current->turn == opp && T(BishopAttacks(lsb(u), board.PieceAll()) & board.Pawn(me)))
 				return 0;
 		}
 	}
-	else if (T(PWay[me][sq] & King(opp)) && T(King(opp) & LightArea) != T(Bishop(me) & LightArea))
+	else if (T(PWay[me][sq] & board.King(opp)) && T(board.King(opp) & LightArea) != T(board.Bishop(me) & LightArea))
 		return 0;
 	return 32;
 }
 
-template<bool me> uint16 kbpknx()
+template<bool me> uint16 kbpknx(const Board_& board)
 {
 	uint64 u;
-	if (T(PWay[me][lsb(Pawn(me))] & King(opp)) && T(King(opp) & LightArea) != T(Bishop(me) & LightArea))
+	if (T(PWay[me][lsb(board.Pawn(me))] & board.King(opp)) && T(board.King(opp) & LightArea) != T(board.Bishop(me) & LightArea))
 		return 0;
 	if (Current->turn == opp)
-		for (u = Knight(opp); T(u); Cut(u))
-			if (NAtt[lsb(u)] & Pawn(me))
+		for (u = board.Knight(opp); T(u); Cut(u))
+			if (NAtt[lsb(u)] & board.Pawn(me))
 				return 0;
 	return 32;
 }
 
-template<bool me> uint16 kbppkbx()
+template<bool me> uint16 kbppkbx(const Board_& board)
 {
-	int sq1 = NB<me>(Pawn(me));
-	int sq2 = NB<opp>(Pawn(me));
-	int o_king = lsb(King(opp));
-	int o_bishop = lsb(Bishop(opp));
+	int sq1 = NB<me>(board.Pawn(me));
+	int sq2 = NB<opp>(board.Pawn(me));
+	int o_king = lsb(board.King(opp));
+	int o_bishop = lsb(board.Bishop(opp));
 
 	if (FileOf(sq1) == FileOf(sq2))
 	{
 		if (OwnRank<me>(sq2) <= 3)
 			return 0;
-		if (T(PWay[me][sq2] & King(opp)) && OwnRank<me>(sq2) <= 5)
+		if (T(PWay[me][sq2] & board.King(opp)) && OwnRank<me>(sq2) <= 5)
 			return 0;
 	}
-	else if (RO->PIsolated[FileOf(sq1)] & Pawn(me))
+	else if (RO->PIsolated[FileOf(sq1)] & board.Pawn(me))
 	{
-		if (T(King(opp) & LightArea) != T(Bishop(me) & LightArea))
+		if (T(board.King(opp) & LightArea) != T(board.Bishop(me) & LightArea))
 		{
-			if (HasBit(KAtt[o_king] | King(opp), sq2 + Push[me]) && HasBit(BishopAttacks(o_bishop, PieceAll()), sq2 + Push[me]) &&
-				HasBit(KAtt[o_king] | King(opp), (sq2 & 0xF8) | FileOf(sq1)) && HasBit(BishopAttacks(o_bishop, PieceAll()), (sq2 & 0xFFFFFFF8) | FileOf(sq1)))
+			if (HasBit(KAtt[o_king] | board.King(opp), sq2 + Push[me]) && HasBit(BishopAttacks(o_bishop, board.PieceAll()), sq2 + Push[me]) &&
+				HasBit(KAtt[o_king] | board.King(opp), (sq2 & 0xF8) | FileOf(sq1)) && HasBit(BishopAttacks(o_bishop, board.PieceAll()), (sq2 & 0xFFFFFFF8) | FileOf(sq1)))
 				return 0;
 		}
 	}
 	return 32;
 }
 
-template<bool me> uint16 krppkrx()
+template<bool me> uint16 krppkrx(const Board_& board)
 {
-	int sq1 = NB<me>(Pawn(me));	// trailing pawn
-	int sq2 = NB<opp>(Pawn(me));	// leading pawn
+	int sq1 = NB<me>(board.Pawn(me));	// trailing pawn
+	int sq2 = NB<opp>(board.Pawn(me));	// leading pawn
 
-	if ((Piece(opp) ^ King(opp) ^ Rook(opp)) & Forward[me][RankOf(sq1 - Push[me])])
+	if ((board.Piece(opp) ^ board.King(opp) ^ board.Rook(opp)) & Forward[me][RankOf(sq1 - Push[me])])
 		return 32;
 	if (FileOf(sq1) == FileOf(sq2))
 	{
-		if (T(PWay[me][sq2] & King(opp)))
+		if (T(PWay[me][sq2] & board.King(opp)))
 			return 16;
 	}
-	else if (T(RO->PIsolated[FileOf(sq2)] & Pawn(me)) && T((File[0] | File[7]) & Pawn(me)) && T(King(opp) & Shift<me>(Pawn(me))))
+	else if (T(RO->PIsolated[FileOf(sq2)] & board.Pawn(me)) && T((File[0] | File[7]) & board.Pawn(me)) && T(board.King(opp) & Shift<me>(board.Pawn(me))))
 	{
-		if (OwnRank<me>(sq2) == 5 && OwnRank<me>(sq1) == 4 && T(Rook(opp) & (OwnLine<me>(5) | OwnLine<me>(6))))
+		if (OwnRank<me>(sq2) == 5 && OwnRank<me>(sq1) == 4 && T(board.Rook(opp) & (OwnLine<me>(5) | OwnLine<me>(6))))
 			return 10;
 		else if (OwnRank<me>(sq2) < 5)
 			return 16;
 	}
-	int r2 = lsb(Rook(opp)), rf = FileOf(r2);
-	const uint64 mask = West[rf] & King(me) ? West[rf] : East[rf];
-	if (mask & (Rook(me) | Pawn(me)))
+	int r2 = lsb(board.Rook(opp)), rf = FileOf(r2);
+	const uint64 mask = West[rf] & board.King(me) ? West[rf] : East[rf];
+	if (mask & (board.Rook(me) | board.Pawn(me)))
 		return 32;
 	return 16;
 }
 
 
-template<bool me> bool eval_stalemate(GEvalInfo& EI)
+template<bool me> bool eval_stalemate(GEvalInfo& EI, const Board_& board)
 {
-	bool retval = (F(NonPawnKing(opp)) && Current->turn == opp && F(Current->att[me] & King(opp)) && F(KAtt[EI.king[opp]] & (~(Current->att[me] | Piece(opp)))) &&
-		F(Current->patt[opp] & Piece(me)) && F(Shift<opp>(Pawn(opp)) & (~EI.occ)));
+	bool retval = F(board.NonPawnKing(opp)) 
+			&& Current->turn == opp 
+			&& F(Current->att[me] & board.King(opp))
+			&& F(KAtt[EI.king[opp]] & (~(Current->att[me] | board.Piece(opp)))) 
+			&& F(Current->patt[opp] & board.Piece(me)) 
+			&& F(Shift<opp>(board.Pawn(opp)) & (~EI.occ));
 	if (retval)
 		EI.mul = 0;
 	return retval;
 }
 
-template<bool me> void eval_pawns_only(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_pawns_only(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	int number = pop(Pawn(me));
-	int kOpp = lsb(King(opp));
+	int number = pop(board.Pawn(me));
+	int kOpp = lsb(board.King(opp));
 	int sq = FileOf(kOpp) <= 3 ? (me ? 0 : 56) : (me ? 7 : 63);
 
-	if (F(Pawn(me) & (~PWay[opp][sq])))
+	if (F(board.Pawn(me) & (~PWay[opp][sq])))
 	{
-		if ((KAtt[sq] | Bit(sq)) & King(opp))
+		if ((KAtt[sq] | Bit(sq)) & board.King(opp))
 			EI.mul = 0;
-		else if ((KAtt[sq] & KAtt[lsb(King(opp))] & OwnLine<me>(7)) && PieceAt(sq - Push[me]) == IPawn[opp] && PieceAt(sq - 2 * Push[me]) == IPawn[me])
+		else if ((KAtt[sq] & KAtt[kOpp] & OwnLine<me>(7)) && board.PieceAt(sq - Push[me]) == IPawn[opp] && board.PieceAt(sq - 2 * Push[me]) == IPawn[me])
 			EI.mul = 0;
 	}
-	else if ((King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) && abs(FileOf(sq) - FileOf(lsb(King(opp)))) <= 3 && !(Pawn(me) & (~RO->PSupport[me][sq])) &&
-		(Pawn(me) & OwnLine<me>(5) & Shift<opp>(Pawn(opp))))
+	else if ((board.King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) && abs(FileOf(sq) - FileOf(kOpp)) <= 3 && !(board.Pawn(me) & (~RO->PSupport[me][sq])) &&
+		(board.Pawn(me) & OwnLine<me>(5) & Shift<opp>(board.Pawn(opp))))
 		EI.mul = 0;
 	if (number == 1)
 	{
-		EI.mul = min(EI.mul, kpkx<me>());
-		if (Piece(opp) == King(opp) && EI.mul == 32)
+		EI.mul = min(EI.mul, kpkx<me>(board));
+		if (board.Piece(opp) == board.King(opp) && EI.mul == 32)
 			IncV(Current->score, KpkValue);
 	}
 }
 
-template<bool me> void eval_single_bishop(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_single_bishop(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	int number = pop(Pawn(me));
-	int sq = Piece(ILight[me]) ? (me ? 0 : 63) : (me ? 7 : 56);
-	if (F(Pawn(me) & (~PWay[opp][sq])))
+	int number = pop(board.Pawn(me));
+	int kOpp = lsb(board.King(opp));
+	int sq = board.Piece(ILight[me]) ? (me ? 0 : 63) : (me ? 7 : 56);
+	if (F(board.Pawn(me) & (~PWay[opp][sq])))
 	{
-		if ((KAtt[sq] | Bit(sq)) & King(opp))
+		if ((KAtt[sq] | Bit(sq)) & board.King(opp))
 			EI.mul = 0;
-		else if ((KAtt[sq] & KAtt[lsb(King(opp))] & OwnLine<me>(7)) && PieceAt(sq - Push[me]) == IPawn[opp] && PieceAt(sq - 2 * Push[me]) == IPawn[me])
+		else if ((KAtt[sq] & KAtt[kOpp] & OwnLine<me>(7)) && board.PieceAt(sq - Push[me]) == IPawn[opp] && board.PieceAt(sq - 2 * Push[me]) == IPawn[me])
 			EI.mul = 0;
 	}
-	else if ((King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) && abs(FileOf(sq) - FileOf(lsb(King(opp)))) <= 3 && !(Pawn(me) & (~RO->PSupport[me][sq])) &&
-		(Pawn(me) & OwnLine<me>(5) & Shift<opp>(Pawn(opp))))
+	else if ((board.King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) 
+			&& abs(FileOf(sq) - FileOf(kOpp)) <= 3 
+			&& !(board.Pawn(me) & (~RO->PSupport[me][sq])) 
+			&& (board.Pawn(me) & OwnLine<me>(5) & Shift<opp>(board.Pawn(opp))))
 		EI.mul = 0;
 
 	if (number == 1)
 	{
-		sq = lsb(Pawn(me));
-		if ((Pawn(me) & (File[1] | File[6]) & OwnLine<me>(5)) && PieceAt(sq + Push[me]) == IPawn[opp] &&
-			((PAtt[me][sq + Push[me]] | PWay[me][sq + Push[me]]) & King(opp)))
+		sq = lsb(board.Pawn(me));
+		if ((board.Pawn(me) & (File[1] | File[6]) & OwnLine<me>(5)) 
+				&& board.PieceAt(sq + Push[me]) == IPawn[opp] 
+				&& ((PAtt[me][sq + Push[me]] | PWay[me][sq + Push[me]]) & board.King(opp)))
 			EI.mul = 0;
 	}
-	if (Bishop(opp) && Single(Bishop(opp)) && T(Piece(ILight[me])) != T(Piece(ILight[opp])))
+	if (board.Bishop(opp) && Single(board.Bishop(opp)) && T(board.Piece(ILight[me])) != T(board.Piece(ILight[opp])))
 	{
 		int pcnt = 0;
-		if (T(King(opp) & LightArea) == T(Bishop(opp) & LightArea))
+		if (T(board.King(opp) & LightArea) == T(board.Bishop(opp) & LightArea))
 		{
 			uint64 u;
-			for (u = Pawn(me); u; Cut(u))
+			for (u = board.Pawn(me); u; Cut(u))
 			{
 				if (pcnt >= 2)
 					break;
@@ -2458,13 +2332,13 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, pop_func_t pop)
 				int sq = lsb(u);
 				if (!(PWay[me][sq] & (PAtt[me][EI.king[opp]] | PAtt[opp][EI.king[opp]])))
 				{
-					if (!(PWay[me][sq] & Pawn(opp)))
+					if (!(PWay[me][sq] & board.Pawn(opp)))
 						break;
-					int bsq = lsb(Bishop(opp));
+					int bsq = lsb(board.Bishop(opp));
 					uint64 att = BishopAttacks(bsq, EI.occ);
-					if (!(att & PWay[me][sq] & Pawn(opp)))
+					if (!(att & PWay[me][sq] & board.Pawn(opp)))
 						break;
-					if (!(RO->BishopForward[me][bsq] & att & PWay[me][sq] & Pawn(opp)) && pop(RO->FullLine[lsb(att & PWay[me][sq] & Pawn(opp))][bsq] & att) <= 2)
+					if (!(RO->BishopForward[me][bsq] & att & PWay[me][sq] & board.Pawn(opp)) && pop(RO->FullLine[lsb(att & PWay[me][sq] & board.Pawn(opp))][bsq] & att) <= 2)
 						break;
 				}
 			}
@@ -2476,10 +2350,9 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, pop_func_t pop)
 		}
 
 		// check for partial block
-		if (pcnt <= 2 && Multiple(Pawn(me)) && !Pawn(opp) && !(Pawn(me) & Boundary) && EI.mul)
+		if (pcnt <= 2 && Multiple(board.Pawn(me)) && !board.Pawn(opp) && !(board.Pawn(me) & Boundary) && EI.mul)
 		{
-			int sq1 = lsb(Pawn(me));
-			int sq2 = msb(Pawn(me));
+			int sq1 = lsb(board.Pawn(me)), sq2 = msb(board.Pawn(me));
 			int fd = abs(FileOf(sq2) - FileOf(sq1));
 			if (fd >= 5)
 				EI.mul = 32;
@@ -2488,20 +2361,20 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, pop_func_t pop)
 			else if (fd >= 3)
 				EI.mul = 20;
 		}
-		if ((KAtt[EI.king[opp]] | Current->patt[opp]) & Bishop(opp))
+		if ((KAtt[EI.king[opp]] | Current->patt[opp]) & board.Bishop(opp))
 		{
-			uint64 push = Shift<me>(Pawn(me));
-			if (!(push & (~(Piece(opp) | Current->att[opp]))) && (King(opp) & (Board->bb[ILight[opp]] ? LightArea : DarkArea)))
+			uint64 push = Shift<me>(board.Pawn(me));
+			if (!(push & (~(board.Piece(opp) | Current->att[opp]))) && (board.King(opp) & (board.Piece(ILight[opp]) ? LightArea : DarkArea)))
 			{
 				EI.mul = Min<uint16>(EI.mul, 8);
-				int bsq = lsb(Bishop(opp));
+				int bsq = lsb(board.Bishop(opp));
 				uint64 att = BishopAttacks(bsq, EI.occ);
-				uint64 prp = (att | KAtt[EI.king[opp]]) & Pawn(opp) & (Board->bb[ILight[opp]] ? LightArea : DarkArea);
+				uint64 prp = (att | KAtt[EI.king[opp]]) & board.Pawn(opp) & (board.Piece(ILight[opp]) ? LightArea : DarkArea);
 				uint64 patt = ShiftW<opp>(prp) | ShiftE<opp>(prp);
-				if ((KAtt[EI.king[opp]] | patt) & Bishop(opp))
+				if ((KAtt[EI.king[opp]] | patt) & board.Bishop(opp))
 				{
 					uint64 double_att = (KAtt[EI.king[opp]] & patt) | (patt & att) | (KAtt[EI.king[opp]] & att);
-					if (!(push & (~(King(opp) | Bishop(opp) | prp | double_att))))
+					if (!(push & (~(board.King(opp) | board.Bishop(opp) | prp | double_att))))
 					{
 						EI.mul = 0;
 						return;
@@ -2512,98 +2385,99 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, pop_func_t pop)
 	}
 	if (number == 1)
 	{
-		if (Bishop(opp))
-			EI.mul = Min(EI.mul, kbpkbx<me>());
-		else if (Knight(opp))
-			EI.mul = Min(EI.mul, kbpknx<me>());
+		if (board.Bishop(opp))
+			EI.mul = Min(EI.mul, kbpkbx<me>(board));
+		else if (board.Knight(opp))
+			EI.mul = Min(EI.mul, kbpknx<me>(board));
 	}
-	else if (number == 2 && T(Bishop(opp)))
-		EI.mul = Min(EI.mul, kbppkbx<me>());
+	else if (number == 2 && T(board.Bishop(opp)))
+		EI.mul = Min(EI.mul, kbppkbx<me>(board));
 }
 
-template<bool me> void eval_np(GEvalInfo& EI, pop_func_t)
+template<bool me> void eval_np(GEvalInfo& EI, const Board_& board, pop_func_t)
 {
-	assert(Knight(me) && Single(Knight(me)) && Pawn(me) && Single(Pawn(me)));
-	EI.mul = Min(EI.mul, knpkx<me>());
+	assert(board.Knight(me) && Single(board.Knight(me)) && board.Pawn(me) && Single(board.Pawn(me)));
+	EI.mul = Min(EI.mul, knpkx<me>(board));
 }
-template<bool me> void eval_knppkbx(GEvalInfo& EI, pop_func_t)
+template<bool me> void eval_knppkbx(GEvalInfo& EI, const Board_& board, pop_func_t)
 {
-	assert(Knight(me) && Single(Knight(me)) && Multiple(Pawn(me)) && Bishop(opp) && Single(Bishop(opp)));
+	assert(board.Knight(me) && Single(board.Knight(me)) && Multiple(board.Pawn(me)) && board.Bishop(opp) && Single(board.Bishop(opp)));
 	static const uint64 AB = File[0] | File[1], ABC = AB | File[2];
 	static const uint64 GH = File[6] | File[7], FGH = GH | File[5];
-	if (F(Pawn(me) & ~AB) && T(King(opp) & ABC))
+	if (F(board.Pawn(me) & ~AB) && T(board.King(opp) & ABC))
 	{
-		uint64 back = Forward[opp][RankOf(lsb(King(opp)))];
-		if (T(back & Pawn(me)))
-			EI.mul = Min<uint16>(EI.mul, T(King(me) & AB & ~back) ? 24 : 8);
+		uint64 back = Forward[opp][RankOf(lsb(board.King(opp)))];
+		if (T(back & board.Pawn(me)))
+			EI.mul = Min<uint16>(EI.mul, T(board.King(me) & AB & ~back) ? 24 : 8);
 	}
-	if (F(Pawn(me) & ~GH) && T(King(opp) & FGH))
+	if (F(board.Pawn(me) & ~GH) && T(board.King(opp) & FGH))
 	{
-		uint64 back = Forward[opp][RankOf(lsb(King(opp)))];
-		if (T(back & Pawn(me)))
-			EI.mul = Min<uint16>(EI.mul, T(King(me) & GH & ~back) ? 24 : 8);
+		uint64 back = Forward[opp][RankOf(lsb(board.King(opp)))];
+		if (T(back & board.Pawn(me)))
+			EI.mul = Min<uint16>(EI.mul, T(board.King(me) & GH & ~back) ? 24 : 8);
 	}
 }
 
-template<bool me> inline void check_forced_stalemate(uint16* mul, int kloc)
+template<bool me> inline void check_forced_stalemate(uint16* mul, const Board_& board, int kloc)
 {
 	if (F(KAtt[kloc] & ~Current->att[me])
-		&& F(Shift<opp>(Pawn(opp)) & ~PieceAll()))
+		&& F(Shift<opp>(board.Pawn(opp)) & ~board.PieceAll()))
 		*mul -= (3 * *mul) / 4;
 }
-template<bool me> INLINE void check_forced_stalemate(uint16* mul)
+template<bool me> INLINE void check_forced_stalemate(uint16* mul, const Board_& board)
 {
-	check_forced_stalemate<me>(mul, lsb(King(opp)));
+	check_forced_stalemate<me>(mul, board, lsb(board.King(opp)));
 }
 
-template<bool me> void eval_krbkrx(GEvalInfo& EI, pop_func_t)
+template<bool me> void eval_krbkrx(GEvalInfo& EI, const Board_& board, pop_func_t)
 {
-	assert(Rook(me) && Single(Rook(me)) && Bishop(me) && Single(Bishop(me)) && Rook(opp) && Single(Rook(opp)));
-	EI.mul = Min(EI.mul, krbkrx<me>());
-	check_forced_stalemate<me>(&EI.mul);
+	assert(board.Rook(me) && Single(board.Rook(me)) && board.Bishop(me) && Single(board.Bishop(me)) && board.Rook(opp) && Single(board.Rook(opp)));
+	EI.mul = Min(EI.mul, krbkrx<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
-template<bool me> void eval_krkpx(GEvalInfo& EI, pop_func_t)
+template<bool me> void eval_krkpx(GEvalInfo& EI, const Board_& board, pop_func_t)
 {
-	assert(Rook(me) && Single(Rook(me)) && F(Pawn(me)) && Pawn(opp));
-	EI.mul = Min(EI.mul, krkpx<me>());
+	assert(board.Rook(me) && Single(board.Rook(me)) && F(board.Pawn(me)) && board.Pawn(opp));
+	EI.mul = Min(EI.mul, krkpx<me>(board));
 }
-template<bool me> void eval_krpkrx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_krpkrx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	assert(Rook(me) && Single(Rook(me)) && Pawn(me) && Single(Pawn(me)) && Rook(opp) && Single(Rook(opp)));
-	uint16 new_mul = krpkrx<me>();
+	assert(board.Rook(me) && Single(board.Rook(me)) && board.Pawn(me) && Single(board.Pawn(me)) && board.Rook(opp) && Single(board.Rook(opp)));
+	uint16 new_mul = krpkrx<me>(board);
 	EI.mul = (new_mul <= 32 ? Min(EI.mul, new_mul) : new_mul);
-	check_forced_stalemate<me>(&EI.mul);
+	check_forced_stalemate<me>(&EI.mul, board);
 }
-template<bool me> void eval_krpkbx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_krpkbx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	assert(Rook(me) && Single(Rook(me)) && Pawn(me) && Single(Pawn(me)) && Bishop(opp));
-	EI.mul = Min(EI.mul, krpkbx<me>());
+	assert(board.Rook(me) && Single(board.Rook(me)) && board.Pawn(me) && Single(board.Pawn(me)) && board.Bishop(opp));
+	EI.mul = Min(EI.mul, krpkbx<me>(board));
 }
-template<bool me> void eval_krppkrx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_krppkrx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	EI.mul = Min(EI.mul, krppkrx<me>());
-	check_forced_stalemate<me>(&EI.mul);
+	EI.mul = Min(EI.mul, krppkrx<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
-template<bool me> void eval_krppkrpx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_krppkrpx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	eval_krppkrx<me>(EI, pop);
-	EI.mul = Min(EI.mul, krppkrpx<me>());
-	check_forced_stalemate<me>(&EI.mul);
+	eval_krppkrx<me>(EI, board, pop);
+	EI.mul = Min(EI.mul, krppkrpx<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
-template<bool me> void eval_krpppkrppx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_krpppkrppx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	EI.mul = Min(EI.mul, krpppkrppx<me>());
-	check_forced_stalemate<me>(&EI.mul);
+	EI.mul = Min(EI.mul, krpppkrppx<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
 
-template<bool me> void eval_kqkpx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_kqkpx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	EI.mul = Min(EI.mul, kqkp<me>());
+	EI.mul = Min(EI.mul, kqkp<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
-template<bool me> void eval_kqkrpx(GEvalInfo& EI, pop_func_t pop)
+template<bool me> void eval_kqkrpx(GEvalInfo& EI, const Board_& board, pop_func_t pop)
 {
-	EI.mul = Min(EI.mul, kqkrpx<me>());
-	check_forced_stalemate<me>(&EI.mul);
+	EI.mul = Min(EI.mul, kqkrpx<me>(board));
+	check_forced_stalemate<me>(&EI.mul, board);
 }
 
 
@@ -3094,12 +2968,12 @@ static void stop()
 	SHARED->stopAll = true;
 }
 
-static void go()
+static void go(const Board_& board)
 {
 #if TB
-	if (popcnt(PieceAll()) <= int(TB_LARGEST))
+	if (popcnt(board.PieceAll()) <= int(TB_LARGEST))
 	{
-		auto res = TBProbe(tb_probe_root_checked, T(Current->turn));
+		auto res = TBProbe(tb_probe_root_checked, board, T(Current->turn));
 		if (res != TB_RESULT_FAILED)
 		{
 			int bestScore;
@@ -3116,7 +2990,7 @@ static void go()
 	SHARED->date++;
 	assert(PVN == 1);       // Multi-PV NYI.
 	assert(INFO->pid == SETTINGS->parentPid);
-	memcpy(&SHARED->rootBoard, Board, sizeof(GBoard));
+	memcpy(&SHARED->rootBoard, &board, sizeof(Board_));
 	memcpy(&SHARED->rootData, Current, sizeof(GData));
 	memcpy(&SHARED->rootStack, &Stack[0], sp * sizeof(uint64_t));
 	SHARED->rootSp = sp;
@@ -3184,11 +3058,10 @@ static inline void check_for_stop(void)
 
 // END SMP
 
-void setup_board()
+void setup_board(std::array<uint8, 64> squares, Board_* board)
 {
 	int i;
 
-	uint64 occ = 0;
 	sp = 0;
 	if (SHARED)
 	{
@@ -3202,7 +3075,8 @@ void setup_board()
 		}
 	}
 	Current->material = 0;
-	Current->pst = eval_pst();
+	board->square = squares;
+	Current->pst = eval_pst(*board);
 	Current->key = RO->PieceKey[0][0];
 	if (Current->turn)
 		Current->key ^= RO->TurnKey;
@@ -3211,25 +3085,24 @@ void setup_board()
 		Current->key ^= RO->EPKey[FileOf(Current->ep_square)];
 	Current->pawn_key = 0;
 	Current->pawn_key ^= RO->CastleKey[Current->castle_flags];
-	for (i = 0; i < 16; ++i) Piece(i) = 0;
+	for (i = 0; i < 16; ++i) board->Piece(i) = 0;
 	for (i = 0; i < 64; ++i)
 	{
-		if (PieceAt(i))
+		if (auto p = squares[i])
 		{
-			Piece(PieceAt(i)) |= Bit(i);
-			Piece(PieceAt(i) & 1) |= Bit(i);
-			occ |= Bit(i);
-			Current->key ^= RO->PieceKey[PieceAt(i)][i];
-			if (PieceAt(i) < WhiteKnight)
-				Current->pawn_key ^= RO->PieceKey[PieceAt(i)][i];
-			if (PieceAt(i) < WhiteKing)
-				Current->material += MatCode[PieceAt(i)];
+			board->Piece(p) |= Bit(i);
+			board->Piece(p & 1) |= Bit(i);
+			Current->key ^= RO->PieceKey[p][i];
+			if (p < WhiteKnight)
+				Current->pawn_key ^= RO->PieceKey[p][i];
+			if (p < WhiteKing)
+				Current->material += MatCode[p];
 			else
-				Current->pawn_key ^= RO->PieceKey[PieceAt(i)][i];
+				Current->pawn_key ^= RO->PieceKey[p][i];
 		}
 	}
-	if (popcnt(Piece(WhiteKnight)) > 2 || popcnt(Piece(WhiteLight)) > 1 || popcnt(Piece(WhiteDark)) > 1 || popcnt(Piece(WhiteRook)) > 2 || popcnt(Piece(WhiteQueen)) > 2 ||
-		popcnt(Piece(BlackKnight)) > 2 || popcnt(Piece(BlackLight)) > 1 || popcnt(Piece(BlackDark)) > 1 || popcnt(Piece(BlackRook)) > 2 || popcnt(Piece(BlackQueen)) > 2)
+	if (popcnt(board->Piece(WhiteKnight)) > 2 || popcnt(board->Piece(WhiteLight)) > 1 || popcnt(board->Piece(WhiteDark)) > 1 || popcnt(board->Piece(WhiteRook)) > 2 || popcnt(board->Piece(WhiteQueen)) > 2 ||
+		popcnt(board->Piece(BlackKnight)) > 2 || popcnt(board->Piece(BlackLight)) > 1 || popcnt(board->Piece(BlackDark)) > 1 || popcnt(board->Piece(BlackRook)) > 2 || popcnt(board->Piece(BlackQueen)) > 2)
 		Current->material |= FlagUnusualMaterial;
 	Current->capture = 0;
 	for (int ik = 1; ik <= N_KILLER; ++ik) Current->killer[ik] = 0;
@@ -3237,13 +3110,13 @@ void setup_board()
 	Stack[sp] = Current->key;
 }
 
-const char* get_board(const char* fen)
+const char* get_board(const char* fen, Board_* board)
 {
 	int pos, i, j;
 	unsigned char c;
 
 	Current = Data;
-	memset(Board, 0, sizeof(GBoard));
+	memset(board, 0, sizeof(Board_));
 	memset(Current, 0, sizeof(GData));
 	pos = 0;
 	c = fen[pos];
@@ -3256,9 +3129,9 @@ const char* get_board(const char* fen)
 				j += c - '0';
 			else
 			{
-				PieceAt(i + j) = RO->PieceFromChar[c];
-				if (Even(SDiagOf(i + j)) && (PieceAt(i + j) / 2) == 3)
-					PieceAt(i + j) += 2;
+				board->PieceAt(i + j) = RO->PieceFromChar[c];
+				if (Even(SDiagOf(i + j)) && (board->PieceAt(i + j) / 2) == 3)
+					board->PieceAt(i + j) += 2;
 				++j;
 			}
 			c = fen[++pos];
@@ -3296,19 +3169,19 @@ const char* get_board(const char* fen)
 	{
 		i = c + fen[++pos] * 8 - 489;
 		j = i ^ 8;
-		if (PieceAt(i) != 0)
+		if (board->PieceAt(i) != 0)
 			i = 0;
-		else if (PieceAt(j) != (3 - Current->turn))
+		else if (board->PieceAt(j) != (3 - Current->turn))
 			i = 0;
-		else if (PieceAt(j - 1) != (Current->turn + 2) && PieceAt(j + 1) != (Current->turn + 2))
+		else if (board->PieceAt(j - 1) != (Current->turn + 2) && board->PieceAt(j + 1) != (Current->turn + 2))
 			i = 0;
 		Current->ep_square = i;
 	}
-	setup_board();
+	setup_board(board->square, board);
 	return fen + pos;
 }
 
-void init_search(int clear_hash)
+Board_ init_search(int clear_hash)
 {
 	for (int ip = 0; ip < 16; ++ip)
 		for (int it = 0; it < 64; ++it)
@@ -3326,7 +3199,8 @@ void init_search(int clear_hash)
 		fill(HASH, HASH + SETTINGS->nHash, NullEntry);
 		fill(PVHASH, PVHASH + N_PV_HASH, NullPVEntry);
 	}
-	get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+	Board_ board;
+	get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &board);
 	INFO->nodes = INFO->tbHits = 0;
 	INFO->bestMove = INFO->bestScore = 0;
 	LastTime = LastValue = LastExactValue = InstCnt = 0;
@@ -3336,6 +3210,7 @@ void init_search(int clear_hash)
 	LastDepth = 128;
 	memset(CurrentSI, 0, sizeof(GSearchInfo));
 	memset(BaseSI, 0, sizeof(GSearchInfo));
+	return board;
 }
 
 INLINE GEntry* probe_hash()
@@ -3362,7 +3237,7 @@ INLINE GPVEntry* probe_pv_hash()
 	return nullptr;
 }
 
-template<bool me> void do_move(int move)
+template<bool me> void do_move(Board_* board, int move)
 {
 	MOVING
 		GEntry* Entry;
@@ -3374,18 +3249,18 @@ template<bool me> void do_move(int move)
 	to = To(move);
 	Next = Current + 1;
 	Next->ep_square = 0;
-	capture = PieceAt(to);
+	capture = board->PieceAt(to);
 	from = From(move);
-	piece = PieceAt(from);
-	PieceAt(from) = 0;
-	PieceAt(to) = piece;
+	piece = board->PieceAt(from);
+	board->PieceAt(from) = 0;
+	board->PieceAt(to) = piece;
 	Next->piece = piece;
 	mask_from = Bit(from);
 	mask_to = Bit(to);
-	Piece(piece) ^= mask_from;
-	Piece(me) ^= mask_from;
-	Piece(piece) |= mask_to;
-	Piece(me) |= mask_to;
+	board->Piece(piece) ^= mask_from;
+	board->Piece(me) ^= mask_from;
+	board->Piece(piece) |= mask_to;
+	board->Piece(me) |= mask_to;
 	Next->castle_flags = Current->castle_flags;
 	Next->turn = opp;
 	const auto& pKey = RO->PieceKey[piece];
@@ -3396,8 +3271,8 @@ template<bool me> void do_move(int move)
 
 	if (T(capture))
 	{
-		Piece(capture) ^= mask_to;
-		Piece(opp) ^= mask_to;
+		board->Piece(capture) ^= mask_to;
+		board->Piece(opp) ^= mask_to;
 		Next->pst -= Pst(capture, to);
 		Next->key ^= RO->PieceKey[capture][to];
 		if (capture == IPawn[opp])
@@ -3405,9 +3280,9 @@ template<bool me> void do_move(int move)
 		Next->material = Current->material - MatCode[capture];
 		if (T(Current->material & FlagUnusualMaterial) && capture >= WhiteKnight)
 		{
-			if (popcnt(Piece(WhiteQueen)) <= 2 && popcnt(Piece(BlackQueen)) <= 2 && popcnt(Piece(WhiteLight)) <= 1 && popcnt(Piece(BlackLight)) <= 1 &&
-				popcnt(Piece(WhiteDark)) <= 1 && popcnt(Piece(BlackDark)) <= 1 && popcnt(Piece(WhiteKnight)) <= 2 && popcnt(Piece(BlackKnight)) <= 2 && 
-				popcnt(Piece(WhiteRook)) <= 2 && popcnt(Piece(BlackRook)) <= 2)
+			if (popcnt(board->Piece(WhiteQueen)) <= 2 && popcnt(board->Piece(BlackQueen)) <= 2 && popcnt(board->Piece(WhiteLight)) <= 1 && popcnt(board->Piece(BlackLight)) <= 1 &&
+				popcnt(board->Piece(WhiteDark)) <= 1 && popcnt(board->Piece(BlackDark)) <= 1 && popcnt(board->Piece(WhiteKnight)) <= 2 && popcnt(board->Piece(BlackKnight)) <= 2 &&
+				popcnt(board->Piece(WhiteRook)) <= 2 && popcnt(board->Piece(BlackRook)) <= 2)
 				Next->material ^= FlagUnusualMaterial;
 		}
 		if (piece == IPawn[me])
@@ -3415,12 +3290,12 @@ template<bool me> void do_move(int move)
 			if (IsPromotion(move))
 			{
 				piece = Promotion<me>(move);
-				PieceAt(to) = piece;
+				board->PieceAt(to) = piece;
 				Next->material += MatCode[piece] - MatCode[IPawn[me]];
-				if (IsBishop(piece) ? T(Piece(piece)) : Multiple(Piece(piece)))
+				if (IsBishop(piece) ? T(board->Piece(piece)) : Multiple(board->Piece(piece)))
 					Next->material |= FlagUnusualMaterial;
-				Pawn(me) ^= mask_to;
-				Piece(piece) |= mask_to;
+				board->Pawn(me) ^= mask_to;
+				board->Piece(piece) |= mask_to;
 				Next->pst += Pst(piece, to) - Pst(IPawn[me], to);
 				Next->key ^= pKey[to] ^ RO->PieceKey[piece][to];
 				Next->pawn_key ^= pKey[from];
@@ -3465,31 +3340,31 @@ template<bool me> void do_move(int move)
 			Next->pawn_key ^= pKey[to] ^ pKey[from];
 			if (IsEP(move))
 			{
-				PieceAt(to ^ 8) = 0;
+				board->PieceAt(to ^ 8) = 0;
 				u = Bit(to ^ 8);
 				Next->key ^= RO->PieceKey[IPawn[opp]][to ^ 8];
 				Next->pawn_key ^= RO->PieceKey[IPawn[opp]][to ^ 8];
 				Next->pst -= Pst(IPawn[opp], to ^ 8);
-				Pawn(opp) &= ~u;
-				Piece(opp) &= ~u;
+				board->Pawn(opp) &= ~u;
+				board->Piece(opp) &= ~u;
 				Next->material -= MatCode[IPawn[opp]];
 			}
 			else if (IsPromotion(move))
 			{
 				piece = Promotion<me>(move);
-				PieceAt(to) = piece;
+				board->PieceAt(to) = piece;
 				Next->material += MatCode[piece] - MatCode[IPawn[me]];
-				if (IsBishop(piece) ? T(Piece(piece)) : Multiple(Piece(piece)))
+				if (IsBishop(piece) ? T(board->Piece(piece)) : Multiple(board->Piece(piece)))
 					Next->material |= FlagUnusualMaterial;
-				Pawn(me) ^= mask_to;
-				Piece(piece) |= mask_to;
+				board->Pawn(me) ^= mask_to;
+				board->Piece(piece) |= mask_to;
 				Next->pst += Pst(piece, to) - Pst(IPawn[me], to);
 				Next->key ^= RO->PieceKey[piece][to] ^ pKey[to];
 				Next->pawn_key ^= pKey[to];
 			}
 			else if ((to ^ from) == 16)
 			{
-				if (PAtt[me][(to + from) >> 1] & Pawn(opp))
+				if (PAtt[me][(to + from) >> 1] & board->Pawn(opp))
 				{
 					Next->ep_square = (to + from) >> 1;
 					Next->key ^= RO->EPKey[FileOf(Next->ep_square)];
@@ -3522,12 +3397,12 @@ template<bool me> void do_move(int move)
 				int rold = to + ((to & 4) ? 1 : -2);
 				int rnew = to + ((to & 4) ? -1 : 1);
 				mask_to |= Bit(rnew);
-				PieceAt(rold) = 0;
-				PieceAt(rnew) = IRook[me];
-				Piece(IRook[me]) ^= Bit(rold);
-				Piece(me) ^= Bit(rold);
-				Piece(IRook[me]) |= Bit(rnew);
-				Piece(me) |= Bit(rnew);
+				board->PieceAt(rold) = 0;
+				board->PieceAt(rnew) = IRook[me];
+				board->Piece(IRook[me]) ^= Bit(rold);
+				board->Piece(me) ^= Bit(rold);
+				board->Piece(IRook[me]) |= Bit(rnew);
+				board->Piece(me) |= Bit(rnew);
 				Next->pst += Pst(IRook[me], rnew) - Pst(IRook[me], rold);
 				Next->key ^= RO->PieceKey[IRook[me]][rnew] ^ RO->PieceKey[IRook[me]][rold];
 			}
@@ -3546,40 +3421,40 @@ template<bool me> void do_move(int move)
 	Next->gen_flags = 0;
 	++Current;
 	++INFO->nodes;
-	assert(King(me) && King(opp));
+	assert(board->King(me) && board->King(opp));
 	BYE
 }
-INLINE void do_move(bool me, int move)
+INLINE void do_move(Board_* board, bool me, int move)
 {
 	if (me)
-		do_move<true>(move);
+		do_move<true>(board, move);
 	else
-		do_move<false>(move);
+		do_move<false>(board, move);
 }
 
-template<bool me> void undo_move(int move)
+template<bool me> void undo_move(Board_* board, int move)
 {
 	MOVING
-		const int from = From(move), to = To(move);
+	const int from = From(move), to = To(move);
 	uint64 bFrom = Bit(from), bTo = Bit(to);
 	int piece;
 	if (IsPromotion(move))
 	{
-		Piece(PieceAt(to)) ^= bTo;
+		board->Piece(board->PieceAt(to)) ^= bTo;
 		piece = IPawn[me];
 	}
 	else
-		piece = PieceAt(to);
-	PieceAt(from) = piece;
-	Piece(piece) |= bFrom;
-	Piece(me) |= bFrom;
-	Piece(piece) &= ~bTo;
-	Piece(me) ^= bTo;
-	PieceAt(to) = Current->capture;
+		piece = board->PieceAt(to);
+	board->PieceAt(from) = piece;
+	board->Piece(piece) |= bFrom;
+	board->Piece(me) |= bFrom;
+	board->Piece(piece) &= ~bTo;
+	board->Piece(me) ^= bTo;
+	board->PieceAt(to) = Current->capture;
 	if (Current->capture)
 	{
-		Piece(Current->capture) |= bTo;
-		Piece(opp) |= bTo;
+		board->Piece(Current->capture) |= bTo;
+		board->Piece(opp) |= bTo;
 	}
 	else
 	{
@@ -3588,31 +3463,31 @@ template<bool me> void undo_move(int move)
 			bool isQS = FileOf(to) == 2;
 			const int rold = to + (isQS ? -2 : 1);
 			const int rnew = to + (isQS ? 1 : -1);
-			PieceAt(rnew) = 0;
-			PieceAt(rold) = IRook[me];
-			Rook(me) ^= Bit(rnew);
-			Piece(me) ^= Bit(rnew);
-			Rook(me) |= Bit(rold);
-			Piece(me) |= Bit(rold);
+			board->PieceAt(rnew) = 0;
+			board->PieceAt(rold) = IRook[me];
+			board->Rook(me) ^= Bit(rnew);
+			board->Piece(me) ^= Bit(rnew);
+			board->Rook(me) |= Bit(rold);
+			board->Piece(me) |= Bit(rold);
 		}
 		else if (IsEP(move))
 		{
 			int xLoc = to ^ 8;
-			PieceAt(xLoc) = IPawn[opp];
-			Piece(opp) |= Bit(xLoc);
-			Pawn(opp) |= Bit(xLoc);
+			board->PieceAt(xLoc) = IPawn[opp];
+			board->Piece(opp) |= Bit(xLoc);
+			board->Pawn(opp) |= Bit(xLoc);
 		}
 	}
 	--Current;
 	--sp;
 	BYE
 }
-INLINE void undo_move(bool me, int move)
+INLINE void undo_move(Board_* board, bool me, int move)
 {
 	if (me)
-		undo_move<true>(move);
+		undo_move<true>(board, move);
 	else
-		undo_move<false>(move);
+		undo_move<false>(board, move);
 }
 
 void do_null()
@@ -3662,20 +3537,21 @@ void undo_null()
 
 struct ScopedMove_
 {
+	Board_* board_;
 	int move_;
-	ScopedMove_(int move) : move_(move)
+	ScopedMove_(Board_* board, int move) : board_(board), move_(move)
 	{
 		if (Current->turn)
-			do_move<1>(move);
+			do_move<1>(board, move);
 		else
-			do_move<0>(move);
+			do_move<0>(board, move);
 	}
 	~ScopedMove_()
 	{
 		if (Current->turn ^ 1)
-			undo_move<1>(move_);
+			undo_move<1>(board_, move_);
 		else
-			undo_move<0>(move_);
+			undo_move<0>(board_, move_);
 	}
 };
 
@@ -3686,7 +3562,7 @@ typedef struct
 	packed_t score;
 } GPawnEvalInfo;
 
-template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawnEvalInfo& PEI)
+template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawnEvalInfo& PEI, const Board_& board)
 {
 	constexpr array<array<uint64, 2>, 2> RFileBlockMask = { array<uint64, 2>({0x0202000000000000, 0x8080000000000000}), array<uint64, 2>({0x0202, 0x8080}) };
 	POP pop;
@@ -3704,36 +3580,36 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		inc = -1;
 	}
 	int shelter = 0, sScale = 0;
-	uint64 mpawns = Pawn(me) & Forward[me][me ? Min(kr + 1, 7) : Max(kr - 1, 0)];
+	uint64 mpawns = board.Pawn(me) & Forward[me][me ? Min(kr + 1, 7) : Max(kr - 1, 0)];
 	for (int file = start, i = 0; i < 3; file += inc, ++i)
 	{
 		shelter += RO->Shelter[i][OwnRank<me>(NBZ<me>(mpawns & File[file]))];
-		if (Pawn(opp) & File[file])
+		if (board.Pawn(opp) & File[file])
 		{
-			int oppP = NB<me>(Pawn(opp) & File[file]);
+			int oppP = NB<me>(board.Pawn(opp) & File[file]);
 			int rank = OwnRank<opp>(oppP);
 			if (rank < 6)
 			{
 				if (rank >= 3)
 					shelter += RO->StormBlocked[rank - 3];
-				if (uint64 u = (RO->PIsolated[FileOf(oppP)] & Forward[opp][RankOf(oppP)] & Pawn(me)))
+				if (uint64 u = (RO->PIsolated[FileOf(oppP)] & Forward[opp][RankOf(oppP)] & board.Pawn(me)))
 				{
 					int meP = NB<opp>(u);
 					uint64 att_sq = PAtt[me][meP] & PWay[opp][oppP];  // may be zero
 					if (abs(kf - FileOf(meP)) <= 1
 						&& (!(PEI.double_att[me] & att_sq) || (Current->patt[opp] & att_sq))
-						&& F(PWay[opp][meP] & Pawn(me))
-						&& (!(PawnAll() & PWay[opp][oppP] & Forward[me][RankOf(meP)])))
+						&& F(PWay[opp][meP] & board.Pawn(me))
+						&& (!(board.PawnAll() & PWay[opp][oppP] & Forward[me][RankOf(meP)])))
 					{
 						if (rank >= 3)
 						{
 							shelter += RO->StormShelterAtt[rank - 3];
 							if (HasBit(PEI.patt[opp], oppP + Push[opp]))
 								shelter += RO->StormConnected[rank - 3];
-							if (!(PWay[opp][oppP] & PawnAll()))
+							if (!(PWay[opp][oppP] & board.PawnAll()))
 								shelter += RO->StormOpen[rank - 3];
 						}
-						if (rank <= 4 && !(RO->PCone[me][oppP] & King(opp)))
+						if (rank <= 4 && !(RO->PCone[me][oppP] & board.King(opp)))
 							shelter += RO->StormFree[rank - 1];
 					}
 				}
@@ -3741,9 +3617,9 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		}
 		else
 		{
-			if (i > 0 || T((File[file] | File[file + inc]) & (Rook(opp) | Queen(opp))) || T(RFileBlockMask[me][inc > 0] & ~(Pawn(opp) | King(opp))))
+			if (i > 0 || T((File[file] | File[file + inc]) & (board.Rook(opp) | board.Queen(opp))) || T(RFileBlockMask[me][inc > 0] & ~(board.Pawn(opp) | board.King(opp))))
 			{
-				if (F(Pawn(me) & File[file]))
+				if (F(board.Pawn(me) & File[file]))
 				{
 					shelter += ShelterMod[StormOfValue];
 					sScale += ShelterMod[StormOfScale];
@@ -3760,7 +3636,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 
 	PawnEntry->passer[me] = 0;
 	uint64 b;
-	for (uint64 u = Pawn(me); T(u); u ^= b)
+	for (uint64 u = board.Pawn(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
@@ -3768,11 +3644,11 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		int rrank = OwnRank<me>(sq);
 		int file = FileOf(sq);
 		uint64 way = PWay[me][sq];
-		int next = PieceAt(sq + Push[me]);
+		int next = board.PieceAt(sq + Push[me]);
 
-		int isolated = !(Pawn(me) & RO->PIsolated[file]);
-		int doubled = T(Pawn(me) & (File[file] ^ b));
-		int open = !(PawnAll() & way);
+		int isolated = !(board.Pawn(me) & RO->PIsolated[file]);
+		int doubled = T(board.Pawn(me) & (File[file] ^ b));
+		int open = !(board.PawnAll() & way);
 
 		if (isolated)
 		{
@@ -3799,18 +3675,18 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 				else
 					DecV(PEI.score, Values::DoubledClosed);
 			}
-			if (rrank >= 3 && (b & (File[2] | File[3] | File[4] | File[5])) && next != IPawn[opp] && (RO->PIsolated[file] & Line[rank] & Pawn(me)))
+			if (rrank >= 3 && (b & (File[2] | File[3] | File[4] | File[5])) && next != IPawn[opp] && (RO->PIsolated[file] & Line[rank] & board.Pawn(me)))
 			{
 				IncV(PEI.score, Values::PawnChainLinear * (rrank - 4));
 				IncV(PEI.score, Values::PawnChain);
 			}
 		}
 		int backward = 0;
-		if (!(RO->PSupport[me][sq] & Pawn(me)))
+		if (!(RO->PSupport[me][sq] & board.Pawn(me)))
 		{
 			if (isolated)
 				backward = 1;
-			else if (uint64 v = (PawnAll() | PEI.patt[opp]) & way)
+			else if (uint64 v = (board.PawnAll() | PEI.patt[opp]) & way)
 				if (OwnRank<me>(NB<me>(PEI.patt[me] & way)) > OwnRank<me>(NB<me>(v)))
 					backward = 1;
 		}
@@ -3824,7 +3700,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		else
 		{
 			NOTICE(PEI.score, rrank);
-			if (open && (F(Pawn(opp) & RO->PIsolated[file]) || pop(Pawn(me) & RO->PIsolated[file]) >= pop(Pawn(opp) & RO->PIsolated[file])))
+			if (open && (F(board.Pawn(opp) & RO->PIsolated[file]) || pop(board.Pawn(me) & RO->PIsolated[file]) >= pop(board.Pawn(opp) & RO->PIsolated[file])))
 				IncV(PEI.score, RO->PasserCandidate[rrank]);  // IDEA: more precise pawn counting for the case of, say,
 														  // white e5 candidate with black pawn on f5 or f4...
 			NOTICE(PEI.score, NO_INFO);
@@ -3842,14 +3718,14 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 						DecV(PEI.score, Values::PasserTarget2);
 				}	// Gull 3 was thinking of removing this term, because fitted weight is negative
 
-				for (uint64 v = PAtt[me][sq] & Pawn(me); v; Cut(v)) if ((RO->PSupport[me][lsb(v)] & Pawn(me)) == b)
+				for (uint64 v = PAtt[me][sq] & board.Pawn(me); v; Cut(v)) if ((RO->PSupport[me][lsb(v)] & board.Pawn(me)) == b)
 				{
 					DecV(PEI.score, Values::ChainRoot);
 					break;
 				}
 			}
 		}
-		if (open && F(RO->PIsolated[file] & Forward[me][rank] & Pawn(opp)))
+		if (open && F(RO->PIsolated[file] & Forward[me][rank] & board.Pawn(opp)))
 		{
 			PawnEntry->passer[me] |= (uint8)(1 << file);
 			if (rrank < 3) 
@@ -3863,7 +3739,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 			IncV(PEI.score, PasserValues::General[rrank]);
 			if (PEI.patt[me] & b)
 				IncV(PEI.score, PasserValues::Protected[rrank]);
-			if (F(Pawn(opp) & West[file]) || F(Pawn(opp) & East[file]))
+			if (F(board.Pawn(opp) & West[file]) || F(board.Pawn(opp) & East[file]))
 				IncV(PEI.score, PasserValues::Outside[rrank]);
 			// IDEA: average the distance with the distance to the promotion square? or just use the latter?
 			int dist_att = Dist(PEI.king[opp], sq + Push[me]);
@@ -3875,24 +3751,24 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 			NOTICE(PEI.score, NO_INFO);
 		}
 	}
-	if (T(Rook(opp)) && !((kf * kr) % 7))
+	if (T(board.Rook(opp)) && !((kf * kr) % 7))
 	{
 		const uint64 kAdj = KAtt[PEI.king[me]];
 		// look for opp pawns restricting K mobility
 		if (PEI.patt[opp] & kAdj)
 		{
 			// find out which one it is
-			for (uint64 u = Pawn(opp); T(u); u ^= b)
+			for (uint64 u = board.Pawn(opp); T(u); u ^= b)
 			{
 				int sq = lsb(u);
 				b = Bit(sq);
-				if ((PAtt[opp][sq] & kAdj) && HasBit(Pawn(me), sq + Push[opp]))
+				if ((PAtt[opp][sq] & kAdj) && HasBit(board.Pawn(me), sq + Push[opp]))
 					DecV(PEI.score, Values::PawnRestrictsK);
 			}
 		}
 	}
 
-	uint64 files = Pawn(me) | (Pawn(me) >> 32);
+	uint64 files = board.Pawn(me) | (board.Pawn(me) >> 32);
 	files |= files >> 16;
 	files = (files | (files >> 8)) & 0xFF;
 	int file_span = (files ? (msb(files) - lsb(files)) : 0);
@@ -3900,7 +3776,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 	PawnEntry->draw[me] = (7 - file_span) * Max(5 - pop(files), 0);
 }
 
-template<class POP> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEntry* PawnEntry)
+template<class POP> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEntry* PawnEntry, const Board_& board)
 {
 	GPawnEvalInfo PEI;
 	for (int i = 0; i < sizeof(GPawnEntry) / sizeof(int); ++i)
@@ -3909,40 +3785,40 @@ template<class POP> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEn
 
 	PEI.patt[White] = Current->patt[White];
 	PEI.patt[Black] = Current->patt[Black];
-	PEI.double_att[White] = ShiftW<White>(Pawn(White)) & ShiftE<White>(Pawn(White));
-	PEI.double_att[Black] = ShiftW<Black>(Pawn(Black)) & ShiftE<Black>(Pawn(Black));
+	PEI.double_att[White] = ShiftW<White>(board.Pawn(White)) & ShiftE<White>(board.Pawn(White));
+	PEI.double_att[Black] = ShiftW<Black>(board.Pawn(Black)) & ShiftE<Black>(board.Pawn(Black));
 	PEI.king[White] = EI.king[White];
 	PEI.king[Black] = EI.king[Black];
 	PEI.score = 0;
 
-	eval_pawns<White, POP>(PawnEntry, PEI);
-	eval_pawns<Black, POP>(PawnEntry, PEI);
+	eval_pawns<White, POP>(PawnEntry, PEI, board);
+	eval_pawns<Black, POP>(PawnEntry, PEI, board);
 
 	PawnEntry->score = PEI.score;
 }
 
-template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI)
+template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI, const Board_& board)
 {
 	uint64 u, b;
-	for (u = Queen(me); T(u); u ^= b)
+	for (u = board.Queen(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = QueenAttacks(sq, EI.occ);
 		Current->dbl_att[me] |= att & Current->att[me];
 		Current->att[me] |= att;
-		if (QMask[sq] & King(opp))
+		if (QMask[sq] & board.King(opp))
 			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))
 				{
 					Current->xray[me] |= v;
-					(RMask[sq] & King(opp) ? EI.rray : EI.bray) |= v;
+					(RMask[sq] & board.King(opp) ? EI.rray : EI.bray) |= v;
 					int square = lsb(v);
-					int piece = PieceAt(square);
+					int piece = board.PieceAt(square);
 					int katt = 0;
 					if (piece == IPawn[me])
 					{
-						if (!PieceAt(square + Push[me]))
+						if (!board.PieceAt(square + Push[me]))
 							IncV(EI.score, Values::QueenPawnPin);
 					}
 					else if ((piece & 1) == me)
@@ -3950,7 +3826,7 @@ template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI)
 						IncV(EI.score, Values::QueenSelfPin);
 						katt = 1;
 					}
-					else if (piece != IPawn[opp] && !(((BMask[sq] & Bishop(opp)) | (RMask[sq] & Rook(opp)) | Queen(opp)) & v))
+					else if (piece != IPawn[opp] && !(((BMask[sq] & board.Bishop(opp)) | (RMask[sq] & board.Rook(opp)) | board.Queen(opp)) & v))
 					{
 						IncV(EI.score, Values::QueenWeakPin);
 						if (!(Current->patt[opp] & v))
@@ -3959,16 +3835,16 @@ template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI)
 					if (katt && !(att & EI.area[opp]))
 						EI.king_att[me] += KingAttack;
 				}
-				else if (v == (v & Minor(opp)))
+				else if (F(v & ~board.Minor(opp)))
 					IncV(EI.score, Values::QKingRay);
 	}
 }
 
-template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI)
+template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
 	uint64 u, b;
-	for (u = Queen(me); T(u); u ^= b)
+	for (u = board.Queen(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
@@ -3978,7 +3854,7 @@ template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI)
 		{
 			EI.king_att[me] += Single(a) ? KingQAttack1 : KingQAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
-				if (RO->FullLine[sq][lsb(v)] & att & ((Rook(me) & RMask[sq]) | (Bishop(me) & BMask[sq])))
+				if (RO->FullLine[sq][lsb(v)] & att & ((board.Rook(me) & RMask[sq]) | (board.Bishop(me) & BMask[sq])))
 					EI.king_att[me]++;
 		}
 		uint64 control = att & EI.free[me];
@@ -3987,37 +3863,37 @@ template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI)
 		NOTICE(EI.score, NO_INFO);
 		FakeV(EI.score, (64 * pop(control & RO->LocusQ[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobQueen[1][pop(control & RO->LocusQ[EI.king[opp]])]);
-		if (control & Pawn(opp))
+		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalQueenPawn);
-		if (control & Minor(opp))
+		if (control & board.Minor(opp))
 			IncV(EI.score, Values::TacticalQueenMinor);
 		if (att & EI.area[me])
 			IncV(EI.score, Values::KingDefQueen);
 	}
 }
 
-template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI)
+template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI, const Board_& board)
 {
 	uint64 u, b;
-	for (u = Rook(me); T(u); u ^= b)
+	for (u = board.Rook(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = RookAttacks(sq, EI.occ);
 		Current->dbl_att[me] |= att & Current->att[me];
 		Current->att[me] |= att;
-		if (RMask[sq] & King(opp))
+		if (RMask[sq] & board.King(opp))
 			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))
 				{
 					Current->xray[me] |= v;
 					EI.rray |= v;
 					int square = lsb(v);
-					int piece = PieceAt(square);
+					int piece = board.PieceAt(square);
 					int katt = 0;
 					if (piece == IPawn[me])
 					{
-						if (!PieceAt(square + Push[me]))
+						if (!board.PieceAt(square + Push[me]))
 							IncV(EI.score, Values::RookPawnPin);
 					}
 					else if ((piece & 1) == me)
@@ -4039,16 +3915,16 @@ template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI)
 					if (katt && F(att & EI.area[opp]))
 						EI.king_att[me] += KingAttack;
 				}
-				else if (F(v & ~Minor(opp) & ~Queen(opp)))
+				else if (F(v & ~board.Minor(opp) & ~board.Queen(opp)))
 					IncV(EI.score, Values::RKingRay);
 	}
 }
 
-template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI)
+template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
 	uint64 u, b;
-	for (u = Rook(me); T(u); u ^= b)
+	for (u = board.Rook(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
@@ -4057,78 +3933,78 @@ template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI)
 		{
 			EI.king_att[me] += Single(a) ? KingRAttack1 : KingRAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
-				if (RO->FullLine[sq][lsb(v)] & att & Major(me))
+				if (RO->FullLine[sq][lsb(v)] & att & board.Major(me))
 					EI.king_att[me]++;
 		}
-		Current->threat |= att & Queen(opp);
+		Current->threat |= att & board.Queen(opp);
 		uint64 control = att & EI.free[me];
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobRook[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
 		FakeV(EI.score, (64 * pop(control & RO->LocusR[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobRook[1][pop(control & RO->LocusR[EI.king[opp]])]);
-		if (control & Pawn(opp))
+		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalRookPawn);
-		if (control & Minor(opp))
+		if (control & board.Minor(opp))
 			IncV(EI.score, Values::TacticalRookMinor);
 
-		if (!(PWay[me][sq] & Pawn(me)))
+		if (!(PWay[me][sq] & board.Pawn(me)))
 		{
 			IncV(EI.score, Values::RookHof);
-			int force = T(PWay[opp][sq] & att & Major(me)) ? 2 : 1;
-			if (!(PWay[me][sq] & Pawn(opp)))
+			int force = T(PWay[opp][sq] & att & board.Major(me)) ? 2 : 1;
+			if (!(PWay[me][sq] & board.Pawn(opp)))
 			{
 				IncV(EI.score, Values::RookOf);
-				if (uint64 target = att & PWay[me][sq] & Minor(opp))
+				if (uint64 target = att & PWay[me][sq] & board.Minor(opp))
 				{
 					if (!(Current->patt[opp] & target))
 					{
 						IncV(EI.score, force * Values::RookOfMinorHanging);
-						if (PWay[me][sq] & King(opp))
+						if (PWay[me][sq] & board.King(opp))
 							IncV(EI.score, force * Values::RookOfKingAtt);
 					}
 				}
 			}
-			else if (att & PWay[me][sq] & Pawn(opp))
+			else if (uint64 attP = att & PWay[me][sq] & board.Pawn(opp))
 			{
-				uint64 square = lsb(att & PWay[me][sq] & Pawn(opp));
-				if (!(RO->PSupport[opp][square] & Pawn(opp)))
+				int square = lsb(attP);
+				if (!(RO->PSupport[opp][square] & board.Pawn(opp)))
 					IncV(EI.score, force * Values::RookHofWeakPAtt);
 			}
 		}
-		if ((b & OwnLine<me>(6)) && ((King(opp) | Pawn(opp)) & (OwnLine<me>(6) | OwnLine<me>(7))))
+		if ((b & OwnLine<me>(6)) && ((board.King(opp) | board.Pawn(opp)) & (OwnLine<me>(6) | OwnLine<me>(7))))
 		{
 			IncV(EI.score, Values::Rook7th);
-			if (King(opp) & OwnLine<me>(7))
+			if (board.King(opp) & OwnLine<me>(7))
 				IncV(EI.score, Values::Rook7thK8th);
-			if (Major(me) & att & OwnLine<me>(6))
+			if (board.Major(me) & att & OwnLine<me>(6))
 				IncV(EI.score, Values::Rook7thDoubled);
 		}
 	}
 }
 
-template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI)
+template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI, const Board_& board)
 {
 	uint64 b;
-	for (uint64 u = Bishop(me); T(u); u ^= b)
+	for (uint64 u = board.Bishop(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = BishopAttacks(sq, EI.occ);
 		Current->dbl_att[me] |= att & Current->att[me];
 		Current->att[me] |= att;
-		if (BMask[sq] & King(opp))
+		if (BMask[sq] & board.King(opp))
 			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))  // pin or discovery threat
 				{
 					Current->xray[me] |= v;
 					EI.bray |= v;
 					int square = lsb(v);
-					int piece = PieceAt(square);
+					int piece = board.PieceAt(square);
 					int katt = 0;
 					if (piece == IPawn[me])
 					{
-						if (!PieceAt(square + Push[me]))
+						if (!board.PieceAt(square + Push[me]))
 							IncV(EI.score, Values::BishopPawnPin);
 					}
 					else if ((piece & 1) == me)
@@ -4150,16 +4026,16 @@ template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI)
 					if (katt && F(att & EI.area[opp]))
 						EI.king_att[me] += KingAttack;
 				}
-				else if (F(v & ~(Knight(opp) | Major(opp))))
+				else if (F(v & ~(board.Knight(opp) | board.Major(opp))))
 					IncV(EI.score, Values::BKingRay);
 	}
 }
 
-template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI)
+template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
 	uint64 b;
-	for (uint64 u = Bishop(me); T(u); u ^= b)
+	for (uint64 u = board.Bishop(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
@@ -4172,23 +4048,23 @@ template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI)
 		NOTICE(EI.score, NO_INFO);
 		FakeV(EI.score, (64 * pop(control & RO->LocusB[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobBishop[1][pop(control & RO->LocusB[EI.king[opp]])]);
-		if (control & Pawn(opp))
+		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalBishopPawn);
-		if (control & Knight(opp))
+		if (control & board.Knight(opp))
 			IncV(EI.score, Values::TacticalB2N);
-		Current->threat |= att & Major(opp);
+		Current->threat |= att & board.Major(opp);
 		if (T(b & Outpost[me])
-			&& F(Knight(opp))
+			&& F(board.Knight(opp))
 			&& T(Current->patt[me] & b)
-			&& F(Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)])
-			&& F(Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
+			&& F(board.Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)])
+			&& F(board.Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
 			IncV(EI.score, Values::BishopOutpostNoMinor);
 	}
 }
 
-template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI)
+template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI, const Board_& board)
 {
-	for (uint64 u = Knight(me); T(u); Cut(u))
+	for (uint64 u = board.Knight(me); T(u); Cut(u))
 	{
 		uint64 att = NAtt[lsb(u)];
 		Current->dbl_att[me] |= Current->att[me] & att;
@@ -4196,36 +4072,36 @@ template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI)
 	}
 }
 
-template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI)
+template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
-	for (uint64 b, u = Knight(me); T(u); u ^= b)
+	for (uint64 b, u = board.Knight(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = NAtt[sq];
 		if (uint64 a = att & EI.area[opp])
 			EI.king_att[me] += Single(a) ? KingNAttack1 : KingNAttack;
-		Current->threat |= att & Major(opp);
+		Current->threat |= att & board.Major(opp);
 		uint64 control = att & EI.free[me];
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobKnight[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
 		FakeV(EI.score, (64 * pop(control & RO->LocusN[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobKnight[1][pop(control & RO->LocusN[EI.king[opp]])]);
-		if (control & Bishop(opp))
+		if (control & board.Bishop(opp))
 			IncV(EI.score, Values::TacticalN2B);
 		if (att & EI.area[me])
 			IncV(EI.score, Values::KingDefKnight);
-		if ((b & Outpost[me]) && !(Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)]))
+		if ((b & Outpost[me]) && !(board.Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)]))
 		{
 			IncV(EI.score, Values::KnightOutpost);
 			if (Current->patt[me] & b)
 			{
 				IncV(EI.score, Values::KnightOutpostProtected);
-				if (att & EI.free[me] & Pawn(opp))
+				if (att & EI.free[me] & board.Pawn(opp))
 					IncV(EI.score, Values::KnightOutpostPawnAtt);
-				if (F(Knight(opp) | Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
+				if (F(board.Knight(opp) | board.Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
 					IncV(EI.score, Values::KnightOutpostNoMinor);
 			}
 		}
@@ -4236,17 +4112,17 @@ template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI)
 constexpr array<uint16, 16> KingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19, 23, 28, 33, 37, 39, 39 };
 constexpr array<int, 8> KingCenterShift = { -5, -4, 5, 1 };	
 
-template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
+template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
 	uint16 cnt = Min<uint16>(15, Pick16<1>(EI.king_att[me]));
 	uint16 score = Pick16<2>(EI.king_att[me]);
-	if (cnt >= 2 && T(Queen(me)))
+	if (cnt >= 2 && T(board.Queen(me)))
 	{
 		score += (EI.PawnEntry->shelter[opp] * KingShelterQuad) / 64;
 		if (uint64 u = Current->att[me] & EI.area[opp] & (~Current->att[opp]))
 			score += pop(u) * KingAttackSquare;
-		if (!(KAtt[EI.king[opp]] & (~(Piece(opp) | Current->att[me]))))
+		if (!(KAtt[EI.king[opp]] & (~(board.Piece(opp) | Current->att[me]))))
 			score += KingNoMoves;
 	}
 	int adjusted = ((score * KingAttackScale[cnt]) >> 3) + EI.PawnEntry->shelter[opp];
@@ -4255,7 +4131,7 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 		kf = 7 - kf;
 	if (kr < 3)
 		adjusted += (adjusted * (3 - kr) * KingCenterShift[kf]) / 160;
-	if (!Queen(me))
+	if (!board.Queen(me))
 		adjusted = (adjusted * KingSafetyNoQueen) / 16;
 	// add a correction for defense-in-depth
 	if (adjusted > 1)
@@ -4263,11 +4139,11 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 		uint64 holes = RO->LocusK[EI.king[opp]] & ~Current->att[opp];
 		int nHoles = pop(holes);
 		int nIncursions = pop(holes & Current->att[me]);
-		uint64 personnel = NonPawnKing(opp);
+		uint64 personnel = board.NonPawnKing(opp);
 		uint64 guards = RO->LocusK[EI.king[opp]] & personnel;
 		uint64 awol = personnel ^ guards;
-		int nGuards = pop(guards) + pop(guards & Queen(opp));
-		int nAwol = pop(awol) + pop(awol & Queen(opp));
+		int nGuards = pop(guards) + pop(guards & board.Queen(opp));
+		int nAwol = pop(awol) + pop(awol & board.Queen(opp));
 		adjusted += (adjusted * (max(0, nAwol - nGuards) + max(0, 3 * nIncursions + nHoles - 10))) / 32;
 	}
 
@@ -4281,42 +4157,42 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI)
 	NOTICE(EI.score, NO_INFO);
 }
 
-template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI)
+template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const Board_& board)
 {
-	bool sr_me = Rook(me) && !Minor(me) && !Queen(me) && Single(Rook(me));
-	bool sr_opp = Rook(opp) && !Minor(opp) && !Queen(opp) && Single(Rook(opp));
+	bool sr_me = board.Rook(me) && !board.Minor(me) && !board.Queen(me) && Single(board.Rook(me));
+	bool sr_opp = board.Rook(opp) && !board.Minor(opp) && !board.Queen(opp) && Single(board.Rook(opp));
 
 	for (uint8 u = EI.PawnEntry->passer[me]; T(u); u &= (u - 1))
 	{
 		int file = lsb(u);
-		int sq = NB<opp>(File[file] & Pawn(me));  // most advanced in this file
+		int sq = NB<opp>(File[file] & board.Pawn(me));  // most advanced in this file
 		int rank = OwnRank<me>(sq);
 		Current->passer |= Bit(sq);
 		if (rank <= 2)
 			continue;
-		if (!PieceAt(sq + Push[me]))
+		if (!board.PieceAt(sq + Push[me]))
 			IncV(EI.score, PasserValues::Blocked[rank]);
 		uint64 way = PWay[me][sq];
 		int connected = 0, supported = 0, hooked = 0, unsupported = 0, free = 0;
-		if (!(way & Piece(opp)))
+		if (!(way & board.Piece(opp)))
 		{
 			IncV(EI.score, PasserValues::Clear[rank]);
-			if (PWay[opp][sq] & Major(me))
+			if (PWay[opp][sq] & board.Major(me))
 			{
-				int square = NB<opp>(PWay[opp][sq] & Major(me));
+				int square = NB<opp>(PWay[opp][sq] & board.Major(me));
 				if (F(RO->Between[sq][square] & EI.occ))
 					supported = 1;
 			}
-			if (PWay[opp][sq] & Major(opp))
+			if (PWay[opp][sq] & board.Major(opp))
 			{
-				int square = NB<opp>(PWay[opp][sq] & Major(opp));
+				int square = NB<opp>(PWay[opp][sq] & board.Major(opp));
 				if (F(RO->Between[sq][square] & EI.occ))
 					hooked = 1;
 			}
-			for (uint64 v = PAtt[me][sq - Push[me]] & Pawn(me); T(v); Cut(v))
+			for (uint64 v = PAtt[me][sq - Push[me]] & board.Pawn(me); T(v); Cut(v))
 			{
 				int square = lsb(v);
-				if (F(Pawn(opp) & (VLine[square] | RO->PIsolated[FileOf(square)]) & Forward[me][RankOf(square)]))
+				if (F(board.Pawn(opp) & (VLine[square] | RO->PIsolated[FileOf(square)]) & Forward[me][RankOf(square)]))
 					++connected;
 			}
 			if (connected)
@@ -4331,7 +4207,7 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI)
 			else
 			{
 				uint64 attacked = Current->att[opp] | (hooked ? way : 0);
-				if (supported || (!hooked && connected) || (!(Major(me) & way) && !(attacked & (~Current->att[me]))))
+				if (supported || (!hooked && connected) || (!(board.Major(me) & way) && !(attacked & (~Current->att[me]))))
 					IncV(EI.score, PasserValues::Supported[rank]);
 				else
 					unsupported = 1;
@@ -4340,17 +4216,17 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI)
 
 		if (sr_me)
 		{
-			if (rank == 6 && T(way & Rook(me)))
+			if (rank == 6 && T(way & board.Rook(me)))
 				DecV(EI.score, Values::PasserOpRookBlock);
 		}
 	}
 }
 
 
-template <bool me, class POP> INLINE void eval_pieces(GEvalInfo& EI)
+template <bool me, class POP> INLINE void eval_pieces(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
-	uint64 threat = Current->att[opp] & (~Current->att[me]) & Piece(me);
+	uint64 threat = Current->att[opp] & (~Current->att[me]) & board.Piece(me);
 	Current->threat |= threat;
 	if (Multiple(threat))
 	{
@@ -4361,24 +4237,24 @@ template <bool me, class POP> INLINE void eval_pieces(GEvalInfo& EI)
 		DecV(EI.score, Values::Threat);
 }
 
-template<class POP> void eval_unusual_material(GEvalInfo& EI)
+template<class POP> void eval_unusual_material(GEvalInfo& EI, const Board_& board)
 {
 	POP pop;
 	Current->score = Endgame(EI.score)
-		+ SeeValue[WhitePawn] * (pop(Pawn(White)) - pop(Pawn(Black)))
-		+ SeeValue[WhiteKnight] * (pop(Minor(White)) - pop(Minor(Black)))
-		+ SeeValue[WhiteRook] * (pop(Rook(White)) - pop(Rook(Black)))
-		+ SeeValue[WhiteQueen] * (pop(Queen(White)) - pop(Queen(Black)));
+		+ SeeValue[WhitePawn] * (pop(board.Pawn(White)) - pop(board.Pawn(Black)))
+		+ SeeValue[WhiteKnight] * (pop(board.Minor(White)) - pop(board.Minor(Black)))
+		+ SeeValue[WhiteRook] * (pop(board.Rook(White)) - pop(board.Rook(Black)))
+		+ SeeValue[WhiteQueen] * (pop(board.Queen(White)) - pop(board.Queen(Black)));
 }
 
-template<class POP, int me> int closure_x()
+template<class POP, int me> int closure_x(const Board_& board)
 {
 	POP pop;
 	int run = 0;
-	uint64 mine = Pawn(me);
+	uint64 mine = board.Pawn(me);
 	int np = pop(mine);
-	uint64 keep = ~(mine | Pawn(opp));	// hard stop if we run into a pawn
-	uint64 soft = (Current->patt[opp] | Piece(opp)) & ~mine;
+	uint64 keep = ~(mine | board.Pawn(opp));	// hard stop if we run into a pawn
+	uint64 soft = (Current->patt[opp] | board.Piece(opp)) & ~mine;
 	keep &= ~Shift<me>(soft);// if we run into a piece or pawn capture, count 1 then stop
 	for (; ;)
 	{
@@ -4390,17 +4266,17 @@ template<class POP, int me> int closure_x()
 	return 2 * np - run;
 }
 
-template<class POP> int closure()
+template<class POP> int closure(const Board_& board)
 {
 	// closure_x can return up to 16; we want to return about -128 to +128
-	return 4 * (closure_x<POP, 0>() + closure_x<POP, 1>());
+	return 4 * (closure_x<POP, 0>(board) + closure_x<POP, 1>(board));
 }
 
-template<bool me> void eval_castling(GEvalInfo& EI)
+template<bool me> void eval_castling(GEvalInfo& EI, const Board_& board)
 {
 	constexpr array<int, 2> now = { 30, 10 };
 	constexpr array<int, 2> later = { 15, 5 };
-	uint64 occ = PieceAll();
+	uint64 occ = board.PieceAll();
 	if (can_castle(occ, me, true))
 		IncV(EI.score, Pack(now[0], 0, 0, 0));
 	else if (Current->castle_flags & (me ? CanCastle_oo : CanCastle_OO))
@@ -4411,7 +4287,7 @@ template<bool me> void eval_castling(GEvalInfo& EI)
 		IncV(EI.score, Pack(later[1], 0, 0, 0));
 }
 
-template<bool me> void eval_xray(GEvalInfo& EI)
+template<bool me> void eval_xray(GEvalInfo& EI, const Board_& board)
 {
 	EI.king_att[me] = 0;
 	if (uint64 pa = Current->patt[me] & EI.area[opp])
@@ -4419,29 +4295,29 @@ template<bool me> void eval_xray(GEvalInfo& EI)
 		EI.king_att[me] = KingAttack + (Multiple(pa) ? KingPAttackInc : 0);
 	}
 	Current->xray[me] = 0;
-	eval_queens_xray<me>(EI);
-	eval_rooks_xray<me>(EI);
-	eval_bishops_xray<me>(EI);
-	eval_knights_xray<me>(EI);
+	eval_queens_xray<me>(EI, board);
+	eval_rooks_xray<me>(EI, board);
+	eval_bishops_xray<me>(EI, board);
+	eval_knights_xray<me>(EI, board);
 }
 
-template<bool me, class POP> void eval_sequential(GEvalInfo& EI)
+template<bool me, class POP> void eval_sequential(GEvalInfo& EI, const Board_& board)
 {
-	EI.free[me] = Queen(opp) | King(opp) | (~(Current->patt[opp] | Pawn(me) | King(me)));
-	DecV(EI.score, POP()(Shift<opp>(EI.occ) & Pawn(me)) * Values::PawnBlocked);
-	eval_queens<me, POP>(EI);
-	EI.free[me] |= Rook(opp);
-	eval_rooks<me, POP>(EI);
-	EI.free[me] |= Minor(opp);
-	eval_bishops<me, POP>(EI);
-	eval_knights<me, POP>(EI);
+	EI.free[me] = board.Queen(opp) | board.King(opp) | (~(Current->patt[opp] | board.Pawn(me) | board.King(me)));
+	DecV(EI.score, POP()(Shift<opp>(EI.occ) & board.Pawn(me)) * Values::PawnBlocked);
+	eval_queens<me, POP>(EI, board);
+	EI.free[me] |= board.Rook(opp);
+	eval_rooks<me, POP>(EI, board);
+	EI.free[me] |= board.Minor(opp);
+	eval_bishops<me, POP>(EI, board);
+	eval_knights<me, POP>(EI, board);
 }
 
 template<class POP> struct PhasedScore_
 {
 	const GMaterial& mat_;
 	int clx_;
-	PhasedScore_(const GMaterial& mat) : mat_(mat), clx_(closure<POP>()) {}
+	PhasedScore_(const Board_& board, const GMaterial& mat) : mat_(mat), clx_(closure<POP>(board)) {}
 	int operator()(packed_t score)
 	{
 		int phase = mat_.phase, op = Opening(score), eg = Endgame(score), md = Middle(score), cl = Closed(score);
@@ -4456,7 +4332,7 @@ template<class POP> struct PhasedScore_
 };
 
 
-template<class POP> void evaluation()
+template<class POP> void evaluation(const Board_& board)
 {
 	POP pop;
 	GEvalInfo EI;
@@ -4465,46 +4341,46 @@ template<class POP> void evaluation()
 		return;
 	Current->eval_key = Current->key;
 
-	EI.king[White] = lsb(King(White));
-	EI.king[Black] = lsb(King(Black));
-	EI.occ = PieceAll();
-	Current->att[White] = Current->patt[White] = ShiftW<White>(Pawn(White)) | ShiftE<White>(Pawn(White));
-	Current->att[Black] = Current->patt[Black] = ShiftW<Black>(Pawn(Black)) | ShiftE<Black>(Pawn(Black));
-	Current->dbl_att[White] = ShiftW<White>(Pawn(White)) & ShiftE<White>(Pawn(White));
-	Current->dbl_att[Black] = ShiftW<Black>(Pawn(Black)) & ShiftE<Black>(Pawn(Black));
-	EI.area[White] = (KAtt[EI.king[White]] | King(White)) & ((~Current->patt[White]) | Current->patt[Black]);
-	EI.area[Black] = (KAtt[EI.king[Black]] | King(Black)) & ((~Current->patt[Black]) | Current->patt[White]);
+	EI.king[White] = lsb(board.King(White));
+	EI.king[Black] = lsb(board.King(Black));
+	EI.occ = board.PieceAll();
+	Current->att[White] = Current->patt[White] = ShiftW<White>(board.Pawn(White)) | ShiftE<White>(board.Pawn(White));
+	Current->att[Black] = Current->patt[Black] = ShiftW<Black>(board.Pawn(Black)) | ShiftE<Black>(board.Pawn(Black));
+	Current->dbl_att[White] = ShiftW<White>(board.Pawn(White)) & ShiftE<White>(board.Pawn(White));
+	Current->dbl_att[Black] = ShiftW<Black>(board.Pawn(Black)) & ShiftE<Black>(board.Pawn(Black));
+	EI.area[White] = (KAtt[EI.king[White]] | board.King(White)) & ((~Current->patt[White]) | Current->patt[Black]);
+	EI.area[Black] = (KAtt[EI.king[Black]] | board.King(Black)) & ((~Current->patt[Black]) | Current->patt[White]);
 	Current->passer = 0;
-	Current->threat = (Current->patt[White] & NonPawn(Black)) | (Current->patt[Black] & NonPawn(White));
+	Current->threat = (Current->patt[White] & board.NonPawn(Black)) | (Current->patt[Black] & board.NonPawn(White));
 	EI.score = Current->pst;
 	if (F(Current->material & FlagUnusualMaterial))
 		EI.material = &RO->Material[Current->material];
 	else
 		EI.material = nullptr;
 
-	eval_xray<White>(EI);
-	eval_xray<Black>(EI);
-	eval_sequential<White, POP>(EI);
-	eval_sequential<Black, POP>(EI);
+	eval_xray<White>(EI, board);
+	eval_xray<Black>(EI, board);
+	eval_sequential<White, POP>(EI, board);
+	eval_sequential<Black, POP>(EI, board);
 
 	EI.PawnEntry = &PawnHash[Current->pawn_key & PAWN_HASH_MASK];
 	if (Current->pawn_key != EI.PawnEntry->key)
-		eval_pawn_structure<POP>(EI, EI.PawnEntry);
+		eval_pawn_structure<POP>(EI, EI.PawnEntry, board);
 	EI.score += EI.PawnEntry->score;
 
-	eval_king<White, POP>(EI);
-	eval_king<Black, POP>(EI);
+	eval_king<White, POP>(EI, board);
+	eval_king<Black, POP>(EI, board);
 	Current->att[White] |= KAtt[EI.king[White]];
 	Current->att[Black] |= KAtt[EI.king[Black]];
 
-	eval_passer<White, POP>(EI);
-	eval_pieces<White, POP>(EI);
-	eval_passer<Black, POP>(EI);
-	eval_pieces<Black, POP>(EI);
+	eval_passer<White, POP>(EI, board);
+	eval_pieces<White, POP>(EI, board);
+	eval_passer<Black, POP>(EI, board);
+	eval_pieces<Black, POP>(EI, board);
 
 	if (Current->material & FlagUnusualMaterial)
 	{
-		eval_unusual_material<POP>(EI);
+		eval_unusual_material<POP>(EI, board);
 		Current->score = (Current->score * CP_SEARCH) / CP_EVAL;
 	}
 	else
@@ -4512,7 +4388,7 @@ template<class POP> void evaluation()
 		if (!EI.material)
 			Say("No material");
 		const GMaterial& mat = *EI.material;
-		PhasedScore_<POP> value(mat);
+		PhasedScore_<POP> value(board, mat);
 		Current->score = mat.score + value(EI.score);
 		
 		// apply contempt before drawishness
@@ -4532,14 +4408,14 @@ template<class POP> void evaluation()
 		if (Current->score > 0)
 		{
 			EI.mul = mat.mul[White];
-			if (mat.eval[White] && !eval_stalemate<White>(EI))
-				mat.eval[White](EI, pop.Imp());
+			if (mat.eval[White] && !eval_stalemate<White>(EI, board))
+				mat.eval[White](EI, board, pop.Imp());
 			else if (EI.mul <= 32)
 			{
 				EI.mul = Min<uint16>(EI.mul, 37 - value.clx_ / 8);
-				if (T(Current->passer & Pawn(White)) && T(Current->passer & Pawn(Black)))
+				if (T(Current->passer & board.Pawn(White)) && T(Current->passer & board.Pawn(Black)))
 				{
-					int rb = OwnRank<Black>(lsb(Current->passer & Pawn(Black))), rw = OwnRank<White>(msb(Current->passer & Pawn(White)));
+					int rb = OwnRank<Black>(lsb(Current->passer & board.Pawn(Black))), rw = OwnRank<White>(msb(Current->passer & board.Pawn(White)));
 					if (rb > rw)
 						EI.mul = Min<uint16>(EI.mul, 43 - Square(rb) / 2);
 				}
@@ -4550,14 +4426,14 @@ template<class POP> void evaluation()
 		else if (Current->score < 0)
 		{
 			EI.mul = mat.mul[Black];
-			if (mat.eval[Black] && !eval_stalemate<Black>(EI))
-				mat.eval[Black](EI, pop.Imp());
+			if (mat.eval[Black] && !eval_stalemate<Black>(EI, board))
+				mat.eval[Black](EI, board, pop.Imp());
 			else if (EI.mul <= 32)
 			{
 				EI.mul = Min<uint16>(EI.mul, 37 - value.clx_ / 8);
-				if (T(Current->passer & Pawn(White)) && T(Current->passer & Pawn(Black)))
+				if (T(Current->passer & board.Pawn(White)) && T(Current->passer & board.Pawn(Black)))
 				{
-					int rb = OwnRank<Black>(lsb(Current->passer & Pawn(Black))), rw = OwnRank<White>(msb(Current->passer & Pawn(White)));
+					int rb = OwnRank<Black>(lsb(Current->passer & board.Pawn(Black))), rw = OwnRank<White>(msb(Current->passer & board.Pawn(White)));
 					if (rw > rb)
 						EI.mul = Min<uint16>(EI.mul, 43 - Square(rw) / 2);
 				}
@@ -4582,21 +4458,21 @@ template<class POP> void evaluation()
 }
 
 int HardwarePopCnt;
-INLINE void evaluate()
+INLINE void evaluate(const Board_& board)
 {
-	HardwarePopCnt ? evaluation<pop1_>() : evaluation<pop0_>();
+	HardwarePopCnt ? evaluation<pop1_>(board) : evaluation<pop0_>(board);
 	BYE
 }
 
-template<bool me> bool is_legal(int move)
+template<bool me> bool is_legal(const Board_& board, int move)
 {
 	int from, to, piece, capture;
 	uint64 u, occ;
 
 	from = From(move);
 	to = To(move);
-	piece = Board->square[from];
-	capture = Board->square[to];
+	piece = board.square[from];
+	capture = board.square[to];
 	if (piece == 0)
 		return 0;
 	if ((piece & 1) != Current->turn)
@@ -4608,7 +4484,7 @@ template<bool me> bool is_legal(int move)
 		if (capture >= WhiteKing)
 			return 0;
 	}
-	occ = PieceAll();
+	occ = board.PieceAll();
 	u = Bit(to);
 	if (piece >= WhiteLight && piece < WhiteKing)
 	{
@@ -4625,9 +4501,9 @@ template<bool me> bool is_legal(int move)
 			return 0;
 		return 1;
 	}
-	if (IsCastling(piece, move) && Board->square[from] < WhiteKing)
+	if (IsCastling(piece, move) && board.square[from] < WhiteKing)
 		return 0;
-	if (IsPromotion(move) && Board->square[from] >= WhiteKnight)
+	if (IsPromotion(move) && board.square[from] >= WhiteKnight)
 		return 0;
 	if (piece == IPawn[me])
 	{
@@ -4643,7 +4519,7 @@ template<bool me> bool is_legal(int move)
 		{
 			if (capture)
 				return 0;
-			if (PieceAt(to - Push[me]))
+			if (board.PieceAt(to - Push[me]))
 				return 0;
 			if (F(u & OwnLine<me>(3)))
 				return 0;
@@ -4743,28 +4619,28 @@ template<bool me> bool is_legal(int move)
 		return 0;
 	}
 }
-INLINE bool is_legal(bool me, int move)
+INLINE bool is_legal(bool me, const Board_& board, int move)
 {
-	return me ? is_legal<1>(move) : is_legal<0>(move);
+	return me ? is_legal<1>(board, move) : is_legal<0>(board, move);
 }
 
-template<bool me> bool is_check(int move)
+template<bool me> bool is_check(const Board_& board, int move)
 {  // doesn't detect castling and ep checks
 	uint64 king;
 	int from, to, piece, king_sq;
 
 	from = From(move);
 	to = To(move);
-	king = King(opp);
+	king = board.King(opp);
 	king_sq = lsb(king);
-	piece = PieceAt(from);
+	piece = board.PieceAt(from);
 	if (HasBit(Current->xray[me], from) && !HasBit(RO->FullLine[king_sq][from], to))
 		return true;
 	if (piece < WhiteKnight)
 	{
 		if (PAtt[me][to] & king)
 			return true;
-		if (HasBit(OwnLine<me>(7), to) && T(king & OwnLine<me>(7)) && F(RO->Between[to][king_sq] & PieceAll()))
+		if (HasBit(OwnLine<me>(7), to) && T(king & OwnLine<me>(7)) && F(RO->Between[to][king_sq] & board.PieceAll()))
 			return true;
 	}
 	else if (piece < WhiteLight)
@@ -4775,25 +4651,25 @@ template<bool me> bool is_check(int move)
 	else if (piece < WhiteRook)
 	{
 		if (BMask[to] & king)
-			if (F(RO->Between[king_sq][to] & PieceAll()))
+			if (F(RO->Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	else if (piece < WhiteQueen)
 	{
 		if (RMask[to] & king)
-			if (F(RO->Between[king_sq][to] & PieceAll()))
+			if (F(RO->Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	else if (piece < WhiteKing)
 	{
 		if (QMask[to] & king)
-			if (F(RO->Between[king_sq][to] & PieceAll()))
+			if (F(RO->Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	return false;
 }
 
-void pick_pv(int pvPtr, int pvLen)
+void pick_pv(Board_ board, int pvPtr, int pvLen)
 {
 	GEntry *Entry;
 	GPVEntry *PVEntry;
@@ -4815,14 +4691,14 @@ void pick_pv(int pvPtr, int pvLen)
 		depth = PVEntry->depth;
 		move = PVEntry->move;
 	}
-	evaluate();
-	if (Current->att[Current->turn] & King(Current->turn ^ 1))
+	evaluate(board);
+	if (Current->att[Current->turn] & board.King(Current->turn ^ 1))
 		INFO->PV[pvPtr] = 0;
-	else if (move && is_legal(T(Current->turn), move))
+	else if (move && is_legal(T(Current->turn), board, move))
 	{
 		INFO->PV[pvPtr] = move;
 		pvPtr++;
-		if (Current->turn) do_move<1>(move); else do_move<0>(move);
+		if (Current->turn) do_move<1>(&board, move); else do_move<0>(&board, move);
 		if (Current->ply >= 100) goto finish;
 		for (i = 4; i <= Current->ply; i += 2)
 		{
@@ -4832,15 +4708,15 @@ void pick_pv(int pvPtr, int pvLen)
 				goto finish;
 			}
 		}
-		pick_pv(pvPtr, pvLen);
+		pick_pv(board, pvPtr, pvLen);
 	finish:
-		if (Current->turn ^ 1) undo_move<1>(move); else undo_move<0>(move);
+		if (Current->turn ^ 1) undo_move<1>(&board, move); else undo_move<0>(&board, move);
 	}
 	else
 		INFO->PV[pvPtr] = 0;
 }
 
-template<bool me> bool draw_in_pv()
+template<bool me> bool draw_in_pv(Board_* board)
 {
 	if ((Current - Data) >= 126)
 		return true;
@@ -4855,9 +4731,9 @@ template<bool me> bool draw_in_pv()
 			return true;
 		if (int move = PVEntry->move)
 		{
-			do_move<me>(move);
-			bool value = draw_in_pv<opp>();
-			undo_move<me>(move);
+			do_move<me>(board, move);
+			bool value = draw_in_pv<opp>(board);
+			undo_move<me>(board, move);
 			return value;
 		}
 	}
@@ -5094,12 +4970,12 @@ INLINE bool is_killer(uint16 move)
 	return false;
 }
 
-void mark_evasions(int* list)
+void mark_evasions(int* list, const Board_& board)
 {
 	for (; T(*list); ++list)
 	{
 		int move = (*list) & 0xFFFF;
-		if (F(PieceAt(To(move))) && F(move & 0xE000))
+		if (F(board.PieceAt(To(move))) && F(move & 0xE000))
 		{
 			if (move == Current->ref[0])
 				*list |= RefOneScore;
@@ -5113,19 +4989,19 @@ void mark_evasions(int* list)
 					*list |= 1 << 24;
 			}
 			else
-				*list |= HistoryP(JoinFlag(move), PieceAt(From(move)), From(move), To(move));
+				*list |= HistoryP(JoinFlag(move), board.PieceAt(From(move)), From(move), To(move));
 		}
 	}
 }
 
-template<bool me> inline bool IsGoodCap(int move)
+template<bool me> inline bool IsGoodCap(const Board_& board, int move)
 {
-	return (HasBit(Current->xray[me], From(move)) && !HasBit(RO->FullLine[lsb(King(opp))][From(move)], To(move)))
-		 || see<me>(move, 0, SeeValue);
+	return (HasBit(Current->xray[me], From(move)) && !HasBit(RO->FullLine[lsb(board.King(opp))][From(move)], To(move)))
+		 || see<me>(board, move, 0, SeeValue);
 }
 
 
-template<bool me> void gen_next_moves(int depth)
+template<bool me> void gen_next_moves(const Board_& board, int depth)
 {
 	int* p, *q, *r;
 	Current->gen_flags &= ~FlagSort;
@@ -5139,12 +5015,12 @@ template<bool me> void gen_next_moves(int depth)
 		return;
 	case s_good_cap:
 	{
-		Current->mask = Piece(opp);
-		r = gen_captures<me>(Current->moves);
+		Current->mask = board.Piece(opp);
+		r = gen_captures<me>(Current->moves, board);
 		for (q = r - 1, p = Current->moves; q >= p;)
 		{
 			int move = (*q) & 0xFFFF;
-			if (!IsGoodCap<me>(move))
+			if (!IsGoodCap<me>(board, move))
 			{
 				int next = *p;
 				*p = *q;
@@ -5172,7 +5048,7 @@ template<bool me> void gen_next_moves(int depth)
 		*p = 0;
 		return;
 	case s_quiet:
-		p = gen_quiet_moves<me>(Current->start);
+		p = gen_quiet_moves<me>(Current->start, board);
 		Current->gen_flags |= FlagSort;
 		Current->current = Current->start;
 		for (q = Current->start; *q; ++q)
@@ -5185,26 +5061,26 @@ template<bool me> void gen_next_moves(int depth)
 			sort(Current->moves, Current->start);
 		return;
 	case r_cap:
-		r = gen_captures<me>(Current->moves);
+		r = gen_captures<me>(Current->moves, board);
 		Current->current = Current->moves;
 		sort(Current->moves, r);
 		return;
 	case r_checks:
-		r = gen_checks<me>(Current->moves);
+		r = gen_checks<me>(Current->moves, board);
 		Current->current = Current->moves;
 		sort(Current->moves, r);
 		return;
 	case e_ev:
 		Current->mask = Filled;
-		r = gen_evasions<me>(Current->moves);
-		mark_evasions(Current->moves);
+		r = gen_evasions<me>(Current->moves, board);
+		mark_evasions(Current->moves, board);
 		sort(Current->moves, r);
 		Current->current = Current->moves;
 		return;
 	}
 }
 
-template<bool me, bool root> int get_move(int depth)
+template<bool me, bool root> int get_move(const Board_& board, int depth)
 {
 	int move;
 
@@ -5221,7 +5097,7 @@ template<bool me, bool root> int get_move(int depth)
 			Current->stage++;
 			if ((1 << Current->stage) & StageNone)
 				return 0;
-			gen_next_moves<me>(depth);
+			gen_next_moves<me>(board, depth);
 			continue;
 		}
 		if (Current->gen_flags & FlagSort)
@@ -5239,7 +5115,7 @@ template<bool me, bool root> int get_move(int depth)
 		}
 		else if (Current->stage == s_special)
 		{
-			if (!PieceAt(To(move)) && is_legal<me>(move))
+			if (!board.PieceAt(To(move)) && is_legal<me>(board, move))
 				return move;
 		}
 		else
@@ -5247,14 +5123,14 @@ template<bool me, bool root> int get_move(int depth)
 	}
 }
 
-template<bool me> bool see(int move, int margin, const uint16* mat_value)
+template<bool me> bool see(const Board_& board, int move, int margin, const uint16* mat_value)
 {
 	int from, to, piece, capture, delta, sq, pos;
 	uint64 clear, def, att, occ, b_area, r_slider_att, b_slider_att, r_slider_def, b_slider_def, r_area, u, new_att, my_bishop, opp_bishop;
 	from = From(move);
 	to = To(move);
-	piece = mat_value[PieceAt(from)];
-	capture = mat_value[PieceAt(to)];
+	piece = mat_value[board.PieceAt(from)];
+	capture = mat_value[board.PieceAt(to)];
 	delta = piece - capture;
 	if (delta <= -margin)
 		return 1;
@@ -5268,38 +5144,38 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 		return 1;
 	if (!HasBit(Current->att[opp], to))
 		return 1;
-	att = PAtt[me][to] & Pawn(opp);
+	att = PAtt[me][to] & board.Pawn(opp);
 	if (T(att) && delta + margin > mat_value[WhitePawn])
 		return 0;
 	clear = ~Bit(from);
-	def = PAtt[opp][to] & Pawn(me) & clear;
+	def = PAtt[opp][to] & board.Pawn(me) & clear;
 	if (T(def) && delta + mat_value[WhitePawn] + margin <= 0)
 		return 1;
-	att |= NAtt[to] & Knight(opp);
+	att |= NAtt[to] & board.Knight(opp);
 	if (T(att) && delta > mat_value[WhiteDark] - margin)
 		return 0;
-	occ = PieceAll() & clear;
+	occ = board.PieceAll() & clear;
 	b_area = BishopAttacks(to, occ);
-	opp_bishop = Bishop(opp);
+	opp_bishop = board.Bishop(opp);
 	if (delta > mat_value[IDark[me]] - margin)
 		if (b_area & opp_bishop)
 			return 0;
-	my_bishop = Bishop(me);
-	b_slider_att = BMask[to] & (opp_bishop | Queen(opp));
-	r_slider_att = RMask[to] & Major(opp);
-	b_slider_def = BMask[to] & (my_bishop | Queen(me)) & clear;
-	r_slider_def = RMask[to] & Major(me) & clear;
+	my_bishop = board.Bishop(me);
+	b_slider_att = BMask[to] & (opp_bishop | board.Queen(opp));
+	r_slider_att = RMask[to] & board.Major(opp);
+	b_slider_def = BMask[to] & (my_bishop | board.Queen(me)) & clear;
+	r_slider_def = RMask[to] & board.Major(me) & clear;
 	att |= (b_slider_att & b_area);
-	def |= NAtt[to] & Knight(me) & clear;
+	def |= NAtt[to] & board.Knight(me) & clear;
 	r_area = RookAttacks(to, occ);
 	att |= (r_slider_att & r_area);
 	def |= (b_slider_def & b_area);
 	def |= (r_slider_def & r_area);
-	att |= KAtt[to] & King(opp);
-	def |= KAtt[to] & King(me) & clear;
+	att |= KAtt[to] & board.King(opp);
+	def |= KAtt[to] & board.King(me) & clear;
 	while (true)
 	{
-		if (u = (att & Pawn(opp)))
+		if (u = (att & board.Pawn(opp)))
 		{
 			capture -= piece;
 			piece = mat_value[WhitePawn];
@@ -5316,7 +5192,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (att & Knight(opp)))
+		else if (u = (att & board.Knight(opp)))
 		{
 			capture -= piece;
 			piece = mat_value[WhiteKnight];
@@ -5339,7 +5215,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (att & Rook(opp)))
+		else if (u = (att & board.Rook(opp)))
 		{
 			capture -= piece;
 			piece = mat_value[WhiteRook];
@@ -5356,7 +5232,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (att & Queen(opp)))
+		else if (u = (att & board.Queen(opp)))
 		{
 			capture -= piece;
 			piece = mat_value[WhiteQueen];
@@ -5373,7 +5249,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (att & King(opp)))
+		else if (u = (att & board.King(opp)))
 		{
 			capture -= piece;
 			piece = mat_value[WhiteKing];
@@ -5384,7 +5260,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 			return 0;
 		if (piece + capture < margin)
 			return 0;
-		if (u = (def & Pawn(me)))
+		if (u = (def & board.Pawn(me)))
 		{
 			capture += piece;
 			piece = mat_value[WhitePawn];
@@ -5401,7 +5277,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (def & Knight(me)))
+		else if (u = (def & board.Knight(me)))
 		{
 			capture += piece;
 			piece = mat_value[WhiteKnight];
@@ -5424,7 +5300,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (def & Rook(me)))
+		else if (u = (def & board.Rook(me)))
 		{
 			capture += piece;
 			piece = mat_value[WhiteRook];
@@ -5441,7 +5317,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (def & Queen(me)))
+		else if (u = (def & board.Queen(me)))
 		{
 			capture += piece;
 			piece = mat_value[WhiteQueen];
@@ -5458,7 +5334,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 				}
 			}
 		}
-		else if (u = (def & King(me)))
+		else if (u = (def & board.King(me)))
 		{
 			capture += piece;
 			piece = mat_value[WhiteKing];
@@ -5472,7 +5348,7 @@ template<bool me> bool see(int move, int margin, const uint16* mat_value)
 	}
 }
 
-template<bool me> void gen_root_moves()
+template<bool me> void gen_root_moves(const Board_& board)
 {
 	int *p, depth = -256;
 
@@ -5495,21 +5371,21 @@ template<bool me> void gen_root_moves()
 	}
 
 	Current->killer[0] = killer;
-	if (IsCheck(me))
+	if (IsCheck(board, me))
 		Current->stage = stage_evasion;
 	else
 	{
 		Current->stage = stage_search;
-		Current->ref[0] = RefM(Current->move).ref[0];
-		Current->ref[1] = RefM(Current->move).ref[1];
+		Current->ref[0] = RefM(board, Current->move).ref[0];
+		Current->ref[1] = RefM(board, Current->move).ref[1];
 	}
 	Current->gen_flags = 0;
 	p = &RootList[0];
 	Current->current = Current->moves;
 	Current->moves[0] = 0;
-	while (int move = get_move<me, 0>(0))
+	while (int move = get_move<me, 0>(board, 0))
 	{
-		if (IsIllegal(me, move))
+		if (IsIllegal(board, me, move))
 			continue;
 		if (p > &RootList[0] && move == killer)
 			continue;
@@ -5525,13 +5401,13 @@ template<bool me> void gen_root_moves()
 	*p = 0;
 }
 
-template<bool me> INLINE bool forkable(int dst)
+template<bool me> INLINE bool forkable(const Board_& board, int dst)
 {
-	if (NAttAtt[dst] & King(me))
+	if (NAttAtt[dst] & board.King(me))
 	{
-		for (uint64 nn = Knight(opp) & NAttAtt[dst]; nn; Cut(nn))
+		for (uint64 nn = board.Knight(opp) & NAttAtt[dst]; nn; Cut(nn))
 		{
-			if (T(NAtt[dst] & NAtt[lsb(nn)] & NAtt[lsb(King(me))]))
+			if (T(NAtt[dst] & NAtt[lsb(nn)] & NAtt[lsb(board.King(me))]))
 				return true;
 		}
 	}
@@ -5544,14 +5420,14 @@ template<class T_> T_* NullTerminate(T_* list)
 	return list;
 }
 
-template <bool me> int* gen_captures(int* list)
+template <bool me> int* gen_captures(int* list, const Board_& board)
 {
 	static const int MvvLvaPromotion = RO->MvvLva[WhiteQueen][BlackQueen];
 	static const int MvvLvaPromotionKnight = RO->MvvLva[WhiteKnight][BlackKnight];
 	static const int MvvLvaPromotionBad = RO->MvvLva[WhiteKnight][BlackPawn];
 
 	uint64 u, v;
-	int kMe = lsb(King(me)), kOpp = lsb(King(opp));
+	int kMe = lsb(board.King(me)), kOpp = lsb(board.King(opp));
 	auto bonus = [&](int to)
 	{
 		if (!HasBit(Current->att[opp], to))
@@ -5559,109 +5435,109 @@ template <bool me> int* gen_captures(int* list)
 		return T(HasBit(Current->dbl_att[me] & ~Current->dbl_att[opp], to)) << 26;
 	};
 	if (Current->ep_square)
-		for (v = PAtt[opp][Current->ep_square] & Pawn(me); T(v); Cut(v))
+		for (v = PAtt[opp][Current->ep_square] & board.Pawn(me); T(v); Cut(v))
 			list = AddMove(list, lsb(v), Current->ep_square, FlagEP, RO->MvvLva[IPawn[me]][IPawn[opp]] + bonus(lsb(v)));
-	for (u = Pawn(me) & OwnLine<me>(6); T(u); Cut(u))
-		if (F(PieceAt(lsb(u) + Push[me])))
+	for (u = board.Pawn(me) & OwnLine<me>(6); T(u); Cut(u))
+		if (F(board.PieceAt(lsb(u) + Push[me])))
 		{
 			int from = lsb(u), to = from + Push[me];
 			list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotion);
-			if (T(NAtt[to] & King(opp)) || forkable<me>(to))	// Roc v Hannibal, 64th amateur series A round 2, proved the need for this second test
+			if (T(NAtt[to] & board.King(opp)) || forkable<me>(board, to))	// Roc v Hannibal, 64th amateur series A round 2, proved the need for this second test
 				list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnight);
 		}
-	for (v = ShiftW<opp>(Current->mask) & Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
+	for (v = ShiftW<opp>(Current->mask) & board.Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
 	{
 		int from = lsb(v), to = from + PushE[me];
-		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(PieceAt(to)) + bonus(to));
+		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(to)) + bonus(to));
 		if (HasBit(NAtt[kOpp], to))
-			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(PieceAt(to)) + bonus(to));
+			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(board.PieceAt(to)) + bonus(to));
 	}
-	for (v = ShiftE<opp>(Current->mask) & Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
+	for (v = ShiftE<opp>(Current->mask) & board.Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
 	{
 		int from = lsb(v), to = from + PushW[me];
-		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(PieceAt(to)) + bonus(to));
+		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(to)) + bonus(to));
 		if (HasBit(NAtt[kOpp], to))
-			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(PieceAt(to)) + bonus(to));
+			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(board.PieceAt(to)) + bonus(to));
 	}
 	if (T(Current->att[me] & Current->mask))
 	{
-		for (v = ShiftW<opp>(Current->mask) & Pawn(me) & (~OwnLine<me>(6)); T(v); Cut(v))
-			list = AddCaptureP(list, IPawn[me], lsb(v), lsb(v) + PushE[me], 0);
-		for (v = ShiftE<opp>(Current->mask) & Pawn(me) & (~OwnLine<me>(6)); T(v); Cut(v))
-			list = AddCaptureP(list, IPawn[me], lsb(v), lsb(v) + PushW[me], 0);
-		for (v = KAtt[lsb(King(me))] & Current->mask & (~Current->att[opp]); T(v); Cut(v))
-			list = AddCaptureP(list, IKing[me], lsb(King(me)), lsb(v), 0);
-		for (u = Knight(me); T(u); Cut(u))
+		for (v = ShiftW<opp>(Current->mask) & board.Pawn(me) & (~OwnLine<me>(6)); T(v); Cut(v))
+			list = AddCaptureP(list, board, IPawn[me], lsb(v), lsb(v) + PushE[me], 0);
+		for (v = ShiftE<opp>(Current->mask) & board.Pawn(me) & (~OwnLine<me>(6)); T(v); Cut(v))
+			list = AddCaptureP(list, board, IPawn[me], lsb(v), lsb(v) + PushW[me], 0);
+		for (v = KAtt[lsb(board.King(me))] & Current->mask & (~Current->att[opp]); T(v); Cut(v))
+			list = AddCaptureP(list, board, IKing[me], lsb(board.King(me)), lsb(v), 0);
+		for (u = board.Knight(me); T(u); Cut(u))
 			for (v = NAtt[lsb(u)] & Current->mask; T(v); Cut(v))
-				list = AddCaptureP(list, IKnight[me], lsb(u), lsb(v));
-		for (u = Bishop(me); T(u); Cut(u))
-			for (v = BishopAttacks(lsb(u), PieceAll()) & Current->mask; T(v); Cut(v))
-				list = AddCapture(list, lsb(u), lsb(v));
-		for (u = Rook(me); T(u); Cut(u))
-			for (v = RookAttacks(lsb(u), PieceAll()) & Current->mask; T(v); Cut(v))
-				list = AddCaptureP(list, IRook[me], lsb(u), lsb(v));
-		for (u = Queen(me); T(u); Cut(u))
-			for (v = QueenAttacks(lsb(u), PieceAll()) & Current->mask; T(v); Cut(v))
-				list = AddCaptureP(list, IQueen[me], lsb(u), lsb(v));
+				list = AddCaptureP(list, board, IKnight[me], lsb(u), lsb(v));
+		for (u = board.Bishop(me); T(u); Cut(u))
+			for (v = BishopAttacks(lsb(u), board.PieceAll()) & Current->mask; T(v); Cut(v))
+				list = AddCapture(list, board, lsb(u), lsb(v));
+		for (u = board.Rook(me); T(u); Cut(u))
+			for (v = RookAttacks(lsb(u), board.PieceAll()) & Current->mask; T(v); Cut(v))
+				list = AddCaptureP(list, board, IRook[me], lsb(u), lsb(v));
+		for (u = board.Queen(me); T(u); Cut(u))
+			for (v = QueenAttacks(lsb(u), board.PieceAll()) & Current->mask; T(v); Cut(v))
+				list = AddCaptureP(list, board, IQueen[me], lsb(u), lsb(v));
 	}
 	return NullTerminate(list);
 }
 
-template<bool me> int* gen_evasions(int* list)
+template<bool me> int* gen_evasions(int* list, const Board_& board)
 {
 	static const int MvvLvaPromotion = RO->MvvLva[WhiteQueen][BlackQueen];
 
 	uint64 b, u;
 	//	pair<uint64, uint64> pJoins = pawn_joins(me, Pawn(me));
 
-	int king = lsb(King(me));
-	uint64 att = (NAtt[king] & Knight(opp)) | (PAtt[me][king] & Pawn(opp));
-	for (u = (BMask[king] & (Bishop(opp) | Queen(opp))) | (RMask[king] & (Rook(opp) | Queen(opp))); T(u); u ^= b)
+	int king = lsb(board.King(me));
+	uint64 att = (NAtt[king] & board.Knight(opp)) | (PAtt[me][king] & board.Pawn(opp));
+	for (u = (BMask[king] & (board.Bishop(opp) | board.Queen(opp))) | (RMask[king] & (board.Rook(opp) | board.Queen(opp))); T(u); u ^= b)
 	{
 		b = Bit(lsb(u));
-		if (F(RO->Between[king][lsb(u)] & PieceAll()))
+		if (F(RO->Between[king][lsb(u)] & board.PieceAll()))
 			att |= b;
 	}
 	int att_sq = lsb(att);  // generally the only attacker
-	uint64 esc = KAtt[king] & (~(Piece(me) | Current->att[opp])) & Current->mask;
-	if (PieceAt(att_sq) >= WhiteLight)
+	uint64 esc = KAtt[king] & (~(board.Piece(me) | Current->att[opp])) & Current->mask;
+	if (board.PieceAt(att_sq) >= WhiteLight)
 		esc &= ~RO->FullLine[king][att_sq];
-	else if (PieceAt(att_sq) >= WhiteKnight)
+	else if (board.PieceAt(att_sq) >= WhiteKnight)
 		esc &= ~NAtt[att_sq];
 
 	Cut(att);
 	if (att)
 	{  // second attacker (double check)
 		att_sq = lsb(att);
-		if (PieceAt(att_sq) >= WhiteLight)
+		if (board.PieceAt(att_sq) >= WhiteLight)
 			esc &= ~RO->FullLine[king][att_sq];
-		else if (PieceAt(att_sq) >= WhiteKnight)
+		else if (board.PieceAt(att_sq) >= WhiteKnight)
 			esc &= ~NAtt[att_sq];
 
 		for (; T(esc); Cut(esc))
-			list = AddCaptureP(list, IKing[me], king, lsb(esc), 0);
+			list = AddCaptureP(list, board, IKing[me], king, lsb(esc), 0);
 		return NullTerminate(list);
 	}
 
 	// not double check
 	if (T(Current->ep_square) && Current->ep_square == att_sq + Push[me] && HasBit(Current->mask, att_sq))
 	{
-		for (u = PAtt[opp][Current->ep_square] & Pawn(me); T(u); Cut(u))
+		for (u = PAtt[opp][Current->ep_square] & board.Pawn(me); T(u); Cut(u))
 			list = AddMove(list, lsb(u), att_sq + Push[me], FlagEP, RO->MvvLva[IPawn[me]][IPawn[opp]]);
 	}
-	for (u = PAtt[opp][att_sq] & Pawn(me); T(u); Cut(u))
+	for (u = PAtt[opp][att_sq] & board.Pawn(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		if (HasBit(OwnLine<me>(7), att_sq))
-			list = AddMove(list, from, att_sq, FlagPQueen, MvvLvaPromotionCap(PieceAt(att_sq)));
+			list = AddMove(list, from, att_sq, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(att_sq)));
 		else if (HasBit(Current->mask, att_sq))
-			list = AddCaptureP(list, IPawn[me], from, att_sq, 0);
+			list = AddCaptureP(list, board, IPawn[me], from, att_sq, 0);
 	}
 	for (; T(esc); Cut(esc))
-		list = AddCaptureP(list, IKing[me], king, lsb(esc), 0);
+		list = AddCaptureP(list, board, IKing[me], king, lsb(esc), 0);
 	// now check interpositions
 	uint64 inter = RO->Between[king][att_sq];
-	for (u = Shift<opp>(inter) & Pawn(me); T(u); Cut(u))
+	for (u = Shift<opp>(inter) & board.Pawn(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		if (HasBit(OwnLine<me>(6), from))
@@ -5675,10 +5551,10 @@ template<bool me> int* gen_evasions(int* list)
 
 	if (F(~Current->mask))
 	{
-		for (u = Shift<opp>(Shift<opp>(inter)) & OwnLine<me>(1) & Pawn(me); T(u); Cut(u))
+		for (u = Shift<opp>(Shift<opp>(inter)) & OwnLine<me>(1) & board.Pawn(me); T(u); Cut(u))
 		{
 			int from = lsb(u);
-			if (F(PieceAt(from + Push[me])))
+			if (F(board.PieceAt(from + Push[me])))
 			{
 				int to = from + 2 * Push[me];
 				list = AddMove(list, from, to, 0, 0);
@@ -5686,18 +5562,18 @@ template<bool me> int* gen_evasions(int* list)
 		}
 	}
 	inter = (inter | Bit(att_sq)) & Current->mask;
-	for (u = Knight(me); T(u); Cut(u))
+	for (u = board.Knight(me); T(u); Cut(u))
 		for (esc = NAtt[lsb(u)] & inter; T(esc); Cut(esc))
-			list = AddCaptureP(list, IKnight[me], lsb(u), lsb(esc), 0);
-	for (u = Bishop(me); T(u); Cut(u))
-		for (esc = BishopAttacks(lsb(u), PieceAll()) & inter; T(esc); Cut(esc))
-			list = AddCapture(list, lsb(u), lsb(esc));
-	for (u = Rook(me); T(u); Cut(u))
-		for (esc = RookAttacks(lsb(u), PieceAll()) & inter; T(esc); Cut(esc))
-			list = AddCaptureP(list, IRook[me], lsb(u), lsb(esc), 0);
-	for (u = Queen(me); T(u); Cut(u))
-		for (esc = QueenAttacks(lsb(u), PieceAll()) & inter; T(esc); Cut(esc))
-			list = AddCaptureP(list, IQueen[me], lsb(u), lsb(esc), 0);
+			list = AddCaptureP(list, board, IKnight[me], lsb(u), lsb(esc), 0);
+	for (u = board.Bishop(me); T(u); Cut(u))
+		for (esc = BishopAttacks(lsb(u), board.PieceAll()) & inter; T(esc); Cut(esc))
+			list = AddCapture(list, board, lsb(u), lsb(esc));
+	for (u = board.Rook(me); T(u); Cut(u))
+		for (esc = RookAttacks(lsb(u), board.PieceAll()) & inter; T(esc); Cut(esc))
+			list = AddCaptureP(list, board, IRook[me], lsb(u), lsb(esc), 0);
+	for (u = board.Queen(me); T(u); Cut(u))
+		for (esc = QueenAttacks(lsb(u), board.PieceAll()) & inter; T(esc); Cut(esc))
+			list = AddCaptureP(list, board, IQueen[me], lsb(u), lsb(esc), 0);
 	return NullTerminate(list);
 }
 
@@ -5723,13 +5599,13 @@ INLINE bool can_castle(const uint64& occ, bool me, bool kingside)
 	}
 }
 
-template<bool me> int* gen_quiet_moves(int* list)
+template<bool me> int* gen_quiet_moves(int* list, const Board_& board)
 {
 	uint64 u, v;
 	auto drop = [&](int loc) { return HasBit(Current->att[opp] & ~Current->dbl_att[me], loc) ? FlagCastling : 0; };
 	auto dropPawn = [&](int loc) { return HasBit(Current->att[opp] & ~Current->att[me], loc) ? FlagCastling : 0; };
 
-	uint64 occ = PieceAll();
+	uint64 occ = board.PieceAll();
 	if (me == White)
 	{
 		if (can_castle(occ, me, true))
@@ -5746,16 +5622,16 @@ template<bool me> int* gen_quiet_moves(int* list)
 	}
 
 	uint64 free = ~occ;
-	for (v = Shift<me>(Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
+	for (v = Shift<me>(board.Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
 	{
 		int to = lsb(v);
 		int passer = T(HasBit(Current->passer, to - Push[me]));
-		if (HasBit(OwnLine<me>(2), to) && F(PieceAt(to + Push[me])))
+		if (HasBit(OwnLine<me>(2), to) && F(board.PieceAt(to + Push[me])))
 			list = AddHistoryP(list, IPawn[me], to - Push[me], to + Push[me], dropPawn(to + Push[me]));
 		list = AddHistoryP(list, IPawn[me], to - Push[me], to, dropPawn(to), Square(OwnRank<me>(to) + 4 * passer - 2));
 	}
 
-	for (u = Knight(me); T(u); Cut(u))
+	for (u = board.Knight(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (v = free & NAtt[from]; T(v); Cut(v))
@@ -5766,7 +5642,7 @@ template<bool me> int* gen_quiet_moves(int* list)
 		}
 	}
 
-	for (u = Bishop(me); T(u); Cut(u))
+	for (u = board.Bishop(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		int which = HasBit(LightArea, from) ? ILight[me] : IDark[me];
@@ -5777,7 +5653,7 @@ template<bool me> int* gen_quiet_moves(int* list)
 		}
 	}
 
-	for (u = Rook(me); T(u); Cut(u))
+	for (u = board.Rook(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (v = free & RookAttacks(from, occ); T(v); Cut(v))
@@ -5786,7 +5662,7 @@ template<bool me> int* gen_quiet_moves(int* list)
 			list = AddHistoryP(list, IRook[me], from, to, drop(to));
 		}
 	}
-	for (u = Queen(me); T(u); Cut(u))
+	for (u = board.Queen(me); T(u); Cut(u))
 	{
 		//uint64 qTarget = NAtt[lsb(King(opp))];	// try to get next to this
 		int from = lsb(u);
@@ -5796,7 +5672,7 @@ template<bool me> int* gen_quiet_moves(int* list)
 			list = AddHistoryP(list, IQueen[me], from, to, drop(to));	// KAtt[to] & qTarget ? FlagCastling : 0);
 		}
 	}
-	int kLoc = lsb(King(me));
+	int kLoc = lsb(board.King(me));
 	auto xray = [&](int loc) { return T(Current->xray[opp]) && F(Current->xray[opp] & RO->FullLine[kLoc][loc]) ? FlagCastling : 0; };
 	for (v = KAtt[kLoc] & free & (~Current->att[opp]); T(v); Cut(v))
 	{
@@ -5807,119 +5683,118 @@ template<bool me> int* gen_quiet_moves(int* list)
 	return NullTerminate(list);
 }
 
-template<bool me> int* gen_checks(int* list)
+template<bool me> int* gen_checks(int* list, const Board_& board)
 {
 	static const int MvvLvaXray = RO->MvvLva[WhiteQueen][WhitePawn];
 
 	uint64 u, v, target;
 
-	uint64 clear = ~(Piece(me) | Current->mask);
-	int king = lsb(King(opp));
+	uint64 clear = ~(board.Piece(me) | Current->mask), occ = board.PieceAll();
+	int king = lsb(board.King(opp));
 	// discovered checks
-	for (u = Current->xray[me] & Piece(me); T(u); Cut(u))
+	for (u = Current->xray[me] & board.Piece(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		target = clear & (~RO->FullLine[king][from]);
-		if (PieceAt(from) == IPawn[me])
+		if (auto piece = board.PieceAt(from); piece == IPawn[me])
 		{
 			if (OwnRank<me>(from) < 6)
 			{
-				if (HasBit(target, from + Push[me]) && F(PieceAt(from + Push[me])))
+				if (HasBit(target, from + Push[me]) && F(board.PieceAt(from + Push[me])))
 				{
 					// double push
 					const int to2 = from + 2 * Push[me];
-					if (OwnRank<me>(from) == 1 && HasBit(target, to2) && F(PieceAt(to2)))
+					if (OwnRank<me>(from) == 1 && HasBit(target, to2) && F(board.PieceAt(to2)))
 						list = AddMove(list, from, to2, 0, MvvLvaXray);
 					// single push
 					list = AddMove(list, from, from + Push[me], 0, MvvLvaXray);
 				}
 
-				for (v = PAtt[me][from] & target & Piece(opp); T(v); Cut(v))
-					list = AddMove(list, from, lsb(v), 0, MvvLvaXrayCap(PieceAt(lsb(v))));
+				for (v = PAtt[me][from] & target & board.Piece(opp); T(v); Cut(v))
+					list = AddMove(list, from, lsb(v), 0, MvvLvaXrayCap(board.PieceAt(lsb(v))));
 			}
 		}
 		else
 		{
-			if (PieceAt(from) < WhiteLight)
+			if (piece < WhiteLight)
 				v = NAtt[from] & target;
-			else if (PieceAt(from) < WhiteRook)
-				v = BishopAttacks(from, PieceAll()) & target;
-			else if (PieceAt(from) < WhiteQueen)
-				v = RookAttacks(from, PieceAll()) & target;
-			else if (PieceAt(from) < WhiteKing)
-				v = QueenAttacks(from, PieceAll()) & target;
+			else if (piece < WhiteRook)
+				v = BishopAttacks(from, occ) & target;
+			else if (piece < WhiteQueen)
+				v = RookAttacks(from, occ) & target;
+			else if (piece < WhiteKing)
+				v = QueenAttacks(from, occ) & target;
 			else
 				v = KAtt[from] & target & (~Current->att[opp]);
 			for (; T(v); Cut(v))
-				list = AddMove(list, from, lsb(v), 0, MvvLvaXrayCap(PieceAt(lsb(v))));
+				list = AddMove(list, from, lsb(v), 0, MvvLvaXrayCap(board.PieceAt(lsb(v))));
 		}
 	}
 
-	const uint64 nonDiscover = ~(Current->xray[me] & Piece(me));  // exclude pieces already checked
-	for (u = Knight(me) & NAttAtt[king] & nonDiscover; T(u); Cut(u))
+	const uint64 nonDiscover = ~(Current->xray[me] & board.Piece(me));  // exclude pieces already checked
+	for (u = board.Knight(me) & NAttAtt[king] & nonDiscover; T(u); Cut(u))
 		for (v = NAtt[king] & NAtt[lsb(u)] & clear; T(v); Cut(v))
-			list = AddCaptureP(list, IKnight[me], lsb(u), lsb(v), 0);
+			list = AddCaptureP(list, board, IKnight[me], lsb(u), lsb(v), 0);
 
 	if (int kr = OwnRank<me>(king); kr > 2)
 	{
-		for (u = KAttAtt[king] & Pawn(me) & OwnLine<me>(kr - 2) & nonDiscover; T(u); Cut(u))
+		for (u = KAttAtt[king] & board.Pawn(me) & OwnLine<me>(kr - 2) & nonDiscover; T(u); Cut(u))
 		{
 			int from = lsb(u);
-			for (v = PAtt[me][from] & PAtt[opp][king] & clear & Piece(opp); T(v); Cut(v))
-				list = AddCaptureP(list, IPawn[me], from, lsb(v), 0);
-			if (F(PieceAt(from + Push[me])) && HasBit(PAtt[opp][king] & clear, from + Push[me]))
+			for (v = PAtt[me][from] & PAtt[opp][king] & clear & board.Piece(opp); T(v); Cut(v))
+				list = AddCaptureP(list, board, IPawn[me], from, lsb(v), 0);
+			if (F(board.PieceAt(from + Push[me])) && HasBit(PAtt[opp][king] & clear, from + Push[me]))
 				list = AddMove(list, from, from + Push[me], 0, 0);
 		}
 		if (kr == 4)
 		{
-			for (u = Shift<opp>(Shift<opp>(PAtt[opp][king] & clear)) & Pawn(me); T(u); Cut(u))
+			for (u = Shift<opp>(Shift<opp>(PAtt[opp][king] & clear)) & board.Pawn(me); T(u); Cut(u))
 			{
 				int from = lsb(u);
-				if (int to = from + 2 * Push[me]; F(PieceAt(to)) && F(PieceAt(from + Push[me])))
+				if (int to = from + 2 * Push[me]; F(board.PieceAt(to)) && F(board.PieceAt(from + Push[me])))
 					list = AddMove(list, from, to, 0, 0);
 			}
 		}
 	}
 
-	uint64 b_target = BishopAttacks(king, PieceAll()) & clear;
-	uint64 r_target = RookAttacks(king, PieceAll()) & clear;
-	for (u = Board->bb[(T(King(opp) & LightArea) ? WhiteLight : WhiteDark) | me] & nonDiscover; T(u); Cut(u))
-		for (v = BishopAttacks(lsb(u), PieceAll()) & b_target; T(v); Cut(v))
-			list = AddCapture(list, lsb(u), lsb(v));
-	for (u = Rook(me) & nonDiscover; T(u); Cut(u))
-		for (v = RookAttacks(lsb(u), PieceAll()) & r_target; T(v); Cut(v))
-			list = AddCaptureP(list, IRook[me], lsb(u), lsb(v), 0);
-	for (u = Queen(me) & nonDiscover; T(u); Cut(u))
+	uint64 b_target = BishopAttacks(king, occ) & clear;
+	uint64 r_target = RookAttacks(king, occ) & clear;
+	for (u = board.Piece((T(board.King(opp) & LightArea) ? WhiteLight : WhiteDark) | me) & nonDiscover; T(u); Cut(u))
+		for (v = BishopAttacks(lsb(u), occ) & b_target; T(v); Cut(v))
+			list = AddCapture(list, board, lsb(u), lsb(v));
+	for (u = board.Rook(me) & nonDiscover; T(u); Cut(u))
+		for (v = RookAttacks(lsb(u), occ) & r_target; T(v); Cut(v))
+			list = AddCaptureP(list, board, IRook[me], lsb(u), lsb(v), 0);
+	for (u = board.Queen(me) & nonDiscover; T(u); Cut(u))
 	{
 		uint64 contact = KAtt[king];
 		int from = lsb(u);
-		for (v = QueenAttacks(from, PieceAll()) & (b_target | r_target); T(v); Cut(v))
+		for (v = QueenAttacks(from, occ) & (b_target | r_target); T(v); Cut(v))
 		{
 			int to = lsb(v);
 			if (HasBit(contact, to))
-				list = AddCaptureP(list, IQueen[me], from, to, T(Boundary & King(opp)) || OwnRank<me>(to) == 7 ? IPawn[opp] : IRook[opp]);
+				list = AddCaptureP(list, board, IQueen[me], from, to, T(Boundary & board.King(opp)) || OwnRank<me>(to) == 7 ? IPawn[opp] : IRook[opp]);
 			else
-				list = AddCaptureP(list, IQueen[me], from, to);
+				list = AddCaptureP(list, board, IQueen[me], from, to);
 		}
 	}
 
 	if (OwnRank<me>(king) == 4)
 	{	  // check for double-push checks	
-		for (u = Pawn(me) & OwnLine<me>(1) & nonDiscover & PAtt[opp][king - 2 * Push[me]]; T(u); Cut(u))
+		for (u = board.Pawn(me) & OwnLine<me>(1) & nonDiscover & PAtt[opp][king - 2 * Push[me]]; T(u); Cut(u))
 		{
 			int from = lsb(u);
 			int to = from + 2 * Push[me];
-			if (F(PieceAt(from + Push[me])) && F(PieceAt(to)))
+			if (F(board.PieceAt(from + Push[me])) && F(board.PieceAt(to)))
 				list = AddMove(list, from, to, 0, 0);
 		}
 	}
 	return NullTerminate(list);
 }
 
-template<bool me> int* gen_delta_moves(int margin, int* list)
+template<bool me> int* gen_delta_moves(int* list, const Board_& board, int margin)
 {
-	uint64 occ = PieceAll();
-	uint64 free = ~occ;
+	uint64 occ = board.PieceAll(), free = ~occ;
 	if (me == White)
 	{
 		if (can_castle(occ, me, true))
@@ -5934,89 +5809,91 @@ template<bool me> int* gen_delta_moves(int margin, int* list)
 		if (can_castle(occ, me, false))
 			list = AddCDeltaP(list, margin, BlackKing, 60, 58, FlagCastling);
 	}
-	for (uint64 v = Shift<me>(Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
+	for (uint64 v = Shift<me>(board.Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
 	{
 		int to = lsb(v);
-		if (HasBit(OwnLine<me>(2), to) && F(PieceAt(to + Push[me])))
+		if (HasBit(OwnLine<me>(2), to) && F(board.PieceAt(to + Push[me])))
 			list = AddCDeltaP(list, margin, IPawn[me], to - Push[me], to + Push[me], 0);
 		list = AddCDeltaP(list, margin, IPawn[me], to - Push[me], to, 0);
 	}
-	for (uint64 u = Knight(me); T(u); Cut(u))
+	for (uint64 u = board.Knight(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & NAtt[lsb(u)]; T(v); Cut(v))
 			list = AddCDeltaP(list, margin, IKnight[me], from, lsb(v), 0);
 	}
-	for (uint64 u = Piece(WhiteLight | me); T(u); Cut(u))
+	for (uint64 u = board.Piece(WhiteLight | me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & BishopAttacks(lsb(u), occ); T(v); Cut(v))
 			list = AddCDeltaP(list, margin, ILight[me], from, lsb(v), 0);
 	}
-	for (uint64 u = Piece(WhiteDark | me); T(u); Cut(u))
+	for (uint64 u = board.Piece(WhiteDark | me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & BishopAttacks(lsb(u), occ); T(v); Cut(v))
 			list = AddCDeltaP(list, margin, IDark[me], from, lsb(v), 0);
 	}
-	for (uint64 u = Rook(me); T(u); Cut(u))
+	for (uint64 u = board.Rook(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & RookAttacks(lsb(u), occ); T(v); Cut(v))
 			list = AddCDeltaP(list, margin, IRook[me], from, lsb(v), 0);
 	}
-	for (uint64 u = Queen(me); T(u); Cut(u))
+	for (uint64 u = board.Queen(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & QueenAttacks(lsb(u), occ); T(v); Cut(v))
 			list = AddCDeltaP(list, margin, IQueen[me], from, lsb(v), 0);
 	}
-	int from = lsb(King(me));
-	for (uint64 v = KAtt[lsb(King(me))] & free & (~Current->att[opp]); T(v); Cut(v))
+	int from = lsb(board.King(me));
+	for (uint64 v = KAtt[lsb(board.King(me))] & free & (~Current->att[opp]); T(v); Cut(v))
 		list = AddCDeltaP(list, margin, IKing[me], from, lsb(v), 0);
 	return NullTerminate(list);
 }
 
-template<bool me> int singular_extension(int ext, int prev_ext, int margin_one, int margin_two, int depth, int killer)
+template<bool me> int singular_extension(Board_* board, int ext, int prev_ext, int margin_one, int margin_two, int depth, int killer)
 {
 	int value = -MateValue;
 	int singular = 0;
 	if (ext < (prev_ext ? 1 : 2))
 	{
-		value = (IsCheck(me) ? scout<me, 1, 1> : scout<me, 1, 0>)(margin_one, depth, killer);
+		value = (IsCheck(*board, me) ? scout<me, 1, 1> : scout<me, 1, 0>)(board, margin_one, depth, killer);
 		if (value < margin_one)
 			singular = 1;
 	}
 	if (value < margin_one && ext < (prev_ext ? (prev_ext >= 2 ? 1 : 2) : 3))
 	{
-		value = (IsCheck(me) ? scout<me, 1, 1> : scout<me, 1, 0>)(margin_two, depth, killer);
+		value = (IsCheck(*board, me) ? scout<me, 1, 1> : scout<me, 1, 0>)(board, margin_two, depth, killer);
 		if (value < margin_two)
 			singular = 2;
 	}
 	return singular;
 }
 
-template<bool me> INLINE uint64 capture_margin_mask(int alpha, int* score)
+template<bool me> INLINE uint64 capture_margin_mask(const Board_& board, int alpha, int* score)
 {
-	uint64 retval = Piece(opp);
+	uint64 retval = board.Piece(opp);
 	if (Current->score + 200 * CP_SEARCH < alpha) {
-		if (Current->att[me] & Pawn(opp)) {
-			retval ^= Pawn(opp);
+		if (uint64 p = board.Pawn(opp);  Current->att[me] & p) {
+			retval ^= p;
 			*score = Current->score + 200 * CP_SEARCH;
 		}
 		if (Current->score + 500 * CP_SEARCH < alpha) {
-			if (Current->att[me] & Minor(opp)) {
-				retval ^= Minor(opp);
+			if (uint64 m = board.Minor(opp); Current->att[me] & m) {
+				retval ^= m;
 				*score = Current->score + 500 * CP_SEARCH;
 			}
 			if (Current->score + 700 * CP_SEARCH < alpha) {
-				if (Current->att[me] & Rook(opp)) {
-					retval ^= Rook(opp);
+				if (uint64 r = board.Rook(opp);  Current->att[me] & r) {
+					retval ^= r;
 					*score = Current->score + 700 * CP_SEARCH;
 				}
-				if (Current->score + 1400 * CP_SEARCH < alpha && (Current->att[me] & Queen(opp))) {
-					retval ^= Queen(opp);
-					*score = Current->score + 1400 * CP_SEARCH;
+				if (Current->score + 1400 * CP_SEARCH < alpha) {
+					if (uint64 q = board.Queen(opp); Current->att[me] & q) {
+						retval ^= q;
+						*score = Current->score + 1400 * CP_SEARCH;
+					}
 				}
 			}
 		}
@@ -6024,25 +5901,25 @@ template<bool me> INLINE uint64 capture_margin_mask(int alpha, int* score)
 	return retval;
 }
 
-#define HALT_CHECK {\
+#define HALT_CHECK(board) {\
     if (Current->ply >= 100) return 0; \
     for (int ihc = 4; ihc <= Current->ply; ihc += 2) if (Stack[sp - ihc] == Current->key) return 0; \
-	if ((Current - Data) >= 126) {evaluate(); return Current->score; }}
+	if ((Current - Data) >= 126) {evaluate(board); return Current->score; }}
 
-template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flags)
+template<bool me, bool pv> int q_search(Board_* board, int alpha, int beta, int depth, int flags)
 {
 	int i, value, score, move, hash_move, hash_depth;
 	GEntry* Entry;
 	auto finish = [&](int score, bool did_delta_moves)
 	{
-		if (depth >= -2 && (depth >= 0 || Current->score + Futility::HashCut<me>(did_delta_moves) >= alpha))
+		if (depth >= -2 && (depth >= 0 || Current->score + Futility::HashCut<me>(*board, did_delta_moves) >= alpha))
 			hash_high(score, 1);
 		return score;
 	};
 
 	check_for_stop();
 	if (flags & FlagHaltCheck)
-		HALT_CHECK;
+		HALT_CHECK(*board);
 #ifdef CPU_TIMING
 #ifndef TIMING
 	if (nodes > check_node + 0x4000)
@@ -6059,12 +5936,12 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 	}
 #endif
 	if (flags & FlagCallEvaluation)
-		evaluate();
-	if (IsCheck(me))
-		return q_evasion<me, pv>(alpha, beta, depth, FlagHashCheck);
+		evaluate(*board);
+	if (IsCheck(*board, me))
+		return q_evasion<me, pv>(board, alpha, beta, depth, FlagHashCheck);
 
 	int tempo = InitiativeConst;
-	if (F(NonPawnKing(me) | (Current->passer & Pawn(me) & Shift<opp>(Current->patt[me] | ~Current->att[opp]))))
+	if (F(board->NonPawnKing(me) | (Current->passer & board->Pawn(me) & Shift<opp>(Current->patt[me] | ~Current->att[opp]))))
 		tempo = 0;
 	else if (F(Current->material & FlagUnusualMaterial) && Current->material < TotalMat)
 		tempo += (InitiativePhase * RO->Material[Current->material].phase) / MAX_PHASE;
@@ -6100,23 +5977,23 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 		}
 	}
 
-	Current->mask = capture_margin_mask<me>(alpha, &score);
+	Current->mask = capture_margin_mask<me>(*board, alpha, &score);
 
 	int nTried = 0;
 	if (T(hash_move))
 	{
 		if (HasBit(Current->mask, To(hash_move))
 			|| T(hash_move & 0xE000)
-			|| (depth >= -8 && (Current->score + DeltaM(hash_move) > alpha || T(is_check<me>(hash_move)))))
+			|| (depth >= -8 && (Current->score + DeltaM(*board, hash_move) > alpha || is_check<me>(*board, hash_move))))
 		{
 			move = hash_move;
-			if (is_legal<me>(move) && !IsIllegal(me, move))
+			if (is_legal<me>(*board, move) && !IsIllegal(*board, me, move))
 			{
-				if (SeeValue[PieceAt(To(move))] > SeeValue[PieceAt(From(move))])
+				if (SeeValue[board->PieceAt(To(move))] > SeeValue[board->PieceAt(From(move))])
 					++nTried;
-				do_move<me>(move);
-				value = -q_search<opp, pv>(-beta, -alpha, depth - 1, FlagNeatSearch);
-				undo_move<me>(move);
+				do_move<me>(board, move);
+				value = -q_search<opp, pv>(board, -beta, -alpha, depth - 1, FlagNeatSearch);
+				undo_move<me>(board, move);
 				if (value > score)
 				{
 					score = value;
@@ -6131,24 +6008,24 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 					&& F(hash_move & 0xE000)
 					&& !pv
 					&& alpha >= beta - 1
-					&& (depth < -2 || depth <= -1 && Current->score + Futility::HashCut<me>(false) < alpha))
+					&& (depth < -2 || depth <= -1 && Current->score + Futility::HashCut<me>(*board, false) < alpha))
 					return alpha;
 			}
 		}
 	}
 
 	// done with hash move
-	(void)gen_captures<me>(Current->moves);
+	(void)gen_captures<me>(Current->moves, *board);
 	Current->current = Current->moves;
 	while (move = pick_move())
 	{
-		if (move != hash_move && !IsIllegal(me, move) && see<me>(move, -SeeThreshold, SeeValue))
+		if (move != hash_move && !IsIllegal(*board, me, move) && see<me>(*board, move, -SeeThreshold, SeeValue))
 		{
-			if (SeeValue[PieceAt(To(move))] > SeeValue[PieceAt(From(move))])
+			if (SeeValue[board->PieceAt(To(move))] > SeeValue[board->PieceAt(From(move))])
 				++nTried;
-			do_move<me>(move);
-			value = -q_search<opp, pv>(-beta, -alpha, depth - 1, FlagNeatSearch);
-			undo_move<me>(move);
+			do_move<me>(board, move);
+			value = -q_search<opp, pv>(board, -beta, -alpha, depth - 1, FlagNeatSearch);
+			undo_move<me>(board, move);
 			if (value > score)
 			{
 				score = value;
@@ -6162,17 +6039,20 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 		}
 	}
 
-	if (depth < -2 || (depth <= -1 && Current->score + Futility::CheckCut<me>() < alpha))
+	if (depth < -2 || (depth <= -1 && Current->score + Futility::CheckCut<me>(*board) < alpha))
 		return finish(score, false);
-	gen_checks<me>(Current->moves);
+	gen_checks<me>(Current->moves, *board);
 	Current->current = Current->moves;
 	while (move = pick_move())
 	{
-		if (move != hash_move && !IsIllegal(me, move) && !IsRepetition(alpha + 1, move) && see<me>(move, -SeeThreshold, SeeValue))
+		if (move != hash_move 
+			&& !IsIllegal(*board, me, move) 
+			&& !IsRepetition(*board, alpha + 1, move) 
+			&& see<me>(*board, move, -SeeThreshold, SeeValue))
 		{
-			do_move<me>(move);
-			value = -q_evasion<opp, pv>(-beta, -alpha, depth - 1, FlagNeatSearch);
-			undo_move<me>(move);
+			do_move<me>(board, move);
+			value = -q_evasion<opp, pv>(board, -beta, -alpha, depth - 1, FlagNeatSearch);
+			undo_move<me>(board, move);
 			if (value > score)
 			{
 				score = value;
@@ -6187,22 +6067,25 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 	}
 
 	if (T(nTried) 
-		|| Current->score + Futility::DeltaCut<me>() < alpha 
-		|| T(Current->threat & Piece(me)) 
-		|| T(Current->xray[opp] & NonPawn(opp)) 
-		|| T(Pawn(opp) & OwnLine<me>(1) & Shift<me>(~PieceAll())))
+		|| Current->score + Futility::DeltaCut<me>(*board) < alpha 
+		|| T(Current->threat & board->Piece(me)) 
+		|| T(Current->xray[opp] & board->NonPawn(opp)) 
+		|| T(board->Pawn(opp) & OwnLine<me>(1) & Shift<me>(~board->PieceAll())))
 		return finish(score, false);
 	int margin = alpha - Current->score + 6 * CP_SEARCH;
-	gen_delta_moves<me>(margin, Current->moves);
+	gen_delta_moves<me>(Current->moves, *board, margin);
 	Current->current = Current->moves;
 	while (move = pick_move())
 	{
-		if (move != hash_move && !IsIllegal(me, move) && !IsRepetition(alpha + 1, move) && see<me>(move, -SeeThreshold, SeeValue))
+		if (move != hash_move 
+			&& !IsIllegal(*board, me, move)
+			&& !IsRepetition(*board, alpha + 1, move) 
+			&& see<me>(*board, move, -SeeThreshold, SeeValue))
 		{
 			++nTried;
-			do_move<me>(move);
-			value = -q_search<opp, pv>(-beta, -alpha, depth - 1, FlagNeatSearch);
-			undo_move<me>(move);
+			do_move<me>(board, move);
+			value = -q_search<opp, pv>(board, -beta, -alpha, depth - 1, FlagNeatSearch);
+			undo_move<me>(board, move);
 			if (value > score)
 			{
 				score = value;
@@ -6228,7 +6111,7 @@ template<bool me, bool pv> int q_search(int alpha, int beta, int depth, int flag
 	return finish(score, true);
 	}
 
-template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int flags)
+template<bool me, bool pv> int q_evasion(Board_* board, int alpha, int beta, int depth, int flags)
 {
 	int i, value, pext, score, move, cnt, hash_move, hash_depth;
 	int* p;
@@ -6236,7 +6119,7 @@ template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int fla
 
 	score = static_cast<int>(Current - Data) - MateValue;
 	if (flags & FlagHaltCheck)
-		HALT_CHECK;
+		HALT_CHECK(*board);
 
 	hash_move = hash_depth = 0;
 	if (flags & FlagHashCheck)
@@ -6263,16 +6146,16 @@ template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int fla
 	}
 
 	if (flags & FlagCallEvaluation)
-		evaluate();
+		evaluate(*board);
 	Current->mask = Filled;
 	if (Current->score - 10 * CP_SEARCH <= alpha && !pv)
 	{
 		score = Current->score - 10 * CP_SEARCH;
-		Current->mask = capture_margin_mask<me>(alpha, &score);
+		Current->mask = capture_margin_mask<me>(*board, alpha, &score);
 	}
 
 	alpha = Max(score, alpha);
-	(void)gen_evasions<me>(Current->moves);
+	(void)gen_evasions<me>(Current->moves, *board);
 	Current->current = Current->moves;
 	if (F(Current->moves[0]))
 		return score;
@@ -6281,9 +6164,9 @@ template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int fla
 	else
 	{
 		pext = 0;
-		Current->ref[0] = RefM(Current->move).check_ref[0];
-		Current->ref[1] = RefM(Current->move).check_ref[1];
-		mark_evasions(Current->moves);
+		Current->ref[0] = RefM(*board, Current->move).check_ref[0];
+		Current->ref[1] = RefM(*board, Current->move).check_ref[1];
+		mark_evasions(Current->moves, *board);
 		if (T(hash_move) && (T(Bit(To(hash_move)) & Current->mask) || T(hash_move & 0xE000)))
 		{
 			for (p = Current->moves; T(*p); ++p)
@@ -6299,28 +6182,28 @@ template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int fla
 	cnt = 0;
 	while (move = pick_move())
 	{
-		if (IsIllegal(me, move))
+		if (IsIllegal(*board, me, move))
 			continue;
 		++cnt;
-		if (IsRepetition(alpha + 1, move))
+		if (IsRepetition(*board, alpha + 1, move))
 		{
 			score = Max(0, score);
 			continue;
 		}
-		if (F(PieceAt(To(move))) && F(move & 0xE000))
+		if (F(board->PieceAt(To(move))) && F(move & 0xE000))
 		{
-			if (cnt > 3 && F(is_check<me>(move)) && !pv)
+			if (cnt > 3 && !is_check<me>(*board, move) && !pv)
 				continue;
-			value = Current->score + DeltaM(move) + 10 * CP_SEARCH;
+			value = Current->score + DeltaM(*board, move) + 10 * CP_SEARCH;
 			if (value <= alpha && !pv)
 			{
 				score = Max(value, score);
 				continue;
 			}
 		}
-		do_move<me>(move);
-		value = -q_search<opp, pv>(-beta, -alpha, depth - 1 + pext, FlagNeatSearch);
-		undo_move<me>(move);
+		do_move<me>(board, move);
+		value = -q_search<opp, pv>(board, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
+		undo_move<me>(board, move);
 		if (value > score)
 		{
 			score = value;
@@ -6335,17 +6218,17 @@ template<bool me, bool pv> int q_evasion(int alpha, int beta, int depth, int fla
 	return score;
 }
 
-template<bool exclusion, bool evasion> int cut_search(int move, int hash_move, int score, int beta, int depth, int flags, int sp_init)
+template<bool exclusion, bool evasion> int cut_search(const Board_& board, int move, int hash_move, int score, int beta, int depth, int flags, int sp_init)
 {
 	if (exclusion)
 		return score;
 	Current->best = move;
 	if (!evasion && depth >= 10)
 		score = Min(beta, score);
-	if (F(PieceAt(To(move))) && F(move & 0xE000))
+	if (F(board.PieceAt(To(move))) && F(move & 0xE000))
 	{
 		if (evasion)
-			UpdateCheckRef(move);
+			UpdateCheckRef(board, move);
 		else
 		{
 			if (Current->killer[1] != move && F(flags & FlagNoKillerUpdate))
@@ -6354,13 +6237,13 @@ template<bool exclusion, bool evasion> int cut_search(int move, int hash_move, i
 				Current->killer[1] = move;
 			}
 			if (Current->stage == s_quiet && (move & 0xFFFF) == (*(Current->current - 1) & 0xFFFF))
-				HistoryGood(*(Current->current - 1), depth);	// restore history information
+				HistoryGood(board, *(Current->current - 1), depth);	// restore history information
 			else
-				HistoryGood(move, depth);
+				HistoryGood(board, move, depth);
 			if (move != hash_move && Current->stage == s_quiet && !sp_init)
 				for (auto p = Current->start; p < (Current->current - 1); ++p)
-					HistoryBad(*p, depth);
-			UpdateRef(move);
+					HistoryBad(board, *p, depth);
+			UpdateRef(board, move);
 		}
 	}
 	return hash_low(move, score, depth);
@@ -6390,30 +6273,34 @@ struct HashResult_
 	int singular_;
 };
 
-template<int me> void check_recapture(int to, int depth, int* ext)
+template<int me> void check_recapture(const Board_& board, int to, int depth, int* ext)
 {
-	if (depth < 16 && to == To(Current->move) && T(PieceAt(to)))
+	if (depth < 16 && to == To(Current->move) && T(board.PieceAt(to)))
 		*ext = Max(*ext, 2);
 }
 
-template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int flags)
+template<bool me, bool evasion> HashResult_ try_hash(Board_* board, int beta, int depth, int flags)
 {
 	auto abort = [](int score) {return HashResult_({ true, score, 0, 0, }); };
 	int height = (int)(Current - Data);
 	if (flags & FlagCallEvaluation)
-		evaluate();
-	if (!evasion && IsCheck(me))
-		return abort(scout<me, 0, 1>(beta, depth, flags & (~(FlagHaltCheck | FlagCallEvaluation))));
+		evaluate(*board);
+	if (!evasion && IsCheck(*board, me))
+		return abort(scout<me, 0, 1>(board, beta, depth, flags & (~(FlagHaltCheck | FlagCallEvaluation))));
 
 	if (!evasion)
 	{
 		int value = Current->score - (90 + depth * 8 + Max(depth - 5, 0) * 32) * CP_SEARCH;
-		if (value >= beta && depth <= 13 && T(NonPawnKing(me)) && F(Pawn(opp) & OwnLine<me>(1) & Shift<me>(~PieceAll())) && F(flags & (FlagReturnBestMove | FlagDisableNull)))
+		if (value >= beta 
+			&& depth <= 13 
+			&& T(board->NonPawnKing(me)) 
+			&& F(board->Pawn(opp) & OwnLine<me>(1) & Shift<me>(~board->PieceAll())) 
+			&& F(flags & (FlagReturnBestMove | FlagDisableNull)))
 			return abort(value);
 
-		value = Current->score + Futility::HashCut<me>(false);
+		value = Current->score + Futility::HashCut<me>(*board, false);
 		if (value < beta && depth <= 3)
-			return abort(Max(value, q_search<me, 0>(beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
+			return abort(Max(value, q_search<me, 0>(board, beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
 	}
 
 	int hash_move = Current->best = flags & 0xFFFF;
@@ -6441,10 +6328,10 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 			if (Entry->move)
 			{
 				Current->best = Entry->move;
-				if (F(PieceAt(To(Entry->move))) && F(Entry->move & 0xE000))
+				if (F(board->PieceAt(To(Entry->move))) && F(Entry->move & 0xE000))
 				{
 					if (evasion)
-						UpdateCheckRef(Entry->move);
+						UpdateCheckRef(*board, Entry->move);
 					else
 					{
 						if (Current->killer[1] != Entry->move && F(flags & FlagNoKillerUpdate))
@@ -6453,7 +6340,7 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 								Current->killer[jk] = Current->killer[jk - 1];
 							Current->killer[1] = Entry->move;
 						}
-						UpdateRef(Entry->move);
+						UpdateRef(*board, Entry->move);
 					}
 				}
 				return abort(Entry->low);
@@ -6466,8 +6353,8 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 	}
 
 #if TB
-	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && unsigned(popcnt(PieceAll())) <= TB_LARGEST) {
-		auto res = TBProbe(tb_probe_wdl_fwd, me);
+	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && unsigned(popcnt(board->PieceAll())) <= TB_LARGEST) {
+		auto res = TBProbe(tb_probe_wdl_fwd, *board, me);
 		if (res != TB_RESULT_FAILED) {
 			INFO->tbHits++;
 			hash_high(TbValues[res], TbDepth(depth));
@@ -6500,13 +6387,13 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 	if (evasion && hash_depth >= depth && hash_value > -EvalValue)
 		score = Min(beta - 1, Max(score, hash_value));
 	if (evasion && T(flags & FlagCallEvaluation))
-		evaluate();
+		evaluate(*board);
 
 	if (!evasion && depth >= 12 && (F(hash_move) || hash_value < beta || hash_depth < depth - 12) && (high_value >= beta || high_depth < depth - 12) &&
 		F(flags & FlagDisableNull))
 	{
 		int new_depth = depth - 8;
-		int value = scout<me, 0, 0>(beta, new_depth, FlagHashCheck | FlagNoKillerUpdate | FlagDisableNull | FlagReturnBestMove | hash_move);
+		int value = scout<me, 0, 0>(board, beta, new_depth, FlagHashCheck | FlagNoKillerUpdate | FlagDisableNull | FlagReturnBestMove | hash_move);
 		if (value >= beta)
 		{
 			if (Current->best)
@@ -6515,12 +6402,18 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 			hash_value = beta;
 		}
 	}
-	if (!evasion && depth >= 4 && Current->score + 3 * CP_SEARCH >= beta && F(flags & (FlagDisableNull | FlagReturnBestMove)) && (high_value >= beta || high_depth < depth - 10) &&
-		(depth < 12 || (hash_value >= beta && hash_depth >= depth - 12)) && beta > -EvalValue && T(NonPawnKing(me)))
+	if (!evasion 
+		&& depth >= 4 
+		&& Current->score + 3 * CP_SEARCH >= beta 
+		&& F(flags & (FlagDisableNull | FlagReturnBestMove)) 
+		&& (high_value >= beta || high_depth < depth - 10) 
+		&& (depth < 12 || (hash_value >= beta && hash_depth >= depth - 12)) 
+		&& beta > -EvalValue 
+		&& T(board->NonPawnKing(me)))
 	{
 		int new_depth = depth - 8;
 		do_null();
-		int value = -scout<opp, 0, 0>(1 - beta, new_depth, FlagHashCheck);
+		int value = -scout<opp, 0, 0>(board, 1 - beta, new_depth, FlagHashCheck);
 		undo_null();
 		if (value >= beta)
 		{
@@ -6536,9 +6429,9 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 		if (depth < 4 && Current->score - 10 * CP_SEARCH < beta)
 		{
 			score = Current->score - 10 * CP_SEARCH;
-			Current->mask = capture_margin_mask<me>(beta - 1, &score);
+			Current->mask = capture_margin_mask<me>(*board, beta - 1, &score);
 		}
-		(void)gen_evasions<me>(Current->moves);
+		(void)gen_evasions<me>(Current->moves, *board);
 		if (F(Current->moves[0]))
 			return abort(score);
 	}
@@ -6548,11 +6441,11 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 		int singular = 0;
 		auto succeed = [&](int score) {return HashResult_({ true, score, hash_move, 1, singular }); };
 		int move = hash_move;
-		if (is_legal<me>(move) && !IsIllegal(me, move))
+		if (is_legal<me>(*board, move) && !IsIllegal(*board, me, move))
 		{
 			int ext = evasion && F(Current->moves[1])
 				? 2
-				: (is_check<me>(move) ? check_extension<me, 0> : extension<me, 0>)(move, depth);
+				: (is_check<me>(*board, move) ? check_extension<me, 0> : extension<me, 0>)(move, depth);
 			if (ext < 2 && depth >= 16 && hash_value >= beta)
 			{
 				int test_depth = depth - Min(12, depth / 2);
@@ -6561,27 +6454,27 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 					int margin_one = beta - ExclSingle(depth);
 					int margin_two = beta - ExclDouble(depth);
 					int prev_ext = ExtFromFlag(flags);
-					if (singular = singular_extension<me>(ext, prev_ext, margin_one, margin_two, test_depth, hash_move))
+					if (singular = singular_extension<me>(board, ext, prev_ext, margin_one, margin_two, test_depth, hash_move))
 						ext = Max(ext, singular + (prev_ext < 1) - (singular >= 2 && prev_ext >= 2));
 				}
 			}
 			int to = To(move);
-			check_recapture<0>(to, depth, &ext);
+			check_recapture<0>(*board, to, depth, &ext);
 			int new_depth = depth - 2 + ext;
-			do_move<me>(move);
+			do_move<me>(board, move);
 			if (evasion)
-				evaluate();
-			if (evasion && T(Current->att[opp] & King(me)))
+				evaluate(*board);
+			if (evasion && T(Current->att[opp] & board->King(me)))
 			{
-				undo_move<me>(move);
+				undo_move<me>(board, move);
 				return HashResult_({ false, score, hash_move, 0 });
 			}
 			int new_flags = (evasion ? FlagNeatSearch ^ FlagCallEvaluation : FlagNeatSearch)
 				| ((hash_value >= beta && hash_depth >= depth - 12) ? FlagDisableNull : 0)
 				| ExtToFlag(ext);
 
-			int value = -scout<opp, 0, 0>(1 - beta, new_depth, new_flags);
-			undo_move<me>(move);
+			int value = -scout<opp, 0, 0>(board, 1 - beta, new_depth, new_flags);
+			undo_move<me>(board, move);
 			if (value > score)
 				score = value;
 			return HashResult_({ false, score, hash_move, 1, singular });
@@ -6590,14 +6483,14 @@ template<bool me, bool evasion> HashResult_ try_hash(int beta, int depth, int fl
 	return HashResult_({ false, score, hash_move, 0, 0 });
 }
 
-template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, int flags)
+template<bool me, bool exclusion, bool evasion> int scout(Board_* board, int beta, int depth, int flags)
 {
 	int height = (int)(Current - Data);
 	if (height > 100)
 		++beta;
 
 	if (depth <= 1)
-		return (evasion ? q_evasion<me, 0> : q_search<me, 0>)(beta - 1, beta, 1, flags);
+		return (evasion ? q_evasion<me, 0> : q_search<me, 0>)(board, beta - 1, beta, 1, flags);
 	int score = height - MateValue;
 	if (flags & FlagHaltCheck)
 	{
@@ -6607,7 +6500,7 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 			return beta - 1;
 		if (!evasion)
 		{
-			HALT_CHECK;
+			HALT_CHECK(*board);
 		}
 	}
 
@@ -6619,20 +6512,20 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 		score = beta - 1;
 		if (evasion)
 		{
-			(void)gen_evasions<me>(Current->moves);
+			(void)gen_evasions<me>(Current->moves, *board);
 			if (F(Current->moves[0]))
 				return score;
 		}
 	}
 	else
 	{
-		HashResult_ hash_info = try_hash<me, evasion>(beta, depth, flags);
+		HashResult_ hash_info = try_hash<me, evasion>(board, beta, depth, flags);
 		score = hash_info.score_;
 		if (hash_info.done_)
 			return score;
 		hash_move = hash_info.hashMove_;
 		if (score >= beta)
-			return cut_search<exclusion, evasion>(hash_move, hash_move, score, beta, depth, flags, 0);
+			return cut_search<exclusion, evasion>(*board, hash_move, hash_move, score, beta, depth, flags, 0);
 		cnt = played = hash_info.played_;
 		singular = hash_info.singular_;
 	}
@@ -6642,28 +6535,28 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 	const int margin = evasion ? 0 : RazoringThreshold(Current->score, depth, height);	// not used if evasion
 	if (evasion)
 	{
-		Current->ref[0] = RefM(Current->move).check_ref[0];
-		Current->ref[1] = RefM(Current->move).check_ref[1];
-		mark_evasions(Current->moves);
+		Current->ref[0] = RefM(*board, Current->move).check_ref[0];
+		Current->ref[1] = RefM(*board, Current->move).check_ref[1];
+		mark_evasions(Current->moves, *board);
 	}
 	else
 	{
 		Current->killer[0] = 0;
 		Current->stage = stage_search;
 		Current->gen_flags = 0;
-		Current->ref[0] = RefM(Current->move).ref[0];
-		Current->ref[1] = RefM(Current->move).ref[1];
+		Current->ref[0] = RefM(*board, Current->move).ref[0];
+		Current->ref[1] = RefM(*board, Current->move).ref[1];
 		if (margin < beta)
 		{
 			can_hash_d0 = false;
 			score = Max(margin, score);
 			Current->stage = stage_razoring;
-			Current->mask = Piece(opp);
+			Current->mask = board->Piece(opp);
 			int value = margin + (200 + 8 * depth) * CP_SEARCH;
 			if (value < beta)
 			{
 				score = Max(value, score);
-				Current->mask ^= Pawn(opp);
+				Current->mask ^= board->Pawn(opp);
 			}
 		}
 		Current->moves[0] = 0;
@@ -6678,33 +6571,33 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 	if (beta > 0 && Current->ply >= 2 && F((Current - 1)->move & 0xF000))
 	{
 		move_back = (To((Current - 1)->move) << 6) | From((Current - 1)->move);
-		if (PieceAt(To(move_back)))
+		if (board->PieceAt(To(move_back)))
 			move_back = 0;
 	}
 
 	LMR_<0> reduction_n(depth);
-	while (int move = evasion ? pick_move() : get_move<me, 0>(depth))
+	while (int move = evasion ? pick_move() : get_move<me, 0>(*board, depth))
 	{
 		if (move == hash_move)
 			continue;
-		if (IsIllegal(me, move))
+		if (IsIllegal(*board, me, move))
 			continue;
 		++cnt;
-		if ((move & 0xFFFF) == move_back && IsRepetition(beta, move))
+		if ((move & 0xFFFF) == move_back && IsRepetition(*board, beta, move))
 		{
 			score = Max(0, score);
 			continue;
 		}
-		bool check = (!evasion && Current->stage == r_checks) || is_check<me>(move);
+		bool check = (!evasion && Current->stage == r_checks) || is_check<me>(*board, move);
 		int ext;
 		if (evasion && forced)
 			ext = 2;
-		else if (check && see<me>(move, 0, SeeValue))
+		else if (check && see<me>(*board, move, 0, SeeValue))
 			ext = check_extension<me, 0>(move, depth);
 		else
 			ext = extension<me, 0>(move, depth);
 		int new_depth = depth - 2 + ext;
-		if (F(PieceAt(To(move))) && F(move & 0xE000))
+		if (F(board->PieceAt(To(move))) && F(move & 0xE000))
 		{
 			if (evasion || !is_killer(move))
 			{
@@ -6718,9 +6611,9 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 					int reduction = reduction_n(cnt);
 					if (!evasion && move == Current->ref[0] || move == Current->ref[1])
 						reduction = Max(0, reduction - 1);
-					if (reduction >= 2 && !(Queen(White) | Queen(Black)) && popcnt(NonPawnKingAll()) <= 4)
+					if (reduction >= 2 && !(board->Queen(White) | board->Queen(Black)) && popcnt(board->NonPawnKingAll()) <= 4)
 						reduction += reduction / 2;
-					if (!evasion && new_depth - reduction > 3 && !see<me>(move, -SeeThreshold, SeeValue))
+					if (!evasion && new_depth - reduction > 3 && !see<me>(*board, move, -SeeThreshold, SeeValue))
 						reduction += 2;
 					if (!evasion && reduction == 1 && new_depth > 4)
 						reduction = cnt > 3 ? 2 : 0;
@@ -6729,39 +6622,39 @@ template<bool me, bool exclusion, bool evasion> int scout(int beta, int depth, i
 			}
 			if (!check)
 			{
-				int value = Current->score + DeltaM(move) + 10 * CP_SEARCH;
+				int value = Current->score + DeltaM(*board, move) + 10 * CP_SEARCH;
 				if (value < beta && depth <= 3)
 				{
 					score = Max(value, score);
 					continue;
 				}
-				if (!evasion && cnt > 7 && (value = margin + DeltaM(move) - 25 * CP_SEARCH * msb(cnt)) < beta && depth <= 19)
+				if (!evasion && cnt > 7 && (value = margin + DeltaM(*board, move) - 25 * CP_SEARCH * msb(cnt)) < beta && depth <= 19)
 				{
 					score = Max(value, score);
 					continue;
 				}
 			}
-			if (!evasion && depth <= 9 && T(NonPawnKing(me)) && !see<me>(move, -SeeThreshold, SeeValue))
+			if (!evasion && depth <= 9 && T(board->NonPawnKing(me)) && !see<me>(*board, move, -SeeThreshold, SeeValue))
 				continue;
 		}
 		else if (!evasion && !check && depth <= 9)
 		{
 			if ((Current->stage == s_bad_cap && depth <= 5)
-				|| (Current->stage == r_cap && !see<me>(move, -SeeThreshold, SeeValue)))
+				|| (Current->stage == r_cap && !see<me>(*board, move, -SeeThreshold, SeeValue)))
 				continue;
 		}
 
-		do_move<me>(move);
-		int value = -scout<opp, 0, 0>(1 - beta, new_depth, FlagNeatSearch | ExtToFlag(ext));	// POSTPONED -- call scout_evasion here if check?
+		do_move<me>(board, move);
+		int value = -scout<opp, 0, 0>(board, 1 - beta, new_depth, FlagNeatSearch | ExtToFlag(ext));	// POSTPONED -- call scout_evasion here if check?
 		if (value >= beta && new_depth < depth - 2 + ext)
-			value = -scout<opp, 0, 0>(1 - beta, depth - 2 + ext, FlagNeatSearch | FlagDisableNull | ExtToFlag(ext));
-		undo_move<me>(move);
+			value = -scout<opp, 0, 0>(board, 1 - beta, depth - 2 + ext, FlagNeatSearch | FlagDisableNull | ExtToFlag(ext));
+		undo_move<me>(board, move);
 		++played;
 		if (value > score)
 		{
 			score = value;
 			if (value >= beta)
-				return cut_search<exclusion, evasion>(move, hash_move, score, beta, depth, flags, sp_init);
+				return cut_search<exclusion, evasion>(*board, move, hash_move, score, beta, depth, flags, sp_init);
 		}
 	}
 
@@ -6889,7 +6782,7 @@ void send_multipv(int depth, int curr_number)
 	abort();	// not implemented
 }
 
-void send_pv(int depth, int alpha, int beta, bool fail_low = false)
+void send_pv(Board_ board, int depth, int alpha, int beta, bool fail_low = false)
 {
 	int sel_depth = 0;
 	while (sel_depth < 126 && T((Data + sel_depth + 1)->att[0]))
@@ -6898,10 +6791,10 @@ void send_pv(int depth, int alpha, int beta, bool fail_low = false)
 	bool isBest = false;
 	INFO->selDepth = sel_depth;
 	INFO->PV[0] = move;
-	do_move(T(Current->turn), move);
+	do_move(&board, T(Current->turn), move);
 	unsigned pvPtr = 1, pvLen = 64;
-	pick_pv(pvPtr, pvLen);
-	undo_move(F(Current->turn), move);
+	pick_pv(board, pvPtr, pvLen);
+	undo_move(&board, F(Current->turn), move);
 	// find out whether this is the best candidate move so far
 	{
 		LOCK_SHARED;
@@ -6927,7 +6820,7 @@ void send_pv(int depth, int alpha, int beta, bool fail_low = false)
 	send_pv(&my.PV[0], nodes, tbHits, my.depth, my.selDepth, my.bestScore, my.bestMove, fail_low, SHARED->startTime);
 }
 
-template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int flags)
+template<bool me, bool root> int pv_search(Board_* board, int alpha, int beta, int depth, int flags)
 {
 	int value, move, cnt, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
 		hash_depth, old_alpha = alpha, old_best, ex_depth = 0, ex_value = 0, start_knodes = (int)(INFO->nodes >> 10);
@@ -6951,12 +6844,12 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 	else
 	{
 		if (depth <= 1)
-			return q_search<me, 1>(alpha, beta, 1, FlagNeatSearch);
+			return q_search<me, 1>(board, alpha, beta, 1, FlagNeatSearch);
 		if (static_cast<int>(Current - Data) - MateValue >= beta)
 			return beta;
 		if (MateValue - static_cast<int>(Current - Data) <= alpha)
 			return alpha;
-		HALT_CHECK;
+		HALT_CHECK(*board);
 	}
 
 	// check hash
@@ -6971,7 +6864,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 			if (PVEntry->move)
 				Current->best = PVEntry->move;
 			if ((Current->ply <= PliesToEvalCut && PVEntry->ply <= PliesToEvalCut) || (Current->ply >= PliesToEvalCut && PVEntry->ply >= PliesToEvalCut))
-				if (!PVEntry->value || !draw_in_pv<me>())
+				if (!PVEntry->value || !draw_in_pv<me>(board))
 					return PVEntry->value;
 		}
 		if (T(PVEntry->move) && PVEntry->depth > hash_depth)
@@ -6992,9 +6885,9 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 		}
 	}
 #if TB
-	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && unsigned(popcnt(PieceAll())) <= TB_LARGEST)
+	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && unsigned(popcnt(board->PieceAll())) <= TB_LARGEST)
 	{
-		auto res = TBProbe(tb_probe_wdl_fwd, me);
+		auto res = TBProbe(tb_probe_wdl_fwd, *board, me);
 		if (res != TB_RESULT_FAILED) {
 			++INFO->tbHits;
 			hash_high(TbValues[res], TbDepth(depth));
@@ -7010,12 +6903,12 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 		hash_depth = Max(0, depth - 2);
 	}
 
-	evaluate();
+	evaluate(*board);
 
 	if (F(root) && depth >= 6 && (F(hash_move) || hash_value <= alpha || hash_depth < depth - 8))
 	{
 		new_depth = depth - (T(hash_move) ? 4 : 2);
-		value = pv_search<me, 0>(alpha, beta, new_depth, hash_move);
+		value = pv_search<me, 0>(board, alpha, beta, new_depth, hash_move);
 		bool accept = value > alpha || alpha < -EvalValue;
 		if (!accept)
 		{
@@ -7025,7 +6918,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 				margin = alpha - (CP_SEARCH << (i + 3));
 				if (T(hash_move) && hash_depth >= new_depth && hash_value >= margin)
 					break;
-				value = scout<me, 0, 0>(margin, new_depth, FlagHashCheck | FlagNoKillerUpdate | FlagDisableNull | FlagReturnBestMove | hash_move);
+				value = scout<me, 0, 0>(board, margin, new_depth, FlagHashCheck | FlagNoKillerUpdate | FlagDisableNull | FlagReturnBestMove | hash_move);
 				accept = value >= margin;
 			}
 		}
@@ -7037,10 +6930,10 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 			hash_value = value;
 		}
 	}
-	if (F(root) && IsCheck(me))
+	if (F(root) && IsCheck(*board, me))
 	{
 		Current->mask = Filled;
-		(void)gen_evasions<me>(Current->moves);
+		(void)gen_evasions<me>(Current->moves, *board);
 		if (F(Current->moves[0]))
 			return static_cast<int>(Current - Data) - MateValue;
 		alpha = Max(static_cast<int>(Current - Data) - MateValue, alpha);
@@ -7049,7 +6942,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 	}
 
 	cnt = 0;
-	if (hash_move && is_legal<me>(move = hash_move))
+	if (hash_move && is_legal<me>(*board, move = hash_move))
 	{
 		++cnt;
 		if (root)
@@ -7059,13 +6952,13 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 				send_curr_move(move, cnt);
 		}
 		ext = Max(pext, extension<me, 1>(move, depth));
-		check_recapture<1>(To(move), depth, &ext);
+		check_recapture<1>(*board, To(move), depth, &ext);
 		if (depth >= 12 && hash_value > alpha && ext < 2 && hash_depth >= (new_depth = depth - Min(12, depth / 2)))
 		{
 			int margin_one = hash_value - ExclSingle(depth);
 			int margin_two = hash_value - ExclDouble(depth);
 			int prev_ext = ExtFromFlag(flags);
-			singular = singular_extension<me>(root ? 0 : ext, root ? 0 : prev_ext, margin_one, margin_two, new_depth, hash_move);
+			singular = singular_extension<me>(board, root ? 0 : ext, root ? 0 : prev_ext, margin_one, margin_two, new_depth, hash_move);
 			if (singular)
 			{
 				ext = Max(ext, singular + (prev_ext < 1) - (singular >= 2 && prev_ext >= 2));
@@ -7076,18 +6969,18 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 			}
 		}
 		new_depth = depth - 2 + ext;
-		do_move<me>(move);
-		evaluate();
-		if (Current->att[opp] & King(me))
+		do_move<me>(board, move);
+		evaluate(*board);
+		if (Current->att[opp] & board->King(me))
 		{
-			undo_move<me>(move);	// we will detect whether move has been undone, below
+			undo_move<me>(board, move);	// we will detect whether move has been undone, below
 			--cnt;
 		}
 
 		if (!MY_TURN)	// move has not been undone, i.e., don't skip hash move
 		{
-			value = -pv_search<opp, 0>(-beta, -alpha, new_depth, ExtToFlag(ext));
-			undo_move<me>(move);
+			value = -pv_search<opp, 0>(board, -beta, -alpha, new_depth, ExtToFlag(ext));
+			undo_move<me>(board, move);
 			++played;
 			if (value > alpha)
 			{
@@ -7098,7 +6991,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 					INFO->bestMove = move;
 					INFO->bestScore = value;
 					if (depth >= 8)
-						send_pv(depth, old_alpha, beta);
+						send_pv(*board, depth, old_alpha, beta);
 				}
 				Current->best = move;
 				if (value >= beta)
@@ -7113,23 +7006,23 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 				INFO->bestScore = value;
 				Say("Fail low at depth " + Str(depth/2) + "\n");
 				if (depth >= 8)
-					send_pv(depth, old_alpha, beta, true);
+					send_pv(*board, depth, old_alpha, beta, true);
 			}
 		}
 	}
 
 	Current->gen_flags = 0;
-	if (F(IsCheck(me)))
+	if (!IsCheck(*board, me))
 	{
 		Current->stage = stage_search;
-		Current->ref[0] = RefM(Current->move).ref[0];
-		Current->ref[1] = RefM(Current->move).ref[1];
+		Current->ref[0] = RefM(*board, Current->move).ref[0];
+		Current->ref[1] = RefM(*board, Current->move).ref[1];
 	}
 	else
 	{
 		Current->stage = stage_evasion;
-		Current->ref[0] = RefM(Current->move).check_ref[0];
-		Current->ref[1] = RefM(Current->move).check_ref[1];
+		Current->ref[0] = RefM(*board, Current->move).check_ref[0];
+		Current->ref[1] = RefM(*board, Current->move).check_ref[1];
 	}
 	Current->killer[0] = 0;
 	Current->moves[0] = 0;
@@ -7139,11 +7032,11 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 		Current->current = Current->moves;
 
 	LMR_<1> reduction_n(depth);
-	while (move = get_move<me, root>(depth))
+	while (move = get_move<me, root>(*board, depth))
 	{
 		if (move == hash_move)
 			continue;
-		if (IsIllegal(me, move))
+		if (IsIllegal(*board, me, move))
 			continue;
 		++cnt;
 		if (root)
@@ -7151,26 +7044,26 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 			memset(Data + 1, 0, 127 * sizeof(GData));
 			send_curr_move(move, cnt);
 		}
-		if (IsRepetition(alpha + 1, move))
+		if (IsRepetition(*board, alpha + 1, move))
 			continue;
 		ext = Max(pext, extension<me, 1>(move, depth));
-		check_recapture<1>(To(move), depth, &ext);
+		check_recapture<1>(*board, To(move), depth, &ext);
 		new_depth = depth - 2 + ext;
-		if (depth >= 6 && F(move & 0xE000) && F(PieceAt(To(move))) && (T(root) || !is_killer(move) || T(IsCheck(me))) && cnt > 3)
+		if (depth >= 6 && F(move & 0xE000) && F(board->PieceAt(To(move))) && (T(root) || !is_killer(move) || T(IsCheck(*board, me))) && cnt > 3)
 		{
 			int reduction = reduction_n(cnt);
 			if (move == Current->ref[0] || move == Current->ref[1])
 				reduction = Max(0, reduction - 1);
-			if (reduction >= 2 && !(Queen(White) | Queen(Black)) && popcnt(NonPawnKingAll()) <= 4)
+			if (reduction >= 2 && !(board->Queen(White) | board->Queen(Black)) && popcnt(board->NonPawnKingAll()) <= 4)
 				reduction += reduction / 2;
 			new_depth = Max(3, new_depth - reduction);
 		}
 
-		do_move<me>(move);  // now Current points at child, until we undo_move, below
+		do_move<me>(board, move);  // now Current points at child, until we undo_move, below
 		if (new_depth <= 1)
-			value = -pv_search<opp, 0>(-beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp, 0>(board, -beta, -alpha, new_depth, ExtToFlag(ext));
 		else
-			value = -scout<opp, 0, 0>(-alpha, new_depth, FlagNeatSearch | ExtToFlag(ext));
+			value = -scout<opp, 0, 0>(board, -alpha, new_depth, FlagNeatSearch | ExtToFlag(ext));
 		if (value > alpha && new_depth > 1)
 		{
 			if (root)
@@ -7181,14 +7074,14 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 				INFO->bestMove = move;
 			}
 			new_depth = depth - 2 + ext;
-			value = -pv_search<opp, 0>(-beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp, 0>(board, -beta, -alpha, new_depth, ExtToFlag(ext));
 			if (root)
 			{
 				if (value <= alpha)
 					INFO->bestMove = old_best;
 			}
 		}
-		undo_move<me>(move);
+		undo_move<me>(board, move);
 		++played;
 		if (value > alpha)
 		{
@@ -7201,7 +7094,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 				INFO->bestMove = move;
 				INFO->bestScore = value;
 				if (depth >= 8)
-					send_pv(depth, old_alpha, beta);
+					send_pv(*board, depth, old_alpha, beta);
 			}
 			Current->best = move;
 			if (value >= beta)
@@ -7209,7 +7102,7 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 			alpha = value;
 		}
 	}
-	if (F(cnt) && F(IsCheck(me)))
+	if (F(cnt) && !IsCheck(*board, me))
 	{
 		hash_high(0, 127);
 		hash_low(0, 0, 127);
@@ -7229,14 +7122,14 @@ template<bool me, bool root> int pv_search(int alpha, int beta, int depth, int f
 	return alpha;
 }
 
-template<bool me> void root()
+template<bool me> void root(Board_* board)
 {HERE
 	int& depth = INFO->depth;
 	int value, alpha, beta, start_depth = 2, hash_depth = 0, hash_value, store_time = 0, time_est, ex_depth = 0, ex_value, prev_time = 0, knodes = 0;
 	int64_t time;
 	HERE
-	evaluate();
-	gen_root_moves<me>();
+	evaluate(*board);
+	gen_root_moves<me>(*board);
 	if (PVN > 1) {
 		//        memset(MultiPV,0,128 * sizeof(int));
 		//        for (i = 0; MultiPV[i] = RootList[i]; i++);
@@ -7256,7 +7149,7 @@ template<bool me> void root()
 			LOCK_SHARED;
 			if (F(SHARED->best.move))
 			{
-				ScopedMove_ next(RootList[0]);
+				ScopedMove_ next(board, RootList[0]);
 				const score_t* score = nullptr;
 				if (GEntry* Entry = probe_hash())
 				{
@@ -7267,7 +7160,7 @@ template<bool me> void root()
 				}
 				if (!score)
 				{
-					evaluate();
+					evaluate(*board);
 					score = &Current->score;
 				}
 				SHARED->best = { 1, -*score, RootList[0], INFO->id };
@@ -7282,7 +7175,7 @@ template<bool me> void root()
 	Previous = -MateValue;
 	if (GPVEntry* PVEntry = probe_pv_hash())
 	{
-		if (is_legal<me>(PVEntry->move) && PVEntry->move == INFO->bestMove && PVEntry->depth > hash_depth)
+		if (is_legal<me>(*board, PVEntry->move) && PVEntry->move == INFO->bestMove && PVEntry->depth > hash_depth)
 		{
 			hash_depth = PVEntry->depth;
 			hash_value = PVEntry->value;
@@ -7298,7 +7191,7 @@ template<bool me> void root()
 		depth = hash_depth;
 		if (PVHashing)
 		{
-			send_pv(depth, -MateValue, MateValue);
+			send_pv(*board, depth, -MateValue, MateValue);
 			start_depth = (depth + 2) & (~1);
 		}
 		if ((depth >= LastDepth - 8 || T(store_time)) && LastValue >= LastExactValue && hash_value >= LastExactValue && T(LastTime) && T(LastSpeed))
@@ -7322,7 +7215,7 @@ template<bool me> void root()
 		}
 	}HERE
 
-	memcpy(SaveBoard, Board, sizeof(GBoard));
+	memcpy(SaveBoard, board, sizeof(Board_));
 	memcpy(SaveData, Data, sizeof(GData));
 	save_sp = sp;
 	int skipped = 0;
@@ -7337,11 +7230,11 @@ template<bool me> void root()
 		CurrentSI->Early = 1;
 		CurrentSI->Change = CurrentSI->FailHigh = CurrentSI->FailLow = CurrentSI->Singular = 0;
 		if (PVN > 1)
-			value = multipv<me>(depth);
+			value = multipv<me>(board, depth);
 		else if ((depth / 2) < 7 || F(Aspiration) || INFO->id < 0)
 		{
-			LastValue = LastExactValue = value = pv_search<me, 1>(-MateValue, MateValue, depth, FlagNeatSearch);
-			send_pv(depth, -MateValue, MateValue);
+			LastValue = LastExactValue = value = pv_search<me, 1>(board, -MateValue, MateValue, depth, FlagNeatSearch);
+			send_pv(*board, depth, -MateValue, MateValue);
 		}
 		else
 		{
@@ -7375,10 +7268,10 @@ template<bool me> void root()
 				}
 				if (Max(deltaLo, deltaHi) >= 1300)
 				{
-					LastValue = LastExactValue = value = pv_search<me, 1>(-MateValue, MateValue, depth, FlagNeatSearch);
+					LastValue = LastExactValue = value = pv_search<me, 1>(board, -MateValue, MateValue, depth, FlagNeatSearch);
 					break;
 				}HERE
-				value = pv_search<me, 1>(alpha, beta, depth, FlagNeatSearch);
+				value = pv_search<me, 1>(board, alpha, beta, depth, FlagNeatSearch);
 				HERE
 				if (value <= alpha)
 				{
@@ -7447,7 +7340,7 @@ template<bool me> void root()
 	}
 
 	Current = Data;
-	memcpy(Board, SaveBoard, sizeof(GBoard));
+	memcpy(&board, SaveBoard, sizeof(Board_));
 	memcpy(Data, SaveData, sizeof(GData));
 	sp = save_sp;
 	if (!SHARED->stopAll)
@@ -7457,7 +7350,7 @@ template<bool me> void root()
 	}
 }
 
-template<bool me> int multipv(int depth)
+template<bool me> int multipv(Board_* board, int depth)
 {
 	int move, low = MateValue, value, i, cnt, ext, new_depth = depth;
 	Say("info depth " + Str(depth / 2) + "\n");
@@ -7466,12 +7359,12 @@ template<bool me> int multipv(int depth)
 		MultiPV[cnt] = move;
 		send_curr_move(move, cnt);
 		new_depth = depth - 2 + (ext = extension<me, 1>(move, depth));
-		do_move<me>(move);
-		value = -pv_search<opp, 0>(-MateValue, MateValue, new_depth, ExtToFlag(ext));
+		do_move<me>(board, move);
+		value = -pv_search<opp, 0>(board, -MateValue, MateValue, new_depth, ExtToFlag(ext));
 		MultiPV[cnt] |= value << 16;
 		if (value < low)
 			low = value;
-		undo_move<me>(move);
+		undo_move<me>(board, move);
 		for (i = cnt - 1; i >= 0; --i)
 		{
 			if ((MultiPV[i] >> 16) < value)
@@ -7489,12 +7382,12 @@ template<bool me> int multipv(int depth)
 		MultiPV[cnt] = move;
 		send_curr_move(move, cnt);
 		new_depth = depth - 2 + (ext = extension<me, 1>(move, depth));
-		do_move<me>(move);
-		value = -scout<opp, 0, 0>(-low, new_depth, FlagNeatSearch | ExtToFlag(ext));
+		do_move<me>(board, move);
+		value = -scout<opp, 0, 0>(board, -low, new_depth, FlagNeatSearch | ExtToFlag(ext));
 		if (value > low)
-			value = -pv_search<opp, 0>(-MateValue, -low, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp, 0>(board, -MateValue, -low, new_depth, ExtToFlag(ext));
 		MultiPV[cnt] |= value << 16;
-		undo_move<me>(move);
+		undo_move<me>(board, move);
 		if (value > low)
 		{
 			for (i = cnt; i >= PVN; --i) MultiPV[i] = MultiPV[i - 1];
@@ -7578,7 +7471,7 @@ void send_best_move(bool have_lock = false)
 	}
 }
 
-void get_position(char string[])
+void get_position(char string[], Board_* board)
 {
 	const char* fen;
 	char* moves;
@@ -7588,9 +7481,9 @@ void get_position(char string[])
 	fen = strstr(string, "fen ");
 	moves = strstr(string, "moves ");
 	if (fen != nullptr)
-		get_board(fen + 4);
+		get_board(fen + 4, board);
 	else
-		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", board);
 	PrevMove = 0;
 	if (moves != nullptr)
 	{
@@ -7608,14 +7501,14 @@ void get_position(char string[])
 				pv_string[4] = *ptr++;
 				pv_string[5] = 0;
 			}
-			evaluate();
-			move = move_from_string(pv_string);
+			evaluate(*board);
+			move = move_from_string(*board, pv_string);
 			PrevMove = move1;
 			move1 = move;
 			if (Current->turn)
-				do_move<1>(move);
+				do_move<1>(board, move);
 			else
-				do_move<0>(move);
+				do_move<0>(board, move);
 			memcpy(Data, Current, sizeof(GData));
 			Current = Data;
 			while (*ptr == ' ') ++ptr;
@@ -7649,6 +7542,7 @@ namespace Version
 void uci(void)
 {
 	char line[4 * PIPE_BUF];
+	Board_ board;
 	auto currTime = now();
 
 	while (true)
@@ -7750,8 +7644,8 @@ void uci(void)
 				SHARED->depthLimit = 2 * depth + 2;
 				SHARED->startTime = currTime;
 			}
-			SHARED->rootProgress = Progress();
-			go();
+			SHARED->rootProgress = Progress(board);
+			go(board);
 			// children start working; we wait until they are done
 			for (int i = 1; ; ++i)
 			{
@@ -7809,13 +7703,12 @@ void uci(void)
 			if (strcmp(token, "fen") == 0)
 			{
 				char *fen = token + strlen(token) + 1;
-				moves = (char*)get_board(fen);
+				moves = (char*)get_board(fen, &board);
 			}
 			else if (strcmp(token, "startpos") == 0)
 			{
 				moves = saveptr;
-				get_board(
-					"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+				get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &board);
 			}
 			else
 				goto bad_command;
@@ -7825,8 +7718,8 @@ void uci(void)
 				LOCK_SHARED;
 				while ((token = strtok_s(NULL, " ", &saveptr)) != NULL)
 				{
-					int move = move_from_string(token);
-					if (Current->turn) do_move<1>(move); else do_move<0>(move);
+					int move = move_from_string(board, token);
+					if (Current->turn) do_move<1>(&board, move); else do_move<0>(&board, move);
 					memcpy(Data, Current, sizeof(GData));
 					Current = Data;
 					SHARED->rootDepth++;
@@ -7912,6 +7805,7 @@ void uci(void)
 
 void worker()
 {
+	Board_ board;
 	while (true)
 	{
 		Current = Data;
@@ -7930,7 +7824,7 @@ void worker()
 			if (newGame)
 				init_search(false);
 
-			memcpy(Board, &SHARED->rootBoard, sizeof(GBoard));
+			memcpy(&board, &SHARED->rootBoard, sizeof(Board_));
 			memcpy(Current, &SHARED->rootData, sizeof(GData));
 			memcpy(&Stack[0], &SHARED->rootStack, SHARED->rootSp * sizeof(uint64_t));
 			sp = SHARED->rootSp;
@@ -7938,9 +7832,9 @@ void worker()
 			check_node = INFO->nodes + 1024;	// should cause a check within a millisecond
 
 			if (Current->turn == White)
-				root<0>();
+				root<0>(&board);
 			else
-				root<1>();
+				root<1>(&board);
 		}
 		catch (...) 	// reserve the right to use exceptions to halt work
 		{
@@ -8064,19 +7958,20 @@ int main(int argc, char **argv)
 		INFO->pid = GetCurrentProcessId();
 		THREADS[0] = INFO;
 
+		Board_ board;
 		auto t0 = now();
 		uint64_t nodes = 0;
 		for (int i = 3; i < argc; i++)
 		{
 			init_search(true);
 			if (strcmp(argv[i], "startpos") != 0)
-				get_board(argv[i]);
+				get_board(argv[i], &board);
 			SHARED->stopAll = false;
 			SHARED->depthLimit = 2 * benchDepth + 2;
 			SHARED->softTimeLimit = UINT32_MAX;
 			SHARED->hardTimeLimit = UINT32_MAX;
 			SHARED->startTime = t0;
-			if (Current->turn == White) root<0>(); else root<1>();
+			if (Current->turn == White) root<0>(&board); else root<1>(&board);
 			send_best_move();
 			nodes += INFO->nodes;
 		}
