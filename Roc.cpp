@@ -9,7 +9,7 @@
 #define MP_NPS
 //#define TIME_TO_DEPTH
 #define TB 1
-#define HNI
+//#define HNI
 //#define VERBOSE
 
 #ifdef W32_BUILD
@@ -68,7 +68,68 @@ using namespace std;
 CommonData_* DATA = nullptr;
 CommonData_* const& RO = DATA;	// generally we access DATA through RO
 
+constexpr array<uint8, 256> MakePieceFromChar()
+{
+	array<uint8, 256> retval = {};
+	for (int i = 0; i < 256; ++i)
+		retval[i] = 0;
+	retval[66] = 6;
+	retval[75] = 14;
+	retval[78] = 4;
+	retval[80] = 2;
+	retval[81] = 12;
+	retval[82] = 10;
+	retval[98] = 7;
+	retval[107] = 15;
+	retval[110] = 5;
+	retval[112] = 3;
+	retval[113] = 13;
+	retval[114] = 11;
+	return retval;
+}
+constexpr array<uint8, 256> PieceFromChar = MakePieceFromChar();
 
+constexpr std::array<std::array<uint64, 64>, 64> MakeBetween()
+{
+	std::array<std::array<uint64, 64>, 64> retval;
+	for (int i = 0; i < 64; ++i)
+	{
+		retval[i] = {};
+		for (uint64 u = QMask[i]; T(u); Cut_c(u))
+		{
+			int j = lsb_c(u);
+			int k = Sgn(RankOf(j) - RankOf(i));
+			int l = Sgn(FileOf(j) - FileOf(i));
+			for (int n = i + 8 * k + l; n != j; n += (8 * k + l))
+				retval[i][j] |= Bit(n);
+		}
+	}
+
+	return retval;
+}
+constexpr std::array<std::array<uint64, 64>, 64> Between = MakeBetween();
+
+constexpr std::array<std::array<uint64, 64>, 64> MakeFullLine()
+{
+	std::array<std::array<uint64, 64>, 64> retval;
+	for (int i = 0; i < 64; ++i)
+	{
+		retval[i] = {};
+		for (uint64 u = BMask[i]; T(u); Cut_c(u))
+		{
+			int j = lsb_c(u);
+			retval[i][j] = BMask[i] & BMask[j];
+		}
+		for (uint64 u = RMask[i]; T(u); Cut_c(u))
+		{
+			int j = lsb_c(u);
+			retval[i][j] = RMask[i] & RMask[j];
+		}
+	}
+
+	return retval;
+}
+constexpr std::array<std::array<uint64, 64>, 64> FullLine = MakeFullLine();
 
 // Constants controlling play
 constexpr int PliesToEvalCut = 50;	// halfway to 50-move
@@ -123,9 +184,35 @@ INLINE int RookCaptureMvvLva(int attacker) { return MaxBishopCaptureMvvLva + Mvv
 constexpr int MaxRookCaptureMvvLva = MaxBishopCaptureMvvLva + MvvLvaAttacker[15];  // usually 24
 INLINE int QueenCaptureMvvLva(int attacker) { return MaxRookCaptureMvvLva + MvvLvaAttacker[attacker]; }
 
-INLINE int MvvLvaPromotionCap(int capture) { return RO->MvvLva[((capture) < WhiteRook) ? WhiteRook : ((capture) >= WhiteQueen ? WhiteKing : WhiteKnight)][BlackQueen]; }
-INLINE int MvvLvaPromotionKnightCap(int capture) { return RO->MvvLva[WhiteKing][capture]; }
-INLINE int MvvLvaXrayCap(int capture) { return RO->MvvLva[WhiteKing][capture]; }
+constexpr std::array<std::array<int, 16>, 16> MakeMvvLva()
+{
+	std::array<std::array<int, 16>, 16> retval;
+	for (int i = 0; i < 16; ++i)
+		for (int j = 0; j < 16; ++j)
+		{
+			if (j < WhitePawn)
+				retval[i][j] = 0;
+			else if (j < WhiteKnight)
+				retval[i][j] = PawnCaptureMvvLva(i) << 26;
+			else if (j < WhiteLight)
+				retval[i][j] = KnightCaptureMvvLva(i) << 26;
+			else if (j < WhiteRook)
+				retval[i][j] = BishopCaptureMvvLva(i) << 26;
+			else if (j < WhiteQueen)
+				retval[i][j] = RookCaptureMvvLva(i) << 26;
+			else
+				retval[i][j] = QueenCaptureMvvLva(i) << 26;
+		}
+	return retval;
+}
+std::array<std::array<int, 16>, 16> MvvLva = MakeMvvLva();
+
+INLINE int MvvLvaPromotionCap(int capture) { return MvvLva[((capture) < WhiteRook) ? WhiteRook : ((capture) >= WhiteQueen ? WhiteKing : WhiteKnight)][BlackQueen]; }
+INLINE int MvvLvaPromotionKnightCap(int capture) { return MvvLva[WhiteKing][capture]; }
+INLINE int MvvLvaXrayCap(int capture) { return MvvLva[WhiteKing][capture]; }
+
+
+
 constexpr int RefOneScore = (0xFF << 16) | (3 << 24);
 constexpr int RefTwoScore = (0xFF << 16) | (2 << 24);
 
@@ -307,20 +394,20 @@ namespace Futility
 #ifdef HNI
 inline uint64 BishopAttacks(int sq, const uint64& occ)
 {
-	return  RO->magic_.MagicAttacks[Magic::BOffset[sq] + _pext_u64(occ, RO->magic_.BMagicMask[sq])];
+	return  RO->BMagic_.Attacks[Magic::BOffset[sq] + _pext_u64(occ, RO->BMagic_.Mask[sq])];
 }
 inline uint64 RookAttacks(int sq, const uint64& occ)
 {
-	return RO->magic_.MagicAttacks[Magic::ROffset[sq] + _pext_u64(occ, RO->magic_.RMagicMask[sq])];
+	return RO->RMagic_.Attacks[Magic::ROffset[sq] + _pext_u64(occ, RO->RMagic_.Mask[sq])];
 }
 #else
 inline uint64 BishopAttacks(int sq, const uint64& occ)
 {
-	return RO->magic_.MagicAttacks[Magic::BOffset[sq] + (((RO->magic_.BMagicMask[sq] & occ) * Magic::BMagic[sq]) >> Magic::BShift[sq])];
+	return RO->BMagic_.Attacks[Magic::BOffset[sq] + (((RO->BMagic_.Mask[sq] & occ) * Magic::BMagic[sq]) >> Magic::BShift[sq])];
 }
 inline uint64 RookAttacks(int sq, const uint64& occ)
 {
-	return RO->magic_.MagicAttacks[Magic::ROffset[sq] + (((RO->magic_.RMagicMask[sq] & occ) * Magic::RMagic[sq]) >> Magic::RShift[sq])];
+	return RO->RMagic_.Attacks[Magic::ROffset[sq] + (((RO->RMagic_.Mask[sq] & occ) * Magic::RMagic[sq]) >> Magic::RShift[sq])];
 }
 #endif
 INLINE uint64 QueenAttacks(int sq, const uint64& occ)
@@ -346,7 +433,7 @@ INLINE int* AddMove(int* list, int from, int to, int flags, int score)
 }
 INLINE int* AddCapturePP(int* list, int att, int vic, int from, int to)
 {
-	return AddMove(list, from, to, 0, RO->MvvLva[att][vic]);
+	return AddMove(list, from, to, 0, MvvLva[att][vic]);
 }
 INLINE int* AddCaptureP(int* list, const Board_& board, int piece, int from, int to)
 {
@@ -660,49 +747,19 @@ enum
 };
 constexpr array<int, 4> ShelterMod = { 0, 0, 88, 0 };
 
-enum
+namespace StormValues
 {
-	StormBlockedMul,
-	StormShelterAttMul,
-	StormConnectedMul,
-	StormOpenMul,
-	StormFreeMul
-};
-constexpr array<int, 5> StormQuad = {  // tuner: type=array, var=640, active=0
-	504, 1312, 1852, 860, 356
-};
-constexpr array<int, 5> StormLinear = {  // tuner: type=array, var=1280, active=0
-	332, 624, 1752, 1284, 48
-};
-
-namespace PasserWeights
-{
-//	constexpr array<int, 12> Candidate = { -22,75,5, 0,29,63, 27,12,38, -8,78,-26 };
-//	constexpr array<int, 12> General = { -5,73,17, 14,19,91, 17,-9,60, -5,27,-16 };
-//	constexpr array<int, 12> Protected = { 69,-113,334, 53,-24,294, 37,52,177, -55,157,-176 };
-//	constexpr array<int, 12> Outside = { -18,169,-14, 11,87,73, 0,75,-33, 13,-61,44 };
-//	constexpr array<int, 12> Blocked = { -1,140,49, 30,79,175, 14,87,38, 19,57,-50 };
-//	constexpr array<int, 12> Clear = { -3,-13,-12, 5,-30,13, -2,-10,-2, -1,-1,-1 };
-//	constexpr array<int, 12> Connected = { 11,134,76, 66,-28,328, 37,97,151, 107,-256,366 };
-//	constexpr array<int, 12> Free = { 29,239,-100, 67,130,403, 110,179,594, 3,1,13 };
-//	constexpr array<int, 12> Supported = { -2,188,17, 27,110,154, 53,65,280, -4,18,-16 };
-//	constexpr array<int, 12> QPGame = { 0,0,0, 0,0,0, -40,60,-20, 0,0,0 };
-	
-	// Gull-style
-	constexpr array<array<int, 4>, 3> Candidate = { array<int, 4>({-7, -6, 3, 12}), array<int, 4>({15, 9, 19, 68}), array<int, 4>({28, 28, 17, -11}) };
-//	constexpr array<array<int, 4>, 3> General = { array<int, 4>({-24, -4, 5, 31}), array<int, 4>({45, 17, 4, 10}), array<int, 4>({79, 69, 16, 4}) };
-//	constexpr array<array<int, 4>, 3> Protected = { array<int, 4>({-31, -44, 0, -9}), array<int, 4>({45, 85, 87, 38}), array<int, 4>({98, 189, 258, 8}) };
-//	constexpr array<array<int, 4>, 3> Outside = { array<int, 4>({-17, -4, 0, 22}), array<int, 4>({63, 38, 14, -4}), array<int, 4>({110, 91, 0, 1}) };
-//	constexpr array<array<int, 4>, 3> Blocked = { array<int, 4>({-15, -9, 4, 26}), array<int, 4>({68, 52, 32, 5}), array<int, 4>({132, 127, 56, 1}) };
-//	constexpr array<array<int, 4>, 3> Clear = { array<int, 4>({5, 3, 1, 1}), array<int, 4>({13, 8, 6, 1}), array<int, 4>({24, 9, 8, 1}) };
-//	constexpr array<array<int, 4>, 3> Connected = { array<int, 4>({-12, -13, -9, 13}), array<int, 4>({91, 103, 102, -1}), array<int, 4>({229, 208, 132, 1}) };
-//	constexpr array<array<int, 4>, 3> Free = { array<int, 4>({1, -8, 13, -1}), array<int, 4>({92, 150, 177, -1}), array<int, 4>({90, 380, 431, -1}) };
-//	constexpr array<array<int, 4>, 3> Supported = { array<int, 4>({-5, -2, 4, 14}), array<int, 4>({115, 109, 89, 0}), array<int, 4>({189, 216, 231, 1}) };
+	constexpr std::array<sint16, 4> Blocked = { 3, 11, 30, 58 };
+	constexpr std::array<sint16, 4> ShelterAtt = { 6, 25, 71, 143 };
+	constexpr std::array<sint16, 4> Connected = { 17, 53, 126, 236 };
+	constexpr std::array<sint16, 4> Open = { 12, 34, 73, 128 };
+	constexpr std::array<sint16, 4> Free = { 0, 4, 15, 34 };
 }
 
 namespace PasserValues
 {
 	// not much point in using 3 parameters for 4 degrees of freedom
+	constexpr array<packed_t, 7> Candidate = { 0ull, 0ull, 0ull, Pack(10, 10, 9, 0), Pack(26, 24, 21, 0), Pack(49, 42, 34, 0), Pack(79, 64, 50, 0) };
 	constexpr array<packed_t, 7> General = { 0ull, 0ull, 0ull, Pack(6, 4, 3, 14), Pack(31, 16, 6, 11), Pack(56, 48, 18, 7), Pack(81, 91, 36, 4) };
 	constexpr array<packed_t, 7> Protected = { 0ull, 0ull, 0ull, Pack(0, 5, 28, 11), Pack(23, 53, 66, 26), Pack(91, 138, 148, 10), Pack(174, 242, 261, 0) };
 	constexpr array<packed_t, 7> Outside = { 0ull, 0ull, 0ull, Pack(20, 18, 10, 3), Pack(54, 40, 20, 0), Pack(87, 76, 21, 0), Pack(120, 123, 16, 0) };
@@ -1363,16 +1420,44 @@ INLINE uint8 FileOcc(uint64 occ)
 	return static_cast<uint8>(t & 0xFF);
 }
 
+constexpr std::array<int, 256> MakeSpanWidth()
+{
+	std::array<int, 256> retval;
+	retval[0] = 0;
+	for (int i = 0; i < 256; ++i)
+		retval[i] = msb_c(i) - lsb_c(i);
+	return retval;
+}
+constexpr std::array<int, 256> MakeSpanGap()
+{
+	std::array<int, 256> retval;
+	retval[0] = 0;
+	for (int i = 1; i < 256; ++i)
+	{
+		retval[i] = 0;
+		for (int j = 0, last = 9; j < 8; ++j)
+		{
+			if (i & Bit(j))
+				last = j;
+			else
+				retval[i] = max(retval[i], j - 1 - last);
+		}
+	}
+	return retval;
+}
+constexpr std::array<int, 256> SpanWidth = MakeSpanWidth(), SpanGap = MakeSpanGap();
+
+
 INLINE int FileSpan(const uint64& occ)
 {
-	return RO->SpanWidth[FileOcc(occ)];
+	return SpanWidth[FileOcc(occ)];
 }
 
 
 bool IsIllegal(const State_& state, bool me, int move)
 {
 	const Board_& board = state();
-	return ((HasBit(state[0].xray[opp], From(move)) && F(Bit(To(move)) & RO->FullLine[lsb(board.King(me))][From(move)])) ||
+	return ((HasBit(state[0].xray[opp], From(move)) && F(Bit(To(move)) & FullLine[lsb(board.King(me))][From(move)])) ||
 		(IsEP(move) && T(Line[RankOf(From(move))] & board.King(me)) && T(Line[RankOf(From(move))] & board.Major(opp)) &&
 			T(RookAttacks(lsb(board.King(me)), board.PieceAll() ^ Bit(From(move)) ^ Bit(state[0].ep_square - Push[me])) & board.Major(opp))));
 };
@@ -1449,6 +1534,64 @@ void UpdateDebug(const State_& state, int line)
 }
 
 
+constexpr std::array<std::array<uint64, 64>, 2> MakeBishopForward()
+{
+	std::array<std::array<uint64, 64>, 2> retval = PWay;
+	for (int i = 0; i < 64; ++i)
+	{
+		for (int j = 0; j < 64; j++)
+		{
+			for (int me = 0; me < 2; ++me)
+			{
+				retval[me][i] = PWay[me][i];
+				if ((PWay[1 ^ me][j] | Bit(j)) & BMask[i] & Forward[me][RankOf(i)])
+					retval[me][i] |= Bit(j);
+			}
+		}
+	}
+	return retval;
+}
+constexpr std::array<std::array<uint64, 64>, 2> MakePCone()
+{
+	std::array<std::array<uint64, 64>, 2> retval = PWay;
+	for (int i = 0; i < 64; ++i)
+	{
+		for (int j = 0; j < 64; j++)
+		{
+			for (int me = 0; me < 2; ++me)
+			{
+				retval[me][i] = PWay[me][i];
+				if (FileOf(i) > 0)
+					retval[me][i] |= PWay[me][i - 1];
+				if (FileOf(i) < 7)
+					retval[me][i] |= PWay[me][i + 1];
+			}
+		}
+	}
+	return retval;
+}
+constexpr std::array<std::array<uint64, 64>, 2> MakePSupport()
+{
+	std::array<std::array<uint64, 64>, 2> retval;
+	for (int i = 0; i < 64; ++i)
+	{
+		retval[0][i] = retval[1][i] = 0;
+		for (int j = 0; j < 64; ++j)
+		{
+			if (i == j)
+				continue;
+			int fDiff = FileOf(i) - FileOf(j);
+			if (fDiff != 1 && fDiff != -1)
+				continue;
+			if (RankOf(j) >= RankOf(i))
+				retval[1][i] |= Bit(j);
+			if (RankOf(j) <= RankOf(i))
+				retval[0][i] |= Bit(j);
+		}
+	}
+	return retval;
+}
+constexpr std::array<std::array<uint64, 64>, 2> BishopForward = MakeBishopForward(), PCone = MakePCone(), PSupport = MakePSupport();
 
 //#define MOVING MoveScope_ debugMoveScope; UpdateDebug(debugLine);
 //#define HI UpdateDebug(__LINE__);
@@ -1460,124 +1603,6 @@ void UpdateDebug(const State_& state, int line)
 
 void init_misc(CommonData_* data)
 {
-	for (int i = 0; i < 64; ++i)
-	{
-		data->magic_.BMagicMask[i] = data->magic_.RMagicMask[i] = 0;
-		data->PCone[0][i] = data->PCone[1][i]
-			= data->PSupport[0][i] = data->PSupport[1][i] = data->BishopForward[0][i] = data->BishopForward[1][i] = 0;
-		for (int j = 0; j < 64; ++j)
-			data->Between[i][j] = data->FullLine[i][j] = 0;
-	}
-
-	for (int i = 0; i < 64; ++i)
-	{
-		for (int j = 0; j < 64; ++j)
-		{
-			if (i == j)
-				continue;
-			uint64 u = Bit(j);
-			if (abs(FileOf(i) - FileOf(j)) == 1)
-			{
-				if (RankOf(j) >= RankOf(i))
-					data->PSupport[1][i] |= u;
-				if (RankOf(j) <= RankOf(i))
-					data->PSupport[0][i] |= u;
-			}
-		}
-
-		data->magic_.BMagicMask[i] = BMask[i] & Interior;
-		data->magic_.RMagicMask[i] = RMask[i];
-		data->PCone[0][i] = PWay[0][i];
-		data->PCone[1][i] = PWay[1][i];
-		if (FileOf(i) > 0)
-		{
-			data->magic_.RMagicMask[i] &= ~File[0];
-			data->PCone[0][i] |= PWay[0][i - 1];
-			data->PCone[1][i] |= PWay[1][i - 1];
-		}
-		if (RankOf(i) > 0)
-			data->magic_.RMagicMask[i] &= ~Line[0];
-		if (FileOf(i) < 7)
-		{
-			data->magic_.RMagicMask[i] &= ~File[7];
-			data->PCone[0][i] |= PWay[0][i + 1];
-			data->PCone[1][i] |= PWay[1][i + 1];
-		}
-		if (RankOf(i) < 7)
-			data->magic_.RMagicMask[i] &= ~Line[7];
-	}
-
-	for (int i = 0; i < 8; ++i)
-	{
-		data->PIsolated[i] = 0;
-		if (i > 0)
-			data->PIsolated[i] |= File[i - 1];
-		if (i < 7)
-			data->PIsolated[i] |= File[i + 1];
-	}
-	for (int i = 0; i < 64; ++i)
-	{
-		for (uint64 u = QMask[i]; T(u); Cut(u))
-		{
-			int j = lsb(u);
-			int k = Sgn(RankOf(j) - RankOf(i));
-			int l = Sgn(FileOf(j) - FileOf(i));
-			for (int n = i + 8 * k + l; n != j; n += (8 * k + l))
-				data->Between[i][j] |= Bit(n);
-		}
-		for (uint64 u = BMask[i]; T(u); Cut(u))
-		{
-			int j = lsb(u);
-			data->FullLine[i][j] = BMask[i] & BMask[j];
-		}
-		for (uint64 u = RMask[i]; T(u); Cut(u))
-		{
-			int j = lsb(u);
-			data->FullLine[i][j] = RMask[i] & RMask[j];
-		}
-		data->BishopForward[0][i] |= PWay[0][i];
-		data->BishopForward[1][i] |= PWay[1][i];
-		for (int j = 0; j < 64; j++)
-		{
-			if ((PWay[1][j] | Bit(j)) & BMask[i] & Forward[0][RankOf(i)])
-				data->BishopForward[0][i] |= Bit(j);
-			if ((PWay[0][j] | Bit(j)) & BMask[i] & Forward[1][RankOf(i)])
-				data->BishopForward[1][i] |= Bit(j);
-		}
-	}
-
-	for (int i = 0; i < 16; ++i)
-		for (int j = 0; j < 16; ++j)
-		{
-			if (j < WhitePawn)
-				data->MvvLva[i][j] = 0;
-			else if (j < WhiteKnight)
-				data->MvvLva[i][j] = PawnCaptureMvvLva(i) << 26;
-			else if (j < WhiteLight)
-				data->MvvLva[i][j] = KnightCaptureMvvLva(i) << 26;
-			else if (j < WhiteRook)
-				data->MvvLva[i][j] = BishopCaptureMvvLva(i) << 26;
-			else if (j < WhiteQueen)
-				data->MvvLva[i][j] = RookCaptureMvvLva(i) << 26;
-			else
-				data->MvvLva[i][j] = QueenCaptureMvvLva(i) << 26;
-		}
-
-	for (int i = 0; i < 256; ++i)
-		data->PieceFromChar[i] = 0;
-	data->PieceFromChar[66] = 6;
-	data->PieceFromChar[75] = 14;
-	data->PieceFromChar[78] = 4;
-	data->PieceFromChar[80] = 2;
-	data->PieceFromChar[81] = 12;
-	data->PieceFromChar[82] = 10;
-	data->PieceFromChar[98] = 7;
-	data->PieceFromChar[107] = 15;
-	data->PieceFromChar[110] = 5;
-	data->PieceFromChar[112] = 3;
-	data->PieceFromChar[113] = 13;
-	data->PieceFromChar[114] = 11;
-
 	data->TurnKey = rand64();
 	for (int i = 0; i < 8; ++i) data->EPKey[i] = rand64();
 	for (int i = 0; i < 16; ++i) data->CastleKey[i] = rand64();
@@ -1586,55 +1611,94 @@ void init_misc(CommonData_* data)
 			data->PieceKey[i][j] = i ? rand64() : 0;
 	for (int i = 0; i < 16; ++i)
 		data->LogDist[i] = (int)(10.0 * log(1.01 + i));
-	for (int i = 1; i < 256; ++i)
-	{
-		data->SpanWidth[i] = msb(i) - lsb(i);
-		int& gap = data->SpanGap[i] = 0;
-		for (int j = 0, last = 9; j < 8; ++j)
-		{
-			if (i & Bit(j))
-				last = j;
-			else
-				gap = max(gap, j - 1 - last);
-		}
-	}
-	data->SpanWidth[0] = data->SpanGap[0] = 0;
-
 }
 
-std::array<int, 16> ListBits(uint64 u)
+constexpr std::array<int, 16> ListBits(uint64 u)
 {
 	std::array<int, 16> retval = { 0 };
-	for (int j = 0; T(u); Cut(u), ++j)
-		retval[j] = lsb(u);
+	for (int j = 0; T(u); Cut_c(u), ++j)
+		retval[j] = lsb_c(u);
 	return retval;
 }
 
-inline uint64 XBMagicAttacks(const std::array<std::array<uint64, 64>, 64>& between, int i, uint64 occ)
+constexpr uint64 XBMagicAttacks(const std::array<std::array<uint64, 64>, 64>& between, int i, uint64 occ)
 {
 	uint64 att = 0;
-	for (uint64 u = BMask[i]; T(u); Cut(u))
-		if (F(between[i][lsb(u)] & occ))
-			att |= between[i][lsb(u)] | Bit(lsb(u));
+	for (uint64 u = BMask[i]; T(u); Cut_c(u))
+		if (auto l = lsb_c(u); F(between[i][l] & occ))
+			att |= between[i][l] | Bit(l);
 	return att;
 }
 
-uint64 XRMagicAttacks(const std::array<std::array<uint64, 64>, 64>& between, int i, uint64 occ)
+constexpr uint64 XRMagicAttacks(const std::array<std::array<uint64, 64>, 64>& between, int i, uint64 occ)
 {
 	uint64 att = 0;
-	for (uint64 u = RMask[i]; T(u); Cut(u))
-		if (F(between[i][lsb(u)] & occ))
-			att |= between[i][lsb(u)] | Bit(lsb(u));
+	for (uint64 u = RMask[i]; T(u); Cut_c(u))
+		if (auto l = lsb_c(u); F(between[i][l] & occ))
+			att |= between[i][l] | Bit(l);
 	return att;
 }
 
 
-void init_magic(const std::array<std::array<uint64, 64>, 64>& between, Magic::Magic_* magic)
+constexpr Magic::Magic_<B_MAGIC_SIZE> MakeBMagic()
 {
-
+	Magic::Magic_<B_MAGIC_SIZE> retval;
 	for (int i = 0; i < 64; ++i)
 	{
-		array<int, 16> bit_list = ListBits(magic->BMagicMask[i]);
+		retval.Mask[i] = BMask[i] & Interior;
+		array<int, 16> bit_list = ListBits(retval.Mask[i]);
+		int bits = 64 - Magic::BShift[i];
+		for (int j = 0; j < Bit(bits); ++j)
+		{
+			uint64 u = 0;
+			for (int k = 0; k < bits; ++k)
+				if (Odd(j >> k))
+					u |= Bit(bit_list[k]);
+			int index = static_cast<int>(Magic::BOffset[i] + ((Magic::BMagic[i] * u) >> Magic::BShift[i]));
+			retval.Attacks[index] = XBMagicAttacks(Between, i, u);
+		}
+	}
+	return retval;
+}
+constexpr Magic::Magic_<R_MAGIC_SIZE> MakeRMagic()
+{
+	Magic::Magic_<R_MAGIC_SIZE> retval;
+	for (int i = 0; i < 64; ++i)
+	{
+		retval.Mask[i] = RMask[i];
+		if (FileOf(i) > 0)
+			retval.Mask[i] &= ~File[0];
+		if (RankOf(i) > 0)
+			retval.Mask[i] &= ~Line[0];
+		if (FileOf(i) < 7)
+			retval.Mask[i] &= ~File[7];
+		if (RankOf(i) < 7)
+			retval.Mask[i] &= ~Line[7];
+
+		array<int, 16> bit_list = ListBits(retval.Mask[i]);
+		int bits = 64 - Magic::RShift[i];
+		for (int j = 0; j < Bit(bits); ++j)
+		{
+			uint64 u = 0;
+			for (int k = 0; k < bits; ++k)
+				if (Odd(j >> k))
+					u |= Bit(bit_list[k]);
+			int index = static_cast<int>(Magic::ROffset[i] + ((Magic::RMagic[i] * u) >> Magic::RShift[i]));
+			retval.Attacks[index] = XRMagicAttacks(Between, i, u);
+		}
+	}
+	return retval;
+}
+//constexpr Magic::Magic_<B_MAGIC_SIZE> BMagic = MakeBMagic();
+//constexpr Magic::Magic_<R_MAGIC_SIZE> RMagic = MakeRMagic();
+
+
+void init_magic(Magic::Magic_<B_MAGIC_SIZE>* b_magic, Magic::Magic_<R_MAGIC_SIZE>* r_magic)
+{
+	for (int i = 0; i < 64; ++i)
+	{
+		b_magic->Mask[i] = BMask[i] & Interior;
+		array<int, 16> bit_list = ListBits(b_magic->Mask[i]);
 		int bits = 64 - Magic::BShift[i];
 		for (int j = 0; j < Bit(bits); ++j)
 		{
@@ -1645,12 +1709,22 @@ void init_magic(const std::array<std::array<uint64, 64>, 64>& between, Magic::Ma
 #ifndef HNI
 			int index = static_cast<int>(Magic::BOffset[i] + ((Magic::BMagic[i] * u) >> Magic::BShift[i]));
 #else
-			int index = static_cast<int>(Magic::BOffset[i] + _pext_u64(u, magic->BMagicMask[i]));
+			int index = static_cast<int>(Magic::BOffset[i] + _pext_u64(u, b_magic->Mask[i]));
 #endif
-			magic->MagicAttacks[index] = XBMagicAttacks(between, i, u);
+			b_magic->Attacks[index] = XBMagicAttacks(Between, i, u);
 		}
 
-		bit_list = ListBits(magic->RMagicMask[i]);
+		r_magic->Mask[i] = RMask[i];
+		if (FileOf(i) > 0)
+			r_magic->Mask[i] &= ~File[0];
+		if (RankOf(i) > 0)
+			r_magic->Mask[i] &= ~Line[0];
+		if (FileOf(i) < 7)
+			r_magic->Mask[i] &= ~File[7];
+		if (RankOf(i) < 7)
+			r_magic->Mask[i] &= ~Line[7];
+
+		bit_list = ListBits(r_magic->Mask[i]);
 		bits = 64 - Magic::RShift[i];
 		for (int j = 0; j < Bit(bits); ++j)
 		{
@@ -1661,9 +1735,9 @@ void init_magic(const std::array<std::array<uint64, 64>, 64>& between, Magic::Ma
 #ifndef HNI
 			int index = static_cast<int>(Magic::ROffset[i] + ((Magic::RMagic[i] * u) >> Magic::RShift[i]));
 #else
-			int index = static_cast<int>(Magic::ROffset[i] + _pext_u64(u, magic->RMagicMask[i]));
+			int index = static_cast<int>(Magic::ROffset[i] + _pext_u64(u, r_magic->Mask[i]));
 #endif
-			magic->MagicAttacks[index] = XRMagicAttacks(between, i, u);
+			r_magic->Attacks[index] = XRMagicAttacks(Between, i, u);
 		}
 	}
 }
@@ -1944,24 +2018,6 @@ void init_eval(CommonData_* data)
 				data->Shelter[i][j] = data->Shelter[i][7] + Av(ShelterValue, 5, i, 4);
 		}
 
-	for (int i = 0; i < 4; ++i)
-	{
-		data->StormBlocked[i] = ((StormQuad[StormBlockedMul] * i * i) + (StormLinear[StormBlockedMul] * (i + 1))) / 100;
-		data->StormShelterAtt[i] = ((StormQuad[StormShelterAttMul] * i * i) + (StormLinear[StormShelterAttMul] * (i + 1))) / 100;
-		data->StormConnected[i] = ((StormQuad[StormConnectedMul] * i * i) + (StormLinear[StormConnectedMul] * (i + 1))) / 100;
-		data->StormOpen[i] = ((StormQuad[StormOpenMul] * i * i) + (StormLinear[StormOpenMul] * (i + 1))) / 100;
-		data->StormFree[i] = ((StormQuad[StormFreeMul] * i * i) + (StormLinear[StormFreeMul] * (i + 1))) / 100;
-	}
-
-	//data->PasserGeneral = PasserValues::Init(PasserWeights::General);
-	//data->PasserBlocked = PasserValues::Init(PasserWeights::Blocked);
-	//data->PasserFree = PasserValues::Init(PasserWeights::Free);
-	//data->PasserSupported = PasserValues::Init(PasserWeights::Supported);
-	//data->PasserProtected = PasserValues::Init(PasserWeights::Protected);
-	//data->PasserConnected = PasserValues::Init(PasserWeights::Connected);
-	//data->PasserOutside = PasserValues::Init(PasserWeights::Outside);
-	data->PasserCandidate = PasserValues::Init(PasserWeights::Candidate);
-	//data->PasserClear = PasserValues::Init(PasserWeights::Clear);
 	for (int i = 0; i < 8; ++i)
 	{
 		int im2 = Max(i - 2, 0);
@@ -2022,7 +2078,7 @@ template<bool me> uint16 krpkrx(const State_& state)
 	int o_rook = lsb(state().Rook(opp));
 	int m_king = lsb(state().King(me));
 	int add_mat = T(state().Piece(opp) ^ state().King(opp) ^ state().Rook(opp));
-	int clear = F(add_mat) || F((PWay[opp][sq] | RO->PIsolated[FileOf(sq)]) & Forward[opp][RankOf(sq + Push[me])] & (state().Piece(opp) ^ state().King(opp) ^ state().Rook(opp)));
+	int clear = F(add_mat) || F((PWay[opp][sq] | PIsolated[FileOf(sq)]) & Forward[opp][RankOf(sq + Push[me])] & (state().Piece(opp) ^ state().King(opp) ^ state().Rook(opp)));
 
 	if (!clear)
 		return 32;
@@ -2060,17 +2116,17 @@ template<bool me> uint16 krpkrx(const State_& state)
 			mul = Min(mul, add_mat << 3);
 		if (rrank >= 5 && OwnRank<me>(o_rook) <= 1 && (!MY_TURN(state) || IsCheck(state, me) || Dist(m_king, sq) >= 2))
 			mul = Min(mul, add_mat << 3);
-		if (T(state().King(opp) & (File[1] | File[2] | File[6] | File[7])) && T(state().Rook(opp) & OwnLine<me>(7)) && T(RO->Between[o_king][o_rook] & (File[3] | File[4])) &&
+		if (T(state().King(opp) & (File[1] | File[2] | File[6] | File[7])) && T(state().Rook(opp) & OwnLine<me>(7)) && T(Between[o_king][o_rook] & (File[3] | File[4])) &&
 			F(state().Rook(me) & OwnLine<me>(7)))
 			mul = Min(mul, add_mat << 3);
 		return mul;
 	}
-	else if (rrank == 6 && (state().Pawn(me) & (File[0] | File[7])) && ((RO->PSupport[me][sq] | PWay[opp][sq]) & state().Rook(opp)) && OwnRank<me>(o_king) >= 6)
+	else if (rrank == 6 && (state().Pawn(me) & (File[0] | File[7])) && ((PSupport[me][sq] | PWay[opp][sq]) & state().Rook(opp)) && OwnRank<me>(o_king) >= 6)
 	{
 		int dist = abs(FileOf(sq) - FileOf(o_king));
 		if (dist <= 3)
 			mul = Min(mul, add_mat << 3);
-		if (dist == 4 && ((RO->PSupport[me][o_king] & state().Rook(me)) || state[0].turn == opp))
+		if (dist == 4 && ((PSupport[me][o_king] & state().Rook(me)) || state[0].turn == opp))
 			mul = Min(mul, add_mat << 3);
 	}
 
@@ -2107,9 +2163,9 @@ template<bool me> uint16 krpkbx(const State_& state)
 	int diag_sq = NB<me>(BMask[sq + Push[me]]);
 	if (OwnRank<me>(diag_sq) > 1)
 		return 32;
-	uint64 mdiag = RO->FullLine[sq + Push[me]][diag_sq] | Bit(sq + Push[me]) | Bit(diag_sq);
+	uint64 mdiag = FullLine[sq + Push[me]][diag_sq] | Bit(sq + Push[me]) | Bit(diag_sq);
 	int check_sq = NB<me>(BMask[sq - Push[me]]);
-	uint64 cdiag = RO->FullLine[sq - Push[me]][check_sq] | Bit(sq - Push[me]) | Bit(check_sq);
+	uint64 cdiag = FullLine[sq - Push[me]][check_sq] | Bit(sq - Push[me]) | Bit(check_sq);
 	if ((mdiag | cdiag) & (state().Piece(opp) ^ state().King(opp) ^ state().Bishop(opp)))
 		return 32;
 	if (cdiag & state().Bishop(opp))
@@ -2160,14 +2216,14 @@ template<bool me> uint16 krppkrpx(const State_& state)
 				if (KAtt[opp_king] & state().Pawn(opp))
 				{
 					int king_file = FileOf(opp_king);
-					if (!((~(File[king_file] | RO->PIsolated[king_file])) & state().Pawn(me)))
+					if (!((~(File[king_file] | PIsolated[king_file])) & state().Pawn(me)))
 						return 1;
 				}
 			}
 		}
 		return 32;
 	}
-	if (F((~(PWay[opp][lsb(state().King(opp))] | RO->PSupport[me][lsb(state().King(opp))])) & state().Pawn(me)))
+	if (F((~(PWay[opp][lsb(state().King(opp))] | PSupport[me][lsb(state().King(opp))])) & state().Pawn(me)))
 		return 0;
 	return 32;
 }
@@ -2176,7 +2232,7 @@ template<bool me> uint16 krpppkrppx(const State_& state)
 {
 	if (T(state[0].passer & state().Pawn(me)) || F((KAtt[lsb(state().Pawn(opp))] | KAtt[msb(state().Pawn(opp))]) & state().Pawn(opp)))
 		return 32;
-	if (int kOpp = lsb(state().King(opp)); F((~(PWay[opp][kOpp] | RO->PSupport[me][kOpp])) & state().Pawn(me)))
+	if (int kOpp = lsb(state().King(opp)); F((~(PWay[opp][kOpp] | PSupport[me][kOpp])) & state().Pawn(me)))
 		return 0;
 	return 32;
 }
@@ -2230,7 +2286,7 @@ template<bool me> uint16 kbppkbx(const State_& state)
 		if (T(PWay[me][sq2] & state().King(opp)) && OwnRank<me>(sq2) <= 5)
 			return 0;
 	}
-	else if (RO->PIsolated[FileOf(sq1)] & state().Pawn(me))
+	else if (PIsolated[FileOf(sq1)] & state().Pawn(me))
 	{
 		if (T(state().King(opp) & LightArea) != T(state().Bishop(me) & LightArea))
 		{
@@ -2254,7 +2310,7 @@ template<bool me> uint16 krppkrx(const State_& state)
 		if (T(PWay[me][sq2] & state().King(opp)))
 			return 16;
 	}
-	else if (T(RO->PIsolated[FileOf(sq2)] & state().Pawn(me)) && T((File[0] | File[7]) & state().Pawn(me)) && T(state().King(opp) & Shift<me>(state().Pawn(me))))
+	else if (T(PIsolated[FileOf(sq2)] & state().Pawn(me)) && T((File[0] | File[7]) & state().Pawn(me)) && T(state().King(opp) & Shift<me>(state().Pawn(me))))
 	{
 		if (OwnRank<me>(sq2) == 5 && OwnRank<me>(sq1) == 4 && T(state().Rook(opp) & (OwnLine<me>(5) | OwnLine<me>(6))))
 			return 10;
@@ -2295,7 +2351,7 @@ template<bool me> void eval_pawns_only(GEvalInfo& EI, const State_& state, pop_f
 		else if ((KAtt[sq] & KAtt[kOpp] & OwnLine<me>(7)) && state().PieceAt(sq - Push[me]) == IPawn[opp] && state().PieceAt(sq - 2 * Push[me]) == IPawn[me])
 			EI.mul = 0;
 	}
-	else if ((state().King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) && abs(FileOf(sq) - FileOf(kOpp)) <= 3 && !(state().Pawn(me) & (~RO->PSupport[me][sq])) &&
+	else if ((state().King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) && abs(FileOf(sq) - FileOf(kOpp)) <= 3 && !(state().Pawn(me) & (~PSupport[me][sq])) &&
 		(state().Pawn(me) & OwnLine<me>(5) & Shift<opp>(state().Pawn(opp))))
 		EI.mul = 0;
 	if (number == 1)
@@ -2320,7 +2376,7 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, const State_& state, po
 	}
 	else if ((state().King(opp) & OwnLine<me>(6) | OwnLine<me>(7)) 
 			&& abs(FileOf(sq) - FileOf(kOpp)) <= 3 
-			&& !(state().Pawn(me) & (~RO->PSupport[me][sq])) 
+			&& !(state().Pawn(me) & (~PSupport[me][sq])) 
 			&& (state().Pawn(me) & OwnLine<me>(5) & Shift<opp>(state().Pawn(opp))))
 		EI.mul = 0;
 
@@ -2352,7 +2408,7 @@ template<bool me> void eval_single_bishop(GEvalInfo& EI, const State_& state, po
 					uint64 att = BishopAttacks(bsq, EI.occ);
 					if (!(att & PWay[me][sq] & state().Pawn(opp)))
 						break;
-					if (!(RO->BishopForward[me][bsq] & att & PWay[me][sq] & state().Pawn(opp)) && pop(RO->FullLine[lsb(att & PWay[me][sq] & state().Pawn(opp))][bsq] & att) <= 2)
+					if (!(BishopForward[me][bsq] & att & PWay[me][sq] & state().Pawn(opp)) && pop(FullLine[lsb(att & PWay[me][sq] & state().Pawn(opp))][bsq] & att) <= 2)
 						break;
 				}
 			}
@@ -2771,7 +2827,7 @@ void init_material(CommonData_* dst)
 void init_data(CommonData_* dst)
 {
 	init_misc(dst);
-	init_magic(dst->Between, &dst->magic_);
+	init_magic(&dst->BMagic_, &dst->RMagic_);
 	gen_kpk(dst);
 	init_pst(dst);
 	init_eval(dst);
@@ -3145,7 +3201,7 @@ const char* get_board(const char* fen, State_* state)
 				j += c - '0';
 			else
 			{
-				state->board_.PieceAt(i + j) = RO->PieceFromChar[c];
+				state->board_.PieceAt(i + j) = PieceFromChar[c];
 				if (Even(SDiagOf(i + j)) && (state->board_.PieceAt(i + j) / 2) == 3)
 					state->board_.PieceAt(i + j) += 2;
 				++j;
@@ -3610,8 +3666,8 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 			if (rank < 6)
 			{
 				if (rank >= 3)
-					shelter += RO->StormBlocked[rank - 3];
-				if (uint64 u = (RO->PIsolated[FileOf(oppP)] & Forward[opp][RankOf(oppP)] & board.Pawn(me)))
+					shelter += StormValues::Blocked[rank - 3];
+				if (uint64 u = (PIsolated[FileOf(oppP)] & Forward[opp][RankOf(oppP)] & board.Pawn(me)))
 				{
 					int meP = NB<opp>(u);
 					uint64 att_sq = PAtt[me][meP] & PWay[opp][oppP];  // may be zero
@@ -3622,14 +3678,14 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 					{
 						if (rank >= 3)
 						{
-							shelter += RO->StormShelterAtt[rank - 3];
+							shelter += StormValues::ShelterAtt[rank - 3];
 							if (HasBit(PEI.patt[opp], oppP + Push[opp]))
-								shelter += RO->StormConnected[rank - 3];
+								shelter += StormValues::Connected[rank - 3];
 							if (!(PWay[opp][oppP] & board.PawnAll()))
-								shelter += RO->StormOpen[rank - 3];
+								shelter += StormValues::Open[rank - 3];
 						}
-						if (rank <= 4 && !(RO->PCone[me][oppP] & board.King(opp)))
-							shelter += RO->StormFree[rank - 1];
+						if (rank <= 4 && !(PCone[me][oppP] & board.King(opp)))
+							shelter += StormValues::Free[rank - 1];
 					}
 				}
 			}
@@ -3665,7 +3721,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		uint64 way = PWay[me][sq];
 		int next = board.PieceAt(sq + Push[me]);
 
-		int isolated = !(board.Pawn(me) & RO->PIsolated[file]);
+		int isolated = !(board.Pawn(me) & PIsolated[file]);
 		int doubled = T(board.Pawn(me) & (File[file] ^ b));
 		int open = !(board.PawnAll() & way);
 
@@ -3694,14 +3750,14 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 				else
 					DecV(PEI.score, Values::DoubledClosed);
 			}
-			if (rrank >= 3 && (b & (File[2] | File[3] | File[4] | File[5])) && next != IPawn[opp] && (RO->PIsolated[file] & Line[rank] & board.Pawn(me)))
+			if (rrank >= 3 && (b & (File[2] | File[3] | File[4] | File[5])) && next != IPawn[opp] && (PIsolated[file] & Line[rank] & board.Pawn(me)))
 			{
 				IncV(PEI.score, Values::PawnChainLinear * (rrank - 4));
 				IncV(PEI.score, Values::PawnChain);
 			}
 		}
 		int backward = 0;
-		if (!(RO->PSupport[me][sq] & board.Pawn(me)))
+		if (!(PSupport[me][sq] & board.Pawn(me)))
 		{
 			if (isolated)
 				backward = 1;
@@ -3719,8 +3775,8 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 		else
 		{
 			NOTICE(PEI.score, rrank);
-			if (open && (F(board.Pawn(opp) & RO->PIsolated[file]) || pop(board.Pawn(me) & RO->PIsolated[file]) >= pop(board.Pawn(opp) & RO->PIsolated[file])))
-				IncV(PEI.score, RO->PasserCandidate[rrank]);  // IDEA: more precise pawn counting for the case of, say,
+			if (open && (F(board.Pawn(opp) & PIsolated[file]) || pop(board.Pawn(me) & PIsolated[file]) >= pop(board.Pawn(opp) & PIsolated[file])))
+				IncV(PEI.score, PasserValues::Candidate[rrank]);  // IDEA: more precise pawn counting for the case of, say,
 														  // white e5 candidate with black pawn on f5 or f4...
 			NOTICE(PEI.score, NO_INFO);
 		}
@@ -3737,14 +3793,14 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 						DecV(PEI.score, Values::PasserTarget2);
 				}	// Gull 3 was thinking of removing this term, because fitted weight is negative
 
-				for (uint64 v = PAtt[me][sq] & board.Pawn(me); v; Cut(v)) if ((RO->PSupport[me][lsb(v)] & board.Pawn(me)) == b)
+				for (uint64 v = PAtt[me][sq] & board.Pawn(me); v; Cut(v)) if ((PSupport[me][lsb(v)] & board.Pawn(me)) == b)
 				{
 					DecV(PEI.score, Values::ChainRoot);
 					break;
 				}
 			}
 		}
-		if (open && F(RO->PIsolated[file] & Forward[me][rank] & board.Pawn(opp)))
+		if (open && F(PIsolated[file] & Forward[me][rank] & board.Pawn(opp)))
 		{
 			PawnEntry->passer[me] |= (uint8)(1 << file);
 			if (rrank < 3) 
@@ -3828,7 +3884,7 @@ template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI, const State_& sta
 		state[0].dbl_att[me] |= att & state[0].att[me];
 		state[0].att[me] |= att;
 		if (QMask[sq] & board.King(opp))
-			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
+			if (uint64 v = Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))
 				{
 					state[0].xray[me] |= v;
@@ -3874,7 +3930,7 @@ template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI, const State
 		{
 			EI.king_att[me] += Single(a) ? KingQAttack1 : KingQAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
-				if (RO->FullLine[sq][lsb(v)] & att & ((board.Rook(me) & RMask[sq]) | (board.Bishop(me) & BMask[sq])))
+				if (FullLine[sq][lsb(v)] & att & ((board.Rook(me) & RMask[sq]) | (board.Bishop(me) & BMask[sq])))
 					EI.king_att[me]++;
 		}
 		uint64 control = att & EI.free[me];
@@ -3903,7 +3959,7 @@ template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI, const State_& state
 		state[0].dbl_att[me] |= att & state[0].att[me];
 		state[0].att[me] |= att;
 		if (RMask[sq] & board.King(opp))
-			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
+			if (uint64 v = Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))
 				{
 					state[0].xray[me] |= v;
@@ -3953,7 +4009,7 @@ template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const State_
 		{
 			EI.king_att[me] += Single(a) ? KingRAttack1 : KingRAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
-				if (RO->FullLine[sq][lsb(v)] & att & board.Major(me))
+				if (FullLine[sq][lsb(v)] & att & board.Major(me))
 					EI.king_att[me]++;
 		}
 		state[0].threat |= att & board.Queen(opp);
@@ -3988,7 +4044,7 @@ template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const State_
 			else if (uint64 attP = att & PWay[me][sq] & board.Pawn(opp))
 			{
 				int square = lsb(attP);
-				if (!(RO->PSupport[opp][square] & board.Pawn(opp)))
+				if (!(PSupport[opp][square] & board.Pawn(opp)))
 					IncV(EI.score, force * Values::RookHofWeakPAtt);
 			}
 		}
@@ -4014,7 +4070,7 @@ template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI, const State_& st
 		state[0].dbl_att[me] |= att & state[0].att[me];
 		state[0].att[me] |= att;
 		if (BMask[sq] & board.King(opp))
-			if (uint64 v = RO->Between[EI.king[opp]][sq] & EI.occ)
+			if (uint64 v = Between[EI.king[opp]][sq] & EI.occ)
 				if (Single(v))  // pin or discovery threat
 				{
 					state[0].xray[me] |= v;
@@ -4076,7 +4132,7 @@ template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI, const Stat
 		if (T(b & Outpost[me])
 			&& F(board.Knight(opp))
 			&& T(state[0].patt[me] & b)
-			&& F(board.Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)])
+			&& F(board.Pawn(opp) & PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)])
 			&& F(board.Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
 			IncV(EI.score, Values::BishopOutpostNoMinor);
 	}
@@ -4115,7 +4171,7 @@ template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI, const Stat
 			IncV(EI.score, Values::TacticalN2B);
 		if (att & EI.area[me])
 			IncV(EI.score, Values::KingDefKnight);
-		if ((b & Outpost[me]) && !(board.Pawn(opp) & RO->PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)]))
+		if ((b & Outpost[me]) && !(board.Pawn(opp) & PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)]))
 		{
 			IncV(EI.score, Values::KnightOutpost);
 			if (state[0].patt[me] & b)
@@ -4204,19 +4260,19 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const State_
 			if (PWay[opp][sq] & board.Major(me))
 			{
 				int square = NB<opp>(PWay[opp][sq] & board.Major(me));
-				if (F(RO->Between[sq][square] & EI.occ))
+				if (F(Between[sq][square] & EI.occ))
 					supported = 1;
 			}
 			if (PWay[opp][sq] & board.Major(opp))
 			{
 				int square = NB<opp>(PWay[opp][sq] & board.Major(opp));
-				if (F(RO->Between[sq][square] & EI.occ))
+				if (F(Between[sq][square] & EI.occ))
 					hooked = 1;
 			}
 			for (uint64 v = PAtt[me][sq - Push[me]] & board.Pawn(me); T(v); Cut(v))
 			{
 				int square = lsb(v);
-				if (F(board.Pawn(opp) & (VLine[square] | RO->PIsolated[FileOf(square)]) & Forward[me][RankOf(square)]))
+				if (F(board.Pawn(opp) & (VLine[square] | PIsolated[FileOf(square)]) & Forward[me][RankOf(square)]))
 					++connected;
 			}
 			if (connected)
@@ -4517,7 +4573,7 @@ template<bool me> bool is_legal(const State_& state, int move)
 	{
 		if ((QMask[from] & u) == 0)
 			return 0;
-		if (RO->Between[from][to] & occ)
+		if (Between[from][to] & occ)
 			return 0;
 	}
 	if (IsEP(move))
@@ -4658,13 +4714,13 @@ template<bool me> bool is_check(const State_& state, int move)
 	int from = From(move), to = To(move);
 	uint64 king = board.King(opp);
 	int king_sq = lsb(king), piece = board.PieceAt(from);
-	if (HasBit(state[0].xray[me], from) && !HasBit(RO->FullLine[king_sq][from], to))
+	if (HasBit(state[0].xray[me], from) && !HasBit(FullLine[king_sq][from], to))
 		return true;
 	if (piece < WhiteKnight)
 	{
 		if (PAtt[me][to] & king)
 			return true;
-		if (HasBit(OwnLine<me>(7), to) && T(king & OwnLine<me>(7)) && F(RO->Between[to][king_sq] & board.PieceAll()))
+		if (HasBit(OwnLine<me>(7), to) && T(king & OwnLine<me>(7)) && F(Between[to][king_sq] & board.PieceAll()))
 			return true;
 	}
 	else if (piece < WhiteLight)
@@ -4675,19 +4731,19 @@ template<bool me> bool is_check(const State_& state, int move)
 	else if (piece < WhiteRook)
 	{
 		if (BMask[to] & king)
-			if (F(RO->Between[king_sq][to] & board.PieceAll()))
+			if (F(Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	else if (piece < WhiteQueen)
 	{
 		if (RMask[to] & king)
-			if (F(RO->Between[king_sq][to] & board.PieceAll()))
+			if (F(Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	else if (piece < WhiteKing)
 	{
 		if (QMask[to] & king)
-			if (F(RO->Between[king_sq][to] & board.PieceAll()))
+			if (F(Between[king_sq][to] & board.PieceAll()))
 				return true;
 	}
 	return false;
@@ -5022,7 +5078,7 @@ void mark_evasions(int* list, const State_& state)
 
 template<bool me> inline bool IsGoodCap(const State_& state, int move)
 {
-	return (HasBit(state[0].xray[me], From(move)) && !HasBit(RO->FullLine[lsb(state().King(opp))][From(move)], To(move)))
+	return (HasBit(state[0].xray[me], From(move)) && !HasBit(FullLine[lsb(state().King(opp))][From(move)], To(move)))
 		 || see<me>(state, move, 0, SeeValue);
 }
 
@@ -5213,10 +5269,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			att ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					att |= Bit(pos);
 					break;
@@ -5236,10 +5292,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			att ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					att |= Bit(pos);
 					break;
@@ -5253,10 +5309,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			att ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & r_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & r_slider_att & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					att |= Bit(pos);
 					break;
@@ -5270,10 +5326,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			att ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & (r_slider_att | b_slider_att) & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & (r_slider_att | b_slider_att) & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					att |= Bit(pos);
 					break;
@@ -5298,10 +5354,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			def ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					def |= Bit(pos);
 					break;
@@ -5321,10 +5377,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			def ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					def |= Bit(pos);
 					break;
@@ -5338,10 +5394,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			def ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & r_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & r_slider_def & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					def |= Bit(pos);
 					break;
@@ -5355,10 +5411,10 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 			sq = lsb(u);
 			occ ^= Bit(sq);
 			def ^= Bit(sq);
-			for (new_att = RO->FullLine[to][sq] & (r_slider_def | b_slider_def) & occ & (~att); T(new_att); Cut(new_att))
+			for (new_att = FullLine[to][sq] & (r_slider_def | b_slider_def) & occ & (~att); T(new_att); Cut(new_att))
 			{
 				pos = lsb(new_att);
-				if (F(RO->Between[to][pos] & occ))
+				if (F(Between[to][pos] & occ))
 				{
 					def |= Bit(pos);
 					break;
@@ -5455,9 +5511,9 @@ template<class T_> T_* NullTerminate(T_* list)
 
 template <bool me> int* gen_captures(int* list, const State_& state)
 {
-	static const int MvvLvaPromotion = RO->MvvLva[WhiteQueen][BlackQueen];
-	static const int MvvLvaPromotionKnight = RO->MvvLva[WhiteKnight][BlackKnight];
-	static const int MvvLvaPromotionBad = RO->MvvLva[WhiteKnight][BlackPawn];
+	static const int MvvLvaPromotion = MvvLva[WhiteQueen][BlackQueen];
+	static const int MvvLvaPromotionKnight = MvvLva[WhiteKnight][BlackKnight];
+	static const int MvvLvaPromotionBad = MvvLva[WhiteKnight][BlackPawn];
 
 	const Board_& board = state.board_;
 	uint64 u, v;
@@ -5470,7 +5526,7 @@ template <bool me> int* gen_captures(int* list, const State_& state)
 	};
 	if (state[0].ep_square)
 		for (v = PAtt[opp][state[0].ep_square] & board.Pawn(me); T(v); Cut(v))
-			list = AddMove(list, lsb(v), state[0].ep_square, FlagEP, RO->MvvLva[IPawn[me]][IPawn[opp]] + bonus(lsb(v)));
+			list = AddMove(list, lsb(v), state[0].ep_square, FlagEP, MvvLva[IPawn[me]][IPawn[opp]] + bonus(lsb(v)));
 	for (u = board.Pawn(me) & OwnLine<me>(6); T(u); Cut(u))
 		if (F(board.PieceAt(lsb(u) + Push[me])))
 		{
@@ -5519,7 +5575,7 @@ template <bool me> int* gen_captures(int* list, const State_& state)
 
 template<bool me> int* gen_evasions(int* list, const State_& state)
 {
-	static const int MvvLvaPromotion = RO->MvvLva[WhiteQueen][BlackQueen];
+	static const int MvvLvaPromotion = MvvLva[WhiteQueen][BlackQueen];
 
 	const Board_& board = state.board_;
 	uint64 b, u;
@@ -5530,13 +5586,13 @@ template<bool me> int* gen_evasions(int* list, const State_& state)
 	for (u = (BMask[king] & (board.Bishop(opp) | board.Queen(opp))) | (RMask[king] & (board.Rook(opp) | board.Queen(opp))); T(u); u ^= b)
 	{
 		b = Bit(lsb(u));
-		if (F(RO->Between[king][lsb(u)] & board.PieceAll()))
+		if (F(Between[king][lsb(u)] & board.PieceAll()))
 			att |= b;
 	}
 	int att_sq = lsb(att);  // generally the only attacker
 	uint64 esc = KAtt[king] & (~(board.Piece(me) | state[0].att[opp])) & state[0].mask;
 	if (board.PieceAt(att_sq) >= WhiteLight)
-		esc &= ~RO->FullLine[king][att_sq];
+		esc &= ~FullLine[king][att_sq];
 	else if (board.PieceAt(att_sq) >= WhiteKnight)
 		esc &= ~NAtt[att_sq];
 
@@ -5545,7 +5601,7 @@ template<bool me> int* gen_evasions(int* list, const State_& state)
 	{  // second attacker (double check)
 		att_sq = lsb(att);
 		if (board.PieceAt(att_sq) >= WhiteLight)
-			esc &= ~RO->FullLine[king][att_sq];
+			esc &= ~FullLine[king][att_sq];
 		else if (board.PieceAt(att_sq) >= WhiteKnight)
 			esc &= ~NAtt[att_sq];
 
@@ -5558,7 +5614,7 @@ template<bool me> int* gen_evasions(int* list, const State_& state)
 	if (T(state[0].ep_square) && state[0].ep_square == att_sq + Push[me] && HasBit(state[0].mask, att_sq))
 	{
 		for (u = PAtt[opp][state[0].ep_square] & board.Pawn(me); T(u); Cut(u))
-			list = AddMove(list, lsb(u), att_sq + Push[me], FlagEP, RO->MvvLva[IPawn[me]][IPawn[opp]]);
+			list = AddMove(list, lsb(u), att_sq + Push[me], FlagEP, MvvLva[IPawn[me]][IPawn[opp]]);
 	}
 	for (u = PAtt[opp][att_sq] & board.Pawn(me); T(u); Cut(u))
 	{
@@ -5571,7 +5627,7 @@ template<bool me> int* gen_evasions(int* list, const State_& state)
 	for (; T(esc); Cut(esc))
 		list = AddCaptureP(list, board, IKing[me], king, lsb(esc), 0);
 	// now check interpositions
-	uint64 inter = RO->Between[king][att_sq];
+	uint64 inter = Between[king][att_sq];
 	for (u = Shift<opp>(inter) & board.Pawn(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
@@ -5703,7 +5759,7 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 		}
 	}
 	int kLoc = lsb(board.King(me));
-	auto xray = [&](int loc) { return T(state[0].xray[opp]) && F(state[0].xray[opp] & RO->FullLine[kLoc][loc]) ? FlagCastling : 0; };
+	auto xray = [&](int loc) { return T(state[0].xray[opp]) && F(state[0].xray[opp] & FullLine[kLoc][loc]) ? FlagCastling : 0; };
 	for (v = KAtt[kLoc] & free & (~state[0].att[opp]); T(v); Cut(v))
 	{
 		int to = lsb(v);
@@ -5715,7 +5771,7 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 
 template<bool me> int* gen_checks(int* list, const State_& state)
 {
-	static const int MvvLvaXray = RO->MvvLva[WhiteQueen][WhitePawn];
+	static const int MvvLvaXray = MvvLva[WhiteQueen][WhitePawn];
 
 	const Board_& board = state.board_;
 	uint64 u, v, target;
@@ -5726,7 +5782,7 @@ template<bool me> int* gen_checks(int* list, const State_& state)
 	for (u = state[0].xray[me] & board.Piece(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
-		target = clear & (~RO->FullLine[king][from]);
+		target = clear & (~FullLine[king][from]);
 		if (auto piece = board.PieceAt(from); piece == IPawn[me])
 		{
 			if (OwnRank<me>(from) < 6)
