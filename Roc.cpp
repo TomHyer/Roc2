@@ -158,6 +158,8 @@ constexpr sint16 KpkValue = 300 * CP_EVAL;
 constexpr sint16 EvalValue = 30000;
 constexpr sint16 MateValue = 32760 - 8 * (CP_SEARCH - 1);
 
+constexpr int PieceType[16] = { 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 5 };
+
 /*
 general move:
 0 - 11: from & to
@@ -415,13 +417,122 @@ INLINE uint64 QueenAttacks(int sq, const uint64& occ)
 	return BishopAttacks(sq, occ) | RookAttacks(sq, occ);
 }
 
-INLINE packed_t& XPst(CommonData_* data, int piece, int sq)
+// helper to divide intermediate quantities to form scores
+// note that straight integer division (a la Gull) creates an attractor at 0
+// we support this, especially for weights inherited from Gull which have not been tuned for Roc
+template<int DEN, int SINK = DEN> struct Div_
 {
-	return data->PstVals[(piece << 6) | sq];
+	constexpr int operator()(int x) const
+	{
+		constexpr int shift = std::numeric_limits<int>::max() / (2 * DEN);
+		constexpr int shrink = (SINK - DEN) / 2;
+		const int y = x > 0 ? Max(0, x - shrink) : Min(0, x + shrink);
+		return (y + DEN * shift) / DEN - shift;
+	}
 };
+
+namespace PstW
+{
+	struct Weights_
+	{
+		struct Phase_
+		{
+			array<int, 4> quad_;
+			array<int, 4> linear_;
+			array<int, 2> quadMixed_;
+		} op_, md_, eg_, cl_;
+	};
+
+	constexpr Weights_ Pawn = {
+		{ { -48, -275, 165, 0 },{ -460, -357, -359, 437 },{ 69, -28 } },
+		{ { -85, -171, 27, 400 },{ -160, -133, 93, 1079 },{ 13, -6 } },
+		{ { -80, -41, -85, 782 },{ 336, 303, 295, 1667 },{ -35, 13 } },
+		{ { 2, 13, 11, 23 },{ 6, 14, 37, -88 },{ 14, -2 } } };
+	constexpr Weights_ Knight = {
+		{ { -134, 6, -12, -72 },{ -680, -343, -557, 1128 },{ -32, 14 } },
+		{ { -315, -123, -12, -90 },{ -449, -257, -390, 777 },{ -24, -3 } },
+		{ { -501, -246, -12, -107 },{ 61, -274, -357, 469 },{ -1, -16 } },
+		{ { -12, -5, -2, -22 },{ 96, 69, -64, -23 },{ -5, -8 } } };
+	constexpr Weights_ Bishop = {
+		{ { -123, -62, 54, -116 },{ 24, -486, -350, -510 },{ 8, -58 } },
+		{ { -168, -49, 24, -48 },{ -323, -289, -305, -254 },{ -7, -21 } },
+		{ { -249, -33, 4, -14 },{ -529, -232, -135, 31 },{ -32, 0 } },
+		{ { 4, -10, 9, -13 },{ 91, -43, -34, 29 },{ -13, -10 } } };
+	constexpr Weights_ Rook = {
+		{ { -260, 12, -49, 324 },{ -777, -223, 245, 670 },{ -7, -25 } },
+		{ { -148, -88, -9, 165 },{ -448, -278, -63, 580 },{ -7, 0 } },
+		{ { 13, -149, 14, 46 },{ -153, -225, -246, 578 },{ -6, 16 } },
+		{ { 0, 8, -15, 8 },{ -32, -29, 10, -51 },{ -6, -23 } } };
+	constexpr Weights_ Queen = {
+		{ { -270, -18, -19, -68 }, { -520, 444, 474, -186 }, { 18, -6 } },
+		{ { -114, -209, 21, -103 }, { -224, -300, 73, 529 }, { -13, 1 } },
+		{ { 2, -341, 58, -160 }, { 40, -943, -171, 1328 }, { -34, 27 } },
+		{ { -3, -26, 9, 5 }, { -43, -18, -107, 60 }, { 5, 12 } } };
+	constexpr Weights_ King = {
+		{ { -266, -694, -12, 170 }, { 1077, 3258, 20, -186 }, { -18, 3 } },
+		{ { -284, -451, -31, 43 }, { 230, 1219, -425, 577 }, { -1, 5 } },
+		{ { -334, -157, -67, -93 }, { -510, -701, -863, 1402 }, { 37, -8 } },
+		{ { 22, 14, -16, 0 }, { 7, 70, 40,  78 }, { 9, -3 } } };
+}
+
+constexpr std::array<std::array<packed_t, 64>, 16> MakePst()
+{
+	constexpr std::array<sint8, 8> DistC = { 3, 2, 1, 0, 0, 1, 2, 3 };
+	constexpr std::array<sint8, 8> RankR = { -3, -2, -1, 0, 1, 2, 3, 4 };
+
+	std::array<std::array<packed_t, 64>, 16> retval = {};
+	for (int i = 0; i < 64; ++i)
+	{
+		int r = RankOf(i);
+		int f = FileOf(i);
+		int d = f > r ? f - r : r - f;
+		int e = f + r > 7 ? f + r - 7 : 7 - f - r;
+		array<int, 4> distL = { DistC[f], DistC[r],  RankR[d] + RankR[e], RankR[r] };
+		array<int, 4> distQ = { DistC[f] * DistC[f], DistC[r] * DistC[r], RankR[d] * RankR[d] + RankR[e] * RankR[e], RankR[r] * RankR[r] };
+		array<int, 2> distM = { DistC[f] * DistC[r], DistC[f] * RankR[r] };
+		array<const PstW::Weights_*, 6> weights = { &PstW::Pawn, &PstW::Knight, &PstW::Bishop, &PstW::Rook, &PstW::Queen, &PstW::King };
+		for (int j = 2; j < 16; j += 2)
+		{
+			int index = PieceType[j];
+			const PstW::Weights_& src = *weights[index];
+			int op = 0, md = 0, eg = 0, cl = 0;
+			for (int k = 0; k < 2; ++k)
+			{
+				op += src.op_.quadMixed_[k] * distM[k];
+				md += src.md_.quadMixed_[k] * distM[k];
+				eg += src.eg_.quadMixed_[k] * distM[k];
+				cl += src.cl_.quadMixed_[k] * distM[k];
+			}
+			for (int k = 0; k < 4; ++k)
+			{
+				op += src.op_.quad_[k] * distQ[k] + src.op_.linear_[k] * distL[k];
+				md += src.md_.quad_[k] * distQ[k] + src.md_.linear_[k] * distL[k];
+				eg += src.eg_.quad_[k] * distQ[k] + src.eg_.linear_[k] * distL[k];
+				cl += src.cl_.quad_[k] * distQ[k] + src.cl_.linear_[k] * distL[k];
+			}
+			// Regularize(&op, &md, &eg);
+			Div_<64> d64;
+			retval[j][i] = Pack(d64(op), d64(md), d64(eg), d64(cl));
+		}
+	}
+
+	retval[WhiteKnight][56] -= Pack(100 * CP_EVAL, 0);
+	retval[WhiteKnight][63] -= Pack(100 * CP_EVAL, 0);
+	// now for black
+	for (int i = 0; i < 64; ++i)
+		for (int j = 3; j < 16; j += 2)
+		{
+			auto src = retval[j - 1][63 - i];
+			retval[j][i] = Pack(-Opening(src), -Middle(src), -Endgame(src), -Closed(src));
+		}
+
+	return retval;
+}
+constexpr std::array<std::array<packed_t, 64>, 16> PstVals = MakePst();
+
 INLINE packed_t Pst(int piece, int sq)
 {
-	return RO->PstVals[(piece << 6) | sq];
+	return PstVals[piece][sq];
 };
 
 array<array<array<uint16, 2>, 64>, 16> HistoryVals;
@@ -611,7 +722,6 @@ const sint8 DistC[8] = { 3, 2, 1, 0, 0, 1, 2, 3 };
 const sint8 RankR[8] = { -3, -2, -1, 0, 1, 2, 3, 4 };
 
 constexpr uint16 SeeValue[16] = { 0, 0, 360, 360, 1300, 1300, 1300, 1300, 1300, 1300, 2040, 2040, 3900, 3900, 30000, 30000 };
-constexpr int PieceType[16] = { 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 5 };
 constexpr array<int, 5> Phase = { 0, SeeValue[4], SeeValue[6], SeeValue[10], SeeValue[12] };
 constexpr int PhaseMin = 2 * Phase[3] + Phase[1] + Phase[2];
 constexpr int PhaseMax = 16 * Phase[0] + 3 * Phase[1] + 3 * Phase[2] + 4 * Phase[3] + 2 * Phase[4];
@@ -678,50 +788,6 @@ namespace Values
 	static const packed_t MatNNR = Pack(0, -12, -24, 0);
 	static const packed_t MatM = Pack(4, 8, 12, 0);
 	static const packed_t MatPawnOnly = Pack(0, 0, 0, -50);
-}
-
-namespace PstW
-{
-	struct Weights_
-	{
-		struct Phase_
-		{
-			array<int, 4> quad_;
-			array<int, 4> linear_;
-			array<int, 2> quadMixed_;
-		} op_, md_, eg_, cl_;
-	};
-
-	constexpr Weights_ Pawn = {
-		{ { -48, -275, 165, 0 },{ -460, -357, -359, 437 },{ 69, -28 } },
-		{ { -85, -171, 27, 400 },{ -160, -133, 93, 1079 },{ 13, -6 } },
-		{ { -80, -41, -85, 782 },{ 336, 303, 295, 1667 },{ -35, 13 } },
-		{ { 2, 13, 11, 23 },{ 6, 14, 37, -88 },{ 14, -2 } } };
-	constexpr Weights_ Knight = {
-		{ { -134, 6, -12, -72 },{ -680, -343, -557, 1128 },{ -32, 14 } },
-		{ { -315, -123, -12, -90 },{ -449, -257, -390, 777 },{ -24, -3 } },
-		{ { -501, -246, -12, -107 },{ 61, -274, -357, 469 },{ -1, -16 } },
-		{ { -12, -5, -2, -22 },{ 96, 69, -64, -23 },{ -5, -8 } } };
-	constexpr Weights_ Bishop = {
-		{ { -123, -62, 54, -116 },{ 24, -486, -350, -510 },{ 8, -58 } },
-		{ { -168, -49, 24, -48 },{ -323, -289, -305, -254 },{ -7, -21 } },
-		{ { -249, -33, 4, -14 },{ -529, -232, -135, 31 },{ -32, 0 } },
-		{ { 4, -10, 9, -13 },{ 91, -43, -34, 29 },{ -13, -10 } } };
-	constexpr Weights_ Rook = {
-		{ { -260, 12, -49, 324 },{ -777, -223, 245, 670 },{ -7, -25 } },
-		{ { -148, -88, -9, 165 },{ -448, -278, -63, 580 },{ -7, 0 } },
-		{ { 13, -149, 14, 46 },{ -153, -225, -246, 578 },{ -6, 16 } },
-		{ { 0, 8, -15, 8 },{ -32, -29, 10, -51 },{ -6, -23 } } };
-	constexpr Weights_ Queen = {
-		{ { -270, -18, -19, -68 }, { -520, 444, 474, -186 }, { 18, -6 } },
-		{ { -114, -209, 21, -103 }, { -224, -300, 73, 529 }, { -13, 1 } },
-		{ { 2, -341, 58, -160 }, { 40, -943, -171, 1328 }, { -34, 27 } },
-		{ { -3, -26, 9, 5 }, { -43, -18, -107, 60 }, { 5, 12 } } };
-	constexpr Weights_ King = {
-		{ { -266, -694, -12, 170 }, { 1077, 3258, 20, -186 }, { -18, 3 } },
-		{ { -284, -451, -31, 43 }, { 230, 1219, -425, 577 }, { -1, 5 } },
-		{ { -334, -157, -67, -93 }, { -510, -701, -863, 1402 }, { 37, -8 } },
-		{ { 22, 14, -16, 0 }, { 7, 70, 40,  78 }, { 9, -3 } } };
 }
 
 // coefficient (Linear, Log, Locus) * phase (4)
@@ -1885,76 +1951,6 @@ void Regularize(int* op, int* md, int* eg)
 // helper to divide intermediate quantities to form scores
 // note that straight integer division (a la Gull) creates an attractor at 0
 // we support this, especially for weights inherited from Gull which have not been tuned for Roc
-template<int DEN, int SINK = DEN> struct Div_
-{
-	int operator()(int x) const
-	{
-		constexpr int shift = std::numeric_limits<int>::max() / (2 * DEN);
-		constexpr int shrink = (SINK - DEN) / 2;
-		const int y = x > 0 ? Max(0, x - shrink) : Min(0, x + shrink);
-		return (y + DEN * shift) / DEN - shift;
-	}
-};
-
-packed_t eval_pst(const Board_& board)
-{
-	packed_t retval = 0;
-	for (int i = 0; i < 64; ++i)
-		if (auto p = board.PieceAt(i))
-			retval += Pst(p, i);
-	return retval;
-}
-
-void init_pst(CommonData_* data)
-{
-	fill(data->PstVals.begin(), data->PstVals.end(), 0);
-
-	for (int i = 0; i < 64; ++i)
-	{
-		int r = RankOf(i);
-		int f = FileOf(i);
-		int d = abs(f - r);
-		int e = abs(f + r - 7);
-		array<int, 4> distL = { DistC[f], DistC[r],  RankR[d] + RankR[e], RankR[r] };
-		array<int, 4> distQ = { DistC[f] * DistC[f], DistC[r] * DistC[r], RankR[d] * RankR[d] + RankR[e] * RankR[e], RankR[r] * RankR[r] };
-		array<int, 2> distM = { DistC[f] * DistC[r], DistC[f] * RankR[r] };
-		array<const PstW::Weights_*, 6> weights = { &PstW::Pawn, &PstW::Knight, &PstW::Bishop, &PstW::Rook, &PstW::Queen, &PstW::King };
-		for (int j = 2; j < 16; j += 2)
-		{
-			int index = PieceType[j];
-			const PstW::Weights_& src = *weights[index];
-			int op = 0, md = 0, eg = 0, cl = 0;
-			for (int k = 0; k < 2; ++k)
-			{
-				op += src.op_.quadMixed_[k] * distM[k];
-				md += src.md_.quadMixed_[k] * distM[k];
-				eg += src.eg_.quadMixed_[k] * distM[k];
-				cl += src.cl_.quadMixed_[k] * distM[k];
-			}
-			for (int k = 0; k < 4; ++k)
-			{
-				op += src.op_.quad_[k] * distQ[k] + src.op_.linear_[k] * distL[k];
-				md += src.md_.quad_[k] * distQ[k] + src.md_.linear_[k] * distL[k];
-				eg += src.eg_.quad_[k] * distQ[k] + src.eg_.linear_[k] * distL[k];
-				cl += src.cl_.quad_[k] * distQ[k] + src.cl_.linear_[k] * distL[k];
-			}
-			// Regularize(&op, &md, &eg);
-			Div_<64> d64;
-			XPst(data, j, i) = Pack(d64(op), d64(md), d64(eg), d64(cl));
-		}
-	}
-
-	XPst(data, WhiteKnight, 56) -= Pack(100 * CP_EVAL, 0);
-	XPst(data, WhiteKnight, 63) -= Pack(100 * CP_EVAL, 0);
-	// now for black
-	for (int i = 0; i < 64; ++i)
-		for (int j = 3; j < 16; j += 2)
-		{
-			auto src = XPst(data, j - 1, 63 - i);
-			XPst(data, j, i) = Pack(-Opening(src), -Middle(src), -Endgame(src), -Closed(src));
-		}
-}
-
 template<class T_> void init_mobility
 	(const array<int, 12>& coeffs,
 	 T_* mob)
@@ -2829,7 +2825,6 @@ void init_data(CommonData_* dst)
 	init_misc(dst);
 	init_magic(&dst->BMagic_, &dst->RMagic_);
 	gen_kpk(dst);
-	init_pst(dst);
 	init_eval(dst);
 	init_material(dst);
 }
@@ -3127,6 +3122,14 @@ static inline void check_for_stop(void)
     }
 
 // END SMP
+packed_t eval_pst(const Board_& board)
+{
+	packed_t retval = 0;
+	for (int i = 0; i < 64; ++i)
+		if (auto p = board.PieceAt(i))
+			retval += Pst(p, i);
+	return retval;
+}
 
 void setup_board(std::array<uint8, 64> squares, State_* state)
 {
@@ -5940,6 +5943,8 @@ template<bool me> int* gen_delta_moves(int* list, const State_& state, int margi
 		list = AddCDeltaP(list, margin, IKing[me], from, lsb(v), 0);
 	return NullTerminate(list);
 }
+
+template<bool me, bool exclusion, bool evasion> int scout(State_* state, int beta, int depth, int flags);
 
 template<bool me> int singular_extension(State_* state, int ext, int prev_ext, int margin_one, int margin_two, int depth, int killer)
 {
