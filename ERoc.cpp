@@ -3041,6 +3041,8 @@ struct UCIGoStruct {
     Thread* threads;
     Board* board;
     Limits  limits;
+    uint64_t nodesSofar;
+    double elapsedSofar;
 };
 
 thread* uciGo(UCIGoStruct* ucigo, Thread* threads, Board* board, int multiPV, char* str);
@@ -5147,9 +5149,10 @@ void initSearch() {
 void* start_search_threads(void* arguments) 
 {
     // Unpack the UCIGoStruct that was cast to void*
-    Thread* threads = ((UCIGoStruct*)arguments)->threads;
-    Board* board = ((UCIGoStruct*)arguments)->board;
-    Limits* limits = &((UCIGoStruct*)arguments)->limits;
+    auto go = reinterpret_cast<UCIGoStruct*>(arguments);
+    Thread* threads = go->threads;
+    Board* board = go->board;
+    Limits* limits = &go->limits;
 
     int score;
     char str[6];
@@ -5160,6 +5163,11 @@ void* start_search_threads(void* arguments)
 
     // UCI spec does not want reports until out of pondering
     while (IS_PONDERING);
+
+    go->elapsedSofar += elapsed_time(threads->tm);
+    go->nodesSofar += nodesSearchedThreadPool(threads);
+    int nps = (int)(1000 * (go->nodesSofar / (1 + go->elapsedSofar)));
+    printf("info nps %d\n", nps);
 
     // Report best move ( we should always have one )
     moveToString(best, str, board->chess960);
@@ -7778,7 +7786,7 @@ void uciReport(Thread* threads, PVariation* pv, int alpha, int beta)
     int bounded = Max(alpha, Min(pv->score, beta));
     uint64_t nodes = nodesSearchedThreadPool(threads);
     uint64_t tbhits = tbhitsThreadPool(threads);
-    int nps = (int)(1000 * (nodes / (1 + elapsed)));
+    //int nps = (int)(1000 * (nodes / (1 + elapsed)));
 
     // If the score is MATE or MATED in X, convert to X
     int score = bounded >= MATE_IN_MAX ? (MATE - bounded + 1) / 2
@@ -7792,8 +7800,8 @@ void uciReport(Thread* threads, PVariation* pv, int alpha, int beta)
         : bounded <= alpha ? " upperbound " : " ";
 
     printf("info depth %d seldepth %d multipv %d score %s %d%stime %d "
-        "knodes %d nps %d tbhits %d hashfull %d pv ",
-        depth, seldepth, multiPV, type, score, bound, static_cast<int>(elapsed), static_cast<int>(nodes >> 10), nps, static_cast<int>(tbhits), hashfull);
+        "knodes %d tbhits %d hashfull %d pv ",
+        depth, seldepth, multiPV, type, score, bound, static_cast<int>(elapsed), static_cast<int>(nodes >> 10), static_cast<int>(tbhits), hashfull);
 
     // Iterate over the PV and print each move
     for (int i = 0; i < pv->length; i++) {
