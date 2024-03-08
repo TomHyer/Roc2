@@ -1,5 +1,4 @@
 
-#pragma optimize("", off)
 /// Roc and Platform
 
 template<class T_> inline const T_& Max(const T_& lhs, const T_& rhs) { return lhs < rhs ? rhs : lhs; }
@@ -86,11 +85,9 @@ using HistoryTable = array<array<array<array<array<int16_t, N_SQUARES>, N_SQUARE
 using CaptureHistoryTable = array<array<array<array<array<int16_t, N_PIECES - 1>, N_SQUARES>, 2>, 2>, N_PIECES>;
 using ContinuationTable = array<array<array<array<array<array<int16_t, N_SQUARES>, N_PIECES>, N_CONTINUATION>, N_SQUARES>, N_PIECES>, 2>;
 
-#define MakeScore(mg, eg) ((int)((unsigned int)(eg) << 16) + (mg))
-#define ScoreMG(s) ((int16_t)((uint16_t)((unsigned)((s)))))
-#define ScoreEG(s) ((int16_t)((uint16_t)((unsigned)((s) + 0x8000) >> 16)))
-
-extern int PSQT[32][N_SQUARES];
+inline int MakeScore(int mg, int eg) { return (int)((unsigned int)(eg) << 16) + mg; }
+inline int ScoreMG(int s) { return (int16_t)((uint16_t)((unsigned)(s))); }
+inline int ScoreEG(int s) { return (int16_t)((uint16_t)((unsigned)(s + 0x8000) >> 16)); }
 
 // Trivial alignment macros
 
@@ -116,7 +113,6 @@ template<int N> void Prefetch(const char* p)
 
 
 /// bitboards.h
-
 
 constexpr uint64_t
     RANK_1 = 0x00000000000000FFull,
@@ -152,35 +148,8 @@ constexpr uint64_t
 extern const array<uint64_t, 8> Files, Ranks;
 
 int INLINE FileOf(int sq) { return sq % N_FILES; }
-int fileOf(int sq);
 constexpr array<int, 8> MIRROR_FILE = { 0, 1, 2, 3, 3, 2, 1, 0 };
-int mirrorFile(int file);
 INLINE int RankOf(int sq) { return sq / N_FILES; }
-int rankOf(int sq);
-int relativeRankOf(int colour, int sq);
-int square(int rank, int file);
-int relativeSquare(int colour, int sq);
-int relativeSquare32(int colour, int sq);
-uint64_t squaresOfMatchingColour(int sq);
-
-int frontmost(int colour, uint64_t bb);
-int backmost(int colour, uint64_t bb);
-
-int popcount(uint64_t bb);
-int getlsb(uint64_t bb);
-int getmsb(uint64_t bb);
-int poplsb(uint64_t* bb);
-int popmsb(uint64_t* bb);
-bool several(uint64_t bb);
-bool onlyOne(uint64_t bb);
-
-void setBit(uint64_t* bb, int i);
-void clearBit(uint64_t* bb, int i);
-bool testBit(uint64_t bb, int i);
-
-void printBitboard(uint64_t bb);
-
-
 
 
 /// bitboards.c
@@ -227,19 +196,24 @@ int relativeSquare32(int colour, int sq) {
     return 4 * relativeRankOf(colour, sq) + mirrorFile(fileOf(sq));
 }
 
+bool testBit(uint64_t bb, int i) {
+    assert(0 <= i && i < N_SQUARES);
+    return bb & (1ull << i);
+}
+
+void setBit(uint64_t* bb, int i) {
+    assert(!testBit(*bb, i));
+    *bb ^= 1ull << i;
+}
+
+void clearBit(uint64_t* bb, int i) {
+    assert(testBit(*bb, i));
+    *bb ^= 1ull << i;
+}
+
 uint64_t squaresOfMatchingColour(int sq) {
     assert(0 <= sq && sq < N_SQUARES);
     return testBit(WHITE_SQUARES, sq) ? WHITE_SQUARES : BLACK_SQUARES;
-}
-
-int frontmost(int colour, uint64_t bb) {
-    assert(0 <= colour && colour < N_COLORS);
-    return colour == WHITE ? getmsb(bb) : getlsb(bb);
-}
-
-int backmost(int colour, uint64_t bb) {
-    assert(0 <= colour && colour < N_COLORS);
-    return colour == WHITE ? getlsb(bb) : getmsb(bb);
 }
 
 int popcount(uint64_t bb) {
@@ -272,6 +246,16 @@ int getmsb(uint64_t bb) {
 #endif
 }
 
+int frontmost(int colour, uint64_t bb) {
+    assert(0 <= colour && colour < N_COLORS);
+    return colour == WHITE ? getmsb(bb) : getlsb(bb);
+}
+
+int backmost(int colour, uint64_t bb) {
+    assert(0 <= colour && colour < N_COLORS);
+    return colour == WHITE ? getlsb(bb) : getmsb(bb);
+}
+
 int poplsb(uint64_t* bb) {
     int lsb = getlsb(*bb);
     *bb &= *bb - 1;
@@ -292,21 +276,6 @@ bool onlyOne(uint64_t bb) {
     return bb && !several(bb);
 }
 
-void setBit(uint64_t* bb, int i) {
-    assert(!testBit(*bb, i));
-    *bb ^= 1ull << i;
-}
-
-void clearBit(uint64_t* bb, int i) {
-    assert(testBit(*bb, i));
-    *bb ^= 1ull << i;
-}
-
-bool testBit(uint64_t bb, int i) {
-    assert(0 <= i && i < N_SQUARES);
-    return bb & (1ull << i);
-}
-
 void printBitboard(uint64_t bb) {
 
     for (int rank = 7; rank >= 0; rank--) {
@@ -322,15 +291,165 @@ void printBitboard(uint64_t bb) {
     printf("\n");
 }
 
-/// zobrist.h
+/// PSQT from evaluate.c
 
-extern array<array<uint64_t, N_SQUARES>, 32> ZobristKeys;
-extern array<uint64_t, N_FILES> ZobristEnpassKeys;
-extern array<uint64_t, N_SQUARES> ZobristCastleKeys;
-extern uint64_t ZobristTurnKey;
+/* Piece Square Evaluation Terms */
 
-uint64_t rand64();
-void initZobrist();
+#define S MakeScore
+
+const int PawnPSQT[N_SQUARES] = {
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+    S(-13,   7), S(-4,   0), S(1,   4), S(6,   1),
+    S(3,  10), S(-9,   4), S(-9,   3), S(-16,   7),
+    S(-21,   5), S(-17,   6), S(-1,  -6), S(12, -14),
+    S(8, -10), S(-4,  -5), S(-15,   7), S(-24,  11),
+    S(-14,  16), S(-21,  17), S(9, -10), S(10, -24),
+    S(4, -22), S(4, -10), S(-20,  17), S(-17,  18),
+    S(-15,  18), S(-18,  11), S(-16,  -8), S(4, -30),
+    S(-2, -24), S(-18,  -9), S(-23,  13), S(-17,  21),
+    S(-20,  48), S(-9,  44), S(1,  31), S(17,  -9),
+    S(36,  -6), S(-9,  31), S(-6,  45), S(-23,  49),
+    S(-33, -70), S(-66,  -9), S(-16, -22), S(65, -23),
+    S(41, -18), S(39, -14), S(-47,   4), S(-62, -51),
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+};
+
+const int KnightPSQT[N_SQUARES] = {
+    S(-31, -38), S(-6, -24), S(-20, -22), S(-16,  -1),
+    S(-11,  -1), S(-22, -19), S(-8, -20), S(-41, -30),
+    S(1,  -5), S(-11,   3), S(-6, -19), S(-1,  -2),
+    S(0,   0), S(-9, -16), S(-8,  -3), S(-6,   1),
+    S(7, -21), S(8,  -5), S(7,   2), S(10,  19),
+    S(10,  19), S(4,   2), S(8,  -4), S(3, -19),
+    S(16,  21), S(17,  30), S(23,  41), S(27,  50),
+    S(24,  53), S(23,  41), S(19,  28), S(13,  26),
+    S(13,  30), S(23,  30), S(37,  51), S(30,  70),
+    S(26,  67), S(38,  50), S(22,  33), S(14,  28),
+    S(-24,  25), S(-5,  37), S(25,  56), S(22,  60),
+    S(27,  55), S(29,  55), S(-1,  32), S(-19,  25),
+    S(13,  -2), S(-11,  18), S(27,  -2), S(37,  24),
+    S(41,  24), S(40,  -7), S(-13,  16), S(2,  -2),
+    S(-167,  -5), S(-91,  12), S(-117,  41), S(-38,  17),
+    S(-18,  19), S(-105,  48), S(-119,  24), S(-165, -17),
+};
+
+const int BishopPSQT[N_SQUARES] = {
+    S(5, -21), S(1,   1), S(-1,   5), S(1,   5),
+    S(2,   8), S(-6,  -2), S(0,   1), S(4, -25),
+    S(26, -17), S(2, -31), S(15,  -2), S(8,   8),
+    S(8,   8), S(13,  -3), S(9, -31), S(26, -29),
+    S(9,   3), S(22,   9), S(-5,  -3), S(18,  19),
+    S(17,  20), S(-5,  -6), S(20,   4), S(15,   8),
+    S(0,  12), S(10,  17), S(17,  32), S(20,  32),
+    S(24,  34), S(12,  30), S(15,  17), S(0,  14),
+    S(-20,  34), S(13,  31), S(1,  38), S(21,  45),
+    S(12,  46), S(6,  38), S(13,  33), S(-14,  37),
+    S(-13,  31), S(-11,  45), S(-7,  23), S(2,  40),
+    S(8,  38), S(-21,  34), S(-5,  46), S(-9,  35),
+    S(-59,  38), S(-49,  22), S(-13,  30), S(-35,  36),
+    S(-33,  36), S(-13,  33), S(-68,  21), S(-55,  35),
+    S(-66,  18), S(-65,  36), S(-123,  48), S(-107,  56),
+    S(-112,  53), S(-97,  43), S(-33,  22), S(-74,  15),
+};
+
+const int RookPSQT[N_SQUARES] = {
+    S(-26,  -1), S(-21,   3), S(-14,   4), S(-6,  -4),
+    S(-5,  -4), S(-10,   3), S(-13,  -2), S(-22, -14),
+    S(-70,   5), S(-25, -10), S(-18,  -7), S(-11, -11),
+    S(-9, -13), S(-15, -15), S(-15, -17), S(-77,   3),
+    S(-39,   3), S(-16,  14), S(-25,   9), S(-14,   2),
+    S(-12,   3), S(-25,   8), S(-4,   9), S(-39,   1),
+    S(-32,  24), S(-21,  36), S(-21,  36), S(-5,  26),
+    S(-8,  27), S(-19,  34), S(-13,  33), S(-30,  24),
+    S(-22,  46), S(4,  38), S(16,  38), S(35,  30),
+    S(33,  32), S(10,  36), S(17,  31), S(-14,  43),
+    S(-33,  60), S(17,  41), S(0,  54), S(33,  36),
+    S(29,  35), S(3,  52), S(33,  32), S(-26,  56),
+    S(-18,  41), S(-24,  47), S(-1,  38), S(15,  38),
+    S(14,  37), S(-2,  36), S(-24,  49), S(-12,  38),
+    S(33,  55), S(24,  63), S(-1,  73), S(9,  66),
+    S(10,  67), S(0,  69), S(34,  59), S(37,  56),
+};
+
+const int QueenPSQT[N_SQUARES] = {
+    S(20, -34), S(4, -26), S(9, -34), S(17, -16),
+    S(18, -18), S(14, -46), S(9, -28), S(22, -44),
+    S(6, -15), S(15, -22), S(22, -42), S(13,   2),
+    S(17,   0), S(22, -49), S(18, -29), S(3, -18),
+    S(6,  -1), S(21,   7), S(5,  35), S(0,  34),
+    S(2,  34), S(5,  37), S(24,   9), S(13, -15),
+    S(9,  17), S(12,  46), S(-6,  59), S(-19, 109),
+    S(-17, 106), S(-4,  57), S(18,  48), S(8,  33),
+    S(-10,  42), S(-8,  79), S(-19,  66), S(-32, 121),
+    S(-32, 127), S(-23,  80), S(-8,  95), S(-10,  68),
+    S(-28,  56), S(-23,  50), S(-33,  66), S(-18,  70),
+    S(-17,  71), S(-19,  63), S(-18,  65), S(-28,  76),
+    S(-16,  61), S(-72, 108), S(-19,  65), S(-52, 114),
+    S(-54, 120), S(-14,  59), S(-69, 116), S(-11,  73),
+    S(8,  43), S(19,  47), S(0,  79), S(3,  78),
+    S(-3,  89), S(13,  65), S(18,  79), S(21,  56),
+};
+
+const int KingPSQT[N_SQUARES] = {
+    S(87, -77), S(67, -49), S(4,  -7), S(-9, -26),
+    S(-10, -27), S(-8,  -1), S(57, -50), S(79, -82),
+    S(35,   3), S(-27,  -3), S(-41,  16), S(-89,  29),
+    S(-64,  26), S(-64,  28), S(-25,  -3), S(30,  -4),
+    S(-44, -19), S(-16, -19), S(28,   7), S(0,  35),
+    S(18,  32), S(31,   9), S(-13, -18), S(-36, -13),
+    S(-48, -44), S(98, -39), S(71,  12), S(-22,  45),
+    S(12,  41), S(79,  10), S(115, -34), S(-59, -38),
+    S(-6, -10), S(95, -39), S(39,  14), S(-49,  18),
+    S(-27,  19), S(35,  14), S(81, -34), S(-50, -13),
+    S(24, -39), S(123, -22), S(105,  -1), S(-22, -21),
+    S(-39, -20), S(74, -15), S(100, -23), S(-17, -49),
+    S(0, -98), S(28, -21), S(7, -18), S(-3, -41),
+    S(-57, -39), S(12, -26), S(22, -24), S(-15,-119),
+    S(-16,-153), S(49, -94), S(-21, -73), S(-19, -32),
+    S(-51, -55), S(-42, -62), S(53, -93), S(-58,-133),
+};
+
+
+/* Material Value Evaluation Terms */
+
+const int PawnValue = S(82, 144);
+const int KnightValue = S(426, 475);
+const int BishopValue = S(441, 510);
+const int RookValue = S(627, 803);
+const int QueenValue = S(1292, 1623);
+const int KingValue = S(0, 0);
+
+#undef S
+
+
+int PSQT[32][N_SQUARES];
+void initPSQT()
+{
+    // Init a normalized 64-length PSQT for the evaluation which
+    // combines the Piece Values with the original PSQT Values
+
+    for (int sq = 0; sq < N_SQUARES; sq++) {
+
+        const int sq1 = relativeSquare(WHITE, sq);
+        const int sq2 = relativeSquare(BLACK, sq);
+
+        PSQT[WHITE_PAWN][sq] = +PawnValue + PawnPSQT[sq1];
+        PSQT[WHITE_KNIGHT][sq] = +KnightValue + KnightPSQT[sq1];
+        PSQT[WHITE_BISHOP][sq] = +BishopValue + BishopPSQT[sq1];
+        PSQT[WHITE_ROOK][sq] = +RookValue + RookPSQT[sq1];
+        PSQT[WHITE_QUEEN][sq] = +QueenValue + QueenPSQT[sq1];
+        PSQT[WHITE_KING][sq] = +KingValue + KingPSQT[sq1];
+
+        PSQT[BLACK_PAWN][sq] = -PawnValue - PawnPSQT[sq2];
+        PSQT[BLACK_KNIGHT][sq] = -KnightValue - KnightPSQT[sq2];
+        PSQT[BLACK_BISHOP][sq] = -BishopValue - BishopPSQT[sq2];
+        PSQT[BLACK_ROOK][sq] = -RookValue - RookPSQT[sq2];
+        PSQT[BLACK_QUEEN][sq] = -QueenValue - QueenPSQT[sq2];
+        PSQT[BLACK_KING][sq] = -KingValue - KingPSQT[sq2];
+    }
+}
 
 
 /// zobrist.c
@@ -340,8 +459,8 @@ array<uint64_t, N_FILES> ZobristEnpassKeys;
 array<uint64_t, N_SQUARES> ZobristCastleKeys;
 uint64_t ZobristTurnKey;
 
-uint64_t rand64() {
-
+uint64_t rand64() 
+{
     // http://vigna.di.unimi.it/ftp/papers/xorshift.pdf
 
     static uint64_t seed = 1070372ull;
@@ -375,9 +494,6 @@ void initZobrist() {
 
 /// move.h
 
-struct Thread;
-struct Board;
-
 constexpr uint16_t 
     NONE_MOVE = 0, NULL_MOVE = 11,
 
@@ -393,19 +509,66 @@ constexpr uint16_t
     QUEEN_PROMO_MOVE = PROMOTION_MOVE | PROMOTE_TO_QUEEN
 ;
 
-int castleKingTo(int king, int rook);
-int castleRookTo(int king, int rook);
+inline int MoveFrom(int move) { return ((move) >> 0) & 63; }
+inline int MoveTo(int move) { return ((move) >> 6) & 63; }
+inline int MoveType(int move) { return (move) & (3 << 12); }
+inline int MovePromoType(int move) { return  (move) & (3 << 14); }
+inline int MovePromoPiece(int move) { return  1 + ((move) >> 14); }
+inline int MoveMake(int from, int to, int flag) { return from | (to << 6) | flag; }
+
+const char* PieceLabel[N_COLORS] = { "PNBRQK", "pnbrqk" };
+
+int castleKingTo(int king, int rook) {
+    return square(rankOf(king), (rook > king) ? 6 : 2);
+}
+
+int castleRookTo(int king, int rook) {
+    return square(rankOf(king), (rook > king) ? 5 : 3);
+}
 
 
-void printMove(uint16_t move, int chess960);
-void moveToString(uint16_t move, char* str, int chess960);
+void squareToString(int sq, char* str) 
+{
+    // Helper for writing the enpass square, as well as for converting
+    // a move into long algabraic notation. When there is not an enpass
+    // square we will output a "-" as expected for a FEN
 
-#define MoveFrom(move)         (((move) >> 0) & 63)
-#define MoveTo(move)           (((move) >> 6) & 63)
-#define MoveType(move)         ((move) & (3 << 12))
-#define MovePromoType(move)    ((move) & (3 << 14))
-#define MovePromoPiece(move)   (1 + ((move) >> 14))
-#define MoveMake(from,to,flag) ((from) | ((to) << 6) | (flag))
+    assert(-1 <= sq && sq < N_SQUARES);
+
+    if (sq == -1)
+        *str++ = '-';
+    else {
+        *str++ = fileOf(sq) + 'a';
+        *str++ = rankOf(sq) + '1';
+    }
+
+    *str++ = '\0';
+}
+
+void moveToString(uint16_t move, char* str, int chess960) {
+
+    int from = MoveFrom(move), to = MoveTo(move);
+
+    // FRC reports using KxR notation, but standard does not
+    if (MoveType(move) == CASTLE_MOVE && !chess960)
+        to = castleKingTo(from, to);
+
+    // Encode squares (Long Algebraic Notation)
+    squareToString(from, &str[0]);
+    squareToString(to, &str[2]);
+
+    // Add promotion piece label (Uppercase)
+    if (MoveType(move) == PROMOTION_MOVE) {
+        str[4] = PieceLabel[BLACK][MovePromoPiece(move)];
+        str[5] = '\0';
+    }
+}
+
+void printMove(uint16_t move, int chess960) {
+    char str[6]; moveToString(move, str, chess960);
+    printf("%s\n", str);
+}
+
 
 
 /// history.h
@@ -543,7 +706,6 @@ static const int QSDeltaMargin = 150;
 
 /// board.h
 
-extern const char* PieceLabel[N_COLORS];
 struct Thread;
 
 struct Board {
@@ -562,7 +724,6 @@ struct Undo {
     int epSquare, halfMoveCounter, psqtmat, capturePiece;
 };
 
-void squareToString(int sq, char* str);
 void boardFromFEN(Board* board, const char* fen, int chess960);
 void boardToFEN(Board* board, char* fen);
 void printBoard(Board* board);
@@ -679,129 +840,6 @@ int moveIsLegal(Board* board, uint16_t move);
 int moveIsPseudoLegal(Board* board, uint16_t move);
 int moveWasLegal(Board* board);
 
-
-/// PSQT from evaluate.c
-
-/* Piece Square Evaluation Terms */
-int PSQT[32][N_SQUARES];
-
-#define S(mg, eg) (MakeScore((mg), (eg)))
-
-const int PawnPSQT[N_SQUARES] = {
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(-13,   7), S(-4,   0), S(1,   4), S(6,   1),
-    S(3,  10), S(-9,   4), S(-9,   3), S(-16,   7),
-    S(-21,   5), S(-17,   6), S(-1,  -6), S(12, -14),
-    S(8, -10), S(-4,  -5), S(-15,   7), S(-24,  11),
-    S(-14,  16), S(-21,  17), S(9, -10), S(10, -24),
-    S(4, -22), S(4, -10), S(-20,  17), S(-17,  18),
-    S(-15,  18), S(-18,  11), S(-16,  -8), S(4, -30),
-    S(-2, -24), S(-18,  -9), S(-23,  13), S(-17,  21),
-    S(-20,  48), S(-9,  44), S(1,  31), S(17,  -9),
-    S(36,  -6), S(-9,  31), S(-6,  45), S(-23,  49),
-    S(-33, -70), S(-66,  -9), S(-16, -22), S(65, -23),
-    S(41, -18), S(39, -14), S(-47,   4), S(-62, -51),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-};
-
-const int KnightPSQT[N_SQUARES] = {
-    S(-31, -38), S(-6, -24), S(-20, -22), S(-16,  -1),
-    S(-11,  -1), S(-22, -19), S(-8, -20), S(-41, -30),
-    S(1,  -5), S(-11,   3), S(-6, -19), S(-1,  -2),
-    S(0,   0), S(-9, -16), S(-8,  -3), S(-6,   1),
-    S(7, -21), S(8,  -5), S(7,   2), S(10,  19),
-    S(10,  19), S(4,   2), S(8,  -4), S(3, -19),
-    S(16,  21), S(17,  30), S(23,  41), S(27,  50),
-    S(24,  53), S(23,  41), S(19,  28), S(13,  26),
-    S(13,  30), S(23,  30), S(37,  51), S(30,  70),
-    S(26,  67), S(38,  50), S(22,  33), S(14,  28),
-    S(-24,  25), S(-5,  37), S(25,  56), S(22,  60),
-    S(27,  55), S(29,  55), S(-1,  32), S(-19,  25),
-    S(13,  -2), S(-11,  18), S(27,  -2), S(37,  24),
-    S(41,  24), S(40,  -7), S(-13,  16), S(2,  -2),
-    S(-167,  -5), S(-91,  12), S(-117,  41), S(-38,  17),
-    S(-18,  19), S(-105,  48), S(-119,  24), S(-165, -17),
-};
-
-const int BishopPSQT[N_SQUARES] = {
-    S(5, -21), S(1,   1), S(-1,   5), S(1,   5),
-    S(2,   8), S(-6,  -2), S(0,   1), S(4, -25),
-    S(26, -17), S(2, -31), S(15,  -2), S(8,   8),
-    S(8,   8), S(13,  -3), S(9, -31), S(26, -29),
-    S(9,   3), S(22,   9), S(-5,  -3), S(18,  19),
-    S(17,  20), S(-5,  -6), S(20,   4), S(15,   8),
-    S(0,  12), S(10,  17), S(17,  32), S(20,  32),
-    S(24,  34), S(12,  30), S(15,  17), S(0,  14),
-    S(-20,  34), S(13,  31), S(1,  38), S(21,  45),
-    S(12,  46), S(6,  38), S(13,  33), S(-14,  37),
-    S(-13,  31), S(-11,  45), S(-7,  23), S(2,  40),
-    S(8,  38), S(-21,  34), S(-5,  46), S(-9,  35),
-    S(-59,  38), S(-49,  22), S(-13,  30), S(-35,  36),
-    S(-33,  36), S(-13,  33), S(-68,  21), S(-55,  35),
-    S(-66,  18), S(-65,  36), S(-123,  48), S(-107,  56),
-    S(-112,  53), S(-97,  43), S(-33,  22), S(-74,  15),
-};
-
-const int RookPSQT[N_SQUARES] = {
-    S(-26,  -1), S(-21,   3), S(-14,   4), S(-6,  -4),
-    S(-5,  -4), S(-10,   3), S(-13,  -2), S(-22, -14),
-    S(-70,   5), S(-25, -10), S(-18,  -7), S(-11, -11),
-    S(-9, -13), S(-15, -15), S(-15, -17), S(-77,   3),
-    S(-39,   3), S(-16,  14), S(-25,   9), S(-14,   2),
-    S(-12,   3), S(-25,   8), S(-4,   9), S(-39,   1),
-    S(-32,  24), S(-21,  36), S(-21,  36), S(-5,  26),
-    S(-8,  27), S(-19,  34), S(-13,  33), S(-30,  24),
-    S(-22,  46), S(4,  38), S(16,  38), S(35,  30),
-    S(33,  32), S(10,  36), S(17,  31), S(-14,  43),
-    S(-33,  60), S(17,  41), S(0,  54), S(33,  36),
-    S(29,  35), S(3,  52), S(33,  32), S(-26,  56),
-    S(-18,  41), S(-24,  47), S(-1,  38), S(15,  38),
-    S(14,  37), S(-2,  36), S(-24,  49), S(-12,  38),
-    S(33,  55), S(24,  63), S(-1,  73), S(9,  66),
-    S(10,  67), S(0,  69), S(34,  59), S(37,  56),
-};
-
-const int QueenPSQT[N_SQUARES] = {
-    S(20, -34), S(4, -26), S(9, -34), S(17, -16),
-    S(18, -18), S(14, -46), S(9, -28), S(22, -44),
-    S(6, -15), S(15, -22), S(22, -42), S(13,   2),
-    S(17,   0), S(22, -49), S(18, -29), S(3, -18),
-    S(6,  -1), S(21,   7), S(5,  35), S(0,  34),
-    S(2,  34), S(5,  37), S(24,   9), S(13, -15),
-    S(9,  17), S(12,  46), S(-6,  59), S(-19, 109),
-    S(-17, 106), S(-4,  57), S(18,  48), S(8,  33),
-    S(-10,  42), S(-8,  79), S(-19,  66), S(-32, 121),
-    S(-32, 127), S(-23,  80), S(-8,  95), S(-10,  68),
-    S(-28,  56), S(-23,  50), S(-33,  66), S(-18,  70),
-    S(-17,  71), S(-19,  63), S(-18,  65), S(-28,  76),
-    S(-16,  61), S(-72, 108), S(-19,  65), S(-52, 114),
-    S(-54, 120), S(-14,  59), S(-69, 116), S(-11,  73),
-    S(8,  43), S(19,  47), S(0,  79), S(3,  78),
-    S(-3,  89), S(13,  65), S(18,  79), S(21,  56),
-};
-
-const int KingPSQT[N_SQUARES] = {
-    S(87, -77), S(67, -49), S(4,  -7), S(-9, -26),
-    S(-10, -27), S(-8,  -1), S(57, -50), S(79, -82),
-    S(35,   3), S(-27,  -3), S(-41,  16), S(-89,  29),
-    S(-64,  26), S(-64,  28), S(-25,  -3), S(30,  -4),
-    S(-44, -19), S(-16, -19), S(28,   7), S(0,  35),
-    S(18,  32), S(31,   9), S(-13, -18), S(-36, -13),
-    S(-48, -44), S(98, -39), S(71,  12), S(-22,  45),
-    S(12,  41), S(79,  10), S(115, -34), S(-59, -38),
-    S(-6, -10), S(95, -39), S(39,  14), S(-49,  18),
-    S(-27,  19), S(35,  14), S(81, -34), S(-50, -13),
-    S(24, -39), S(123, -22), S(105,  -1), S(-22, -21),
-    S(-39, -20), S(74, -15), S(100, -23), S(-17, -49),
-    S(0, -98), S(28, -21), S(7, -18), S(-3, -41),
-    S(-57, -39), S(12, -26), S(22, -24), S(-15,-119),
-    S(-16,-153), S(49, -94), S(-21, -73), S(-19, -32),
-    S(-51, -55), S(-42, -62), S(53, -93), S(-58,-133),
-};
-
-#undef S
 
 /// masks.h
 
@@ -1584,15 +1622,6 @@ static void updateCastleZobrist(Board* board, uint64_t oldRooks, uint64_t newRoo
         board->hash ^= ZobristCastleKeys[poplsb(&diff)];
 }
 
-int castleKingTo(int king, int rook) {
-    return square(rankOf(king), (rook > king) ? 6 : 2);
-}
-
-int castleRookTo(int king, int rook) {
-    return square(rankOf(king), (rook > king) ? 5 : 3);
-}
-
-
 void applyMove(Board* board, uint16_t move, Undo* undo) {
 
     static void (*table[4])(Board*, uint16_t, Undo*) = {
@@ -2218,29 +2247,6 @@ int moveWasLegal(Board* board) {
 }
 
 
-void printMove(uint16_t move, int chess960) {
-    char str[6]; moveToString(move, str, chess960);
-    printf("%s\n", str);
-}
-
-void moveToString(uint16_t move, char* str, int chess960) {
-
-    int from = MoveFrom(move), to = MoveTo(move);
-
-    // FRC reports using KxR notation, but standard does not
-    if (MoveType(move) == CASTLE_MOVE && !chess960)
-        to = castleKingTo(from, to);
-
-    // Encode squares (Long Algebraic Notation)
-    squareToString(from, &str[0]);
-    squareToString(to, &str[2]);
-
-    // Add promotion piece label (Uppercase)
-    if (MoveType(move) == PROMOTION_MOVE) {
-        str[4] = PieceLabel[BLACK][MovePromoPiece(move)];
-        str[5] = '\0';
-    }
-}
 
 
 /// more move.c
@@ -2715,11 +2721,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
 
 /// board.c
 
-extern int PSQT[32][N_SQUARES]; // from evaluate.h
 
-
-
-const char* PieceLabel[N_COLORS] = { "PNBRQK", "pnbrqk" };
 
 static void clearBoard(Board* board) 
 {
@@ -2757,24 +2759,6 @@ static int stringToSquare(char* str) {
     // is provided, Ethereal will use -1 to represent this internally
 
     return str[0] == '-' ? -1 : square(str[1] - '1', str[0] - 'a');
-}
-
-void squareToString(int sq, char* str) {
-
-    // Helper for writing the enpass square, as well as for converting
-    // a move into long algabraic notation. When there is not an enpass
-    // square we will output a "-" as expected for a FEN
-
-    assert(-1 <= sq && sq < N_SQUARES);
-
-    if (sq == -1)
-        *str++ = '-';
-    else {
-        *str++ = fileOf(sq) + 'a';
-        *str++ = rankOf(sq) + '1';
-    }
-
-    *str++ = '\0';
 }
 
 void boardToFEN(Board* board, char* fen) 
@@ -3314,14 +3298,12 @@ int evaluateSpace(EvalInfo* ei, Board* board, int colour);
 int evaluateClosedness(EvalInfo* ei, Board* board);
 int evaluateComplexity(EvalInfo* ei, Board* board, int eval);
 int evaluateScaleFactor(Board* board, int eval);
-void initEvalInfo(Thread* thread, Board* board, EvalInfo* ei);
-void initEval();
+void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei);
 
 #define MakeScore(mg, eg) ((int)((unsigned int)(eg) << 16) + (mg))
 #define ScoreMG(s) ((int16_t)((uint16_t)((unsigned)((s)))))
 #define ScoreEG(s) ((int16_t)((uint16_t)((unsigned)((s) + 0x8000) >> 16)))
 
-extern int PSQT[32][N_SQUARES];
 extern const int Tempo;
 
 /// nnue/nnue.h
@@ -3831,15 +3813,6 @@ EvalTrace T, EmptyTrace;
 
 #define S(mg, eg) (MakeScore((mg), (eg)))
 
-/* Material Value Evaluation Terms */
-
-const int PawnValue = S(82, 144);
-const int KnightValue = S(426, 475);
-const int BishopValue = S(441, 510);
-const int RookValue = S(627, 803);
-const int QueenValue = S(1292, 1623);
-const int KingValue = S(0, 0);
-
 /* Pawn Evaluation Terms */
 
 const int PawnCandidatePasser[2][N_RANKS] = {
@@ -4129,10 +4102,10 @@ int evaluateBoard(Thread* thread, Board* board) {
         eval = board->turn == WHITE ? eval : -eval;
     }
 
-    else {
-
+    else 
+    {
         EvalInfo ei;
-        initEvalInfo(thread, board, &ei);
+        initPSQTInfo(thread, board, &ei);
         eval = evaluatePieces(&ei, board);
 
         pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
@@ -4996,8 +4969,8 @@ int evaluateScaleFactor(Board* board, int eval)
     return Min<int>(SCALE_NORMAL, 96 + popcount(pawns & strong) * 8);
 }
 
-void initEvalInfo(Thread* thread, Board* board, EvalInfo* ei) {
-
+void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei) 
+{
     uint64_t white = board->colours[WHITE];
     uint64_t black = board->colours[BLACK];
 
@@ -5053,33 +5026,6 @@ void initEvalInfo(Thread* thread, Board* board, EvalInfo* ei) {
     ei->pksafety[WHITE] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyw;
     ei->pksafety[BLACK] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyb;
 }
-
-void initEval() {
-
-    // Init a normalized 64-length PSQT for the evaluation which
-    // combines the Piece Values with the original PSQT Values
-
-    for (int sq = 0; sq < N_SQUARES; sq++) {
-
-        const int sq1 = relativeSquare(WHITE, sq);
-        const int sq2 = relativeSquare(BLACK, sq);
-
-        PSQT[WHITE_PAWN][sq] = +PawnValue + PawnPSQT[sq1];
-        PSQT[WHITE_KNIGHT][sq] = +KnightValue + KnightPSQT[sq1];
-        PSQT[WHITE_BISHOP][sq] = +BishopValue + BishopPSQT[sq1];
-        PSQT[WHITE_ROOK][sq] = +RookValue + RookPSQT[sq1];
-        PSQT[WHITE_QUEEN][sq] = +QueenValue + QueenPSQT[sq1];
-        PSQT[WHITE_KING][sq] = +KingValue + KingPSQT[sq1];
-
-        PSQT[BLACK_PAWN][sq] = -PawnValue - PawnPSQT[sq2];
-        PSQT[BLACK_KNIGHT][sq] = -KnightValue - KnightPSQT[sq2];
-        PSQT[BLACK_BISHOP][sq] = -BishopValue - BishopPSQT[sq2];
-        PSQT[BLACK_ROOK][sq] = -RookValue - RookPSQT[sq2];
-        PSQT[BLACK_QUEEN][sq] = -QueenValue - QueenPSQT[sq2];
-        PSQT[BLACK_KING][sq] = -KingValue - KingPSQT[sq2];
-    }
-}
-
 
 /// search.c
 
@@ -7545,7 +7491,7 @@ int main(int argc, char** argv)
     int multiPV = 1;
 
     // Initialize core components of Ethereal
-    initAttacks(); initMasks(); initEval();
+    initAttacks(); initMasks(); initPSQT();
     initSearch(); initZobrist(); tt_init(1, 16);
     initPKNetwork(); nnue_incbin_init();
 

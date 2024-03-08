@@ -68,69 +68,6 @@ using namespace std;
 CommonData_* DATA = nullptr;
 CommonData_* const& RO = DATA;	// generally we access DATA through RO
 
-constexpr array<uint8, 256> MakePieceFromChar()
-{
-	array<uint8, 256> retval = {};
-	for (int i = 0; i < 256; ++i)
-		retval[i] = 0;
-	retval[66] = 6;
-	retval[75] = 14;
-	retval[78] = 4;
-	retval[80] = 2;
-	retval[81] = 12;
-	retval[82] = 10;
-	retval[98] = 7;
-	retval[107] = 15;
-	retval[110] = 5;
-	retval[112] = 3;
-	retval[113] = 13;
-	retval[114] = 11;
-	return retval;
-}
-constexpr array<uint8, 256> PieceFromChar = MakePieceFromChar();
-
-constexpr std::array<std::array<uint64, 64>, 64> MakeBetween()
-{
-	std::array<std::array<uint64, 64>, 64> retval;
-	for (int i = 0; i < 64; ++i)
-	{
-		retval[i] = {};
-		for (uint64 u = QMask[i]; T(u); Cut_c(u))
-		{
-			int j = lsb_c(u);
-			int k = Sgn(RankOf(j) - RankOf(i));
-			int l = Sgn(FileOf(j) - FileOf(i));
-			for (int n = i + 8 * k + l; n != j; n += (8 * k + l))
-				retval[i][j] |= Bit(n);
-		}
-	}
-
-	return retval;
-}
-constexpr std::array<std::array<uint64, 64>, 64> Between = MakeBetween();
-
-constexpr std::array<std::array<uint64, 64>, 64> MakeFullLine()
-{
-	std::array<std::array<uint64, 64>, 64> retval;
-	for (int i = 0; i < 64; ++i)
-	{
-		retval[i] = {};
-		for (uint64 u = BMask[i]; T(u); Cut_c(u))
-		{
-			int j = lsb_c(u);
-			retval[i][j] = BMask[i] & BMask[j];
-		}
-		for (uint64 u = RMask[i]; T(u); Cut_c(u))
-		{
-			int j = lsb_c(u);
-			retval[i][j] = RMask[i] & RMask[j];
-		}
-	}
-
-	return retval;
-}
-constexpr std::array<std::array<uint64, 64>, 64> FullLine = MakeFullLine();
-
 // Constants controlling play
 constexpr int PliesToEvalCut = 50;	// halfway to 50-move
 constexpr int KingSafetyNoQueen = 8;	// numerator; denominator is 16
@@ -158,7 +95,6 @@ constexpr sint16 KpkValue = 300 * CP_EVAL;
 constexpr sint16 EvalValue = 30000;
 constexpr sint16 MateValue = 32760 - 8 * (CP_SEARCH - 1);
 
-constexpr int PieceType[16] = { 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 5 };
 
 /*
 general move:
@@ -186,31 +122,7 @@ INLINE int RookCaptureMvvLva(int attacker) { return MaxBishopCaptureMvvLva + Mvv
 constexpr int MaxRookCaptureMvvLva = MaxBishopCaptureMvvLva + MvvLvaAttacker[15];  // usually 24
 INLINE int QueenCaptureMvvLva(int attacker) { return MaxRookCaptureMvvLva + MvvLvaAttacker[attacker]; }
 
-constexpr std::array<std::array<int, 16>, 16> MakeMvvLva()
-{
-	std::array<std::array<int, 16>, 16> retval;
-	for (int i = 0; i < 16; ++i)
-		for (int j = 0; j < 16; ++j)
-		{
-			if (j < WhitePawn)
-				retval[i][j] = 0;
-			else if (j < WhiteKnight)
-				retval[i][j] = PawnCaptureMvvLva(i) << 26;
-			else if (j < WhiteLight)
-				retval[i][j] = KnightCaptureMvvLva(i) << 26;
-			else if (j < WhiteRook)
-				retval[i][j] = BishopCaptureMvvLva(i) << 26;
-			else if (j < WhiteQueen)
-				retval[i][j] = RookCaptureMvvLva(i) << 26;
-			else
-				retval[i][j] = QueenCaptureMvvLva(i) << 26;
-		}
-	return retval;
-}
-std::array<std::array<int, 16>, 16> MvvLva = MakeMvvLva();
 
-INLINE int MvvLvaPromotionCap(int capture) { return MvvLva[((capture) < WhiteRook) ? WhiteRook : ((capture) >= WhiteQueen ? WhiteKing : WhiteKnight)][BlackQueen]; }
-INLINE int MvvLvaPromotionKnightCap(int capture) { return MvvLva[WhiteKing][capture]; }
 INLINE int MvvLvaXrayCap(int capture) { return MvvLva[WhiteKing][capture]; }
 
 
@@ -360,6 +272,16 @@ array<int, 256> RootList;
 template<class T> void prefetch(T* p)
 {
 	_mm_prefetch(reinterpret_cast<const char*>(p), _MM_HINT_NTA);
+}
+
+int rankOf(int loc);
+template<bool me> INLINE int OwnRank(int loc)
+{
+	return me ? (7 - rankOf(loc)) : rankOf(loc);
+}
+INLINE int OwnRank(bool me, int loc)
+{
+	return me ? (7 - rankOf(loc)) : rankOf(loc);
 }
 
 namespace Futility
@@ -1547,16 +1469,7 @@ uint16 rand16()
 	return static_cast<uint16>((seed >> 32) & 0xFFFF);
 }
 
-uint64 rand64()
-{
-	uint64 key = rand16();
-	key <<= 16;
-	key |= rand16();
-	key <<= 16;
-	key |= rand16();
-	key <<= 16;
-	return key | rand16();
-}
+uint64 rand64();
 
 // DEBUG debug cry for help
 static int debugLine;
@@ -5541,16 +5454,16 @@ template <bool me> int* gen_captures(int* list, const State_& state)
 	for (v = ShiftW<opp>(state[0].mask) & board.Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
 	{
 		int from = lsb(v), to = from + PushE[me];
-		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(to)) + bonus(to));
+		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap[board.PieceAt(to)] + bonus(to));
 		if (HasBit(NAtt[kOpp], to))
-			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(board.PieceAt(to)) + bonus(to));
+			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap[board.PieceAt(to)] + bonus(to));
 	}
 	for (v = ShiftE<opp>(state[0].mask) & board.Pawn(me) & OwnLine<me>(6); T(v); Cut(v))
 	{
 		int from = lsb(v), to = from + PushW[me];
-		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(to)) + bonus(to));
+		list = AddMove(list, from, to, FlagPQueen, MvvLvaPromotionCap[board.PieceAt(to)] + bonus(to));
 		if (HasBit(NAtt[kOpp], to))
-			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap(board.PieceAt(to)) + bonus(to));
+			list = AddMove(list, from, to, FlagPKnight, MvvLvaPromotionKnightCap[board.PieceAt(to)] + bonus(to));
 	}
 	if (T(state[0].att[me] & state[0].mask))
 	{
@@ -5623,7 +5536,7 @@ template<bool me> int* gen_evasions(int* list, const State_& state)
 	{
 		int from = lsb(u);
 		if (HasBit(OwnLine<me>(7), att_sq))
-			list = AddMove(list, from, att_sq, FlagPQueen, MvvLvaPromotionCap(board.PieceAt(att_sq)));
+			list = AddMove(list, from, att_sq, FlagPQueen, MvvLvaPromotionCap[board.PieceAt(att_sq)]);
 		else if (HasBit(state[0].mask, att_sq))
 			list = AddCaptureP(list, board, IPawn[me], from, att_sq, 0);
 	}
@@ -7984,7 +7897,7 @@ void init_os()
 }
 
 #ifndef REGRESSION
-int main(int argc, char **argv)
+int roc_main(int argc, char **argv)
 {
 	if (argc > 1 && strcmp(argv[1], "child") == 0)
 	{

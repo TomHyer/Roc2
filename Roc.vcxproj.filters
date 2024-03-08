@@ -18,5 +18,19 @@
     <ClCompile Include="Roc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ERoc.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pyrrhic\stdendian.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pyrrhic\tbconfig.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pyrrhic\tbprobe.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
