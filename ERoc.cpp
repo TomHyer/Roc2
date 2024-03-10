@@ -1,9 +1,27 @@
 
 /// Roc and Platform
 
+#include <array>
+
+using std::array;
+
 template<class T_> inline const T_& Max(const T_& lhs, const T_& rhs) { return lhs < rhs ? rhs : lhs; }
 template<class T_> inline const T_& Min(const T_& lhs, const T_& rhs) { return lhs < rhs ? lhs : rhs; }
 #pragma warning(disable: 4996)
+
+template<class Function, std::size_t... Indices>
+constexpr auto make_array_helper(Function f, std::index_sequence<Indices...>)
+-> std::array<decltype(f(std::size_t(0))), sizeof...(Indices)>
+{
+    return { { f(Indices)... } };
+}
+
+template<int N, class Function>
+constexpr auto make_array(Function f)
+-> std::array<decltype(f(std::size_t(0))), N>
+{
+    return make_array_helper(f, std::make_index_sequence<N>{});
+}
 
 // config
 
@@ -21,9 +39,6 @@ template<class T_> inline const T_& Min(const T_& lhs, const T_& rhs) { return l
 #include <chrono>
 #include <thread>
 #include <iostream>
-#include <array>
-
-using std::array;
 #undef assert
 #define assert(x)
 
@@ -70,7 +85,7 @@ inline int pieceColour(int piece)
     return ColorOf(piece);
 }
 
-static inline int makePiece(int type, int colour) {
+constexpr inline int makePiece(int type, int colour) {
     assert(0 <= type && type < N_PIECES);
     assert(0 <= colour && colour <= N_COLORS);
     return ColoredPiece(colour, type);
@@ -85,9 +100,10 @@ using HistoryTable = array<array<array<array<array<int16_t, N_SQUARES>, N_SQUARE
 using CaptureHistoryTable = array<array<array<array<array<int16_t, N_PIECES - 1>, N_SQUARES>, 2>, 2>, N_PIECES>;
 using ContinuationTable = array<array<array<array<array<array<int16_t, N_SQUARES>, N_PIECES>, N_CONTINUATION>, N_SQUARES>, N_PIECES>, 2>;
 
-inline int MakeScore(int mg, int eg) { return (int)((unsigned int)(eg) << 16) + mg; }
-inline int ScoreMG(int s) { return (int16_t)((uint16_t)((unsigned)(s))); }
-inline int ScoreEG(int s) { return (int16_t)((uint16_t)((unsigned)(s + 0x8000) >> 16)); }
+constexpr inline int MakeScore(int mg, int eg) { return (int)((unsigned int)eg << 16) + mg; }
+constexpr inline int ScoreMG(int s) { return (int16_t)((uint16_t)((unsigned)s)); }
+constexpr inline int ScoreEG(int s) { return (int16_t)((uint16_t)((unsigned)(s + 0x8000) >> 16)); }
+
 
 // Trivial alignment macros
 
@@ -145,68 +161,67 @@ constexpr uint64_t
 
     PROMOTION_RANKS = RANK_1 | RANK_8;
 
-extern const array<uint64_t, 8> Files, Ranks;
 
-int INLINE FileOf(int sq) { return sq % N_FILES; }
+constexpr int INLINE FileOf(int sq) { return sq % N_FILES; }
 constexpr array<int, 8> MIRROR_FILE = { 0, 1, 2, 3, 3, 2, 1, 0 };
-INLINE int RankOf(int sq) { return sq / N_FILES; }
+constexpr INLINE int RankOf(int sq) { return sq / N_FILES; }
 
 
 /// bitboards.c
 
-const array<uint64_t, 8> Files = { FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H };
-const array<uint64_t, 8> Ranks = { RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 };
+constexpr array<uint64_t, 8> Files = { FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H };
+constexpr array<uint64_t, 8> Ranks = { RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 };
 
-int fileOf(int sq) {
+constexpr int fileOf(int sq) {
     assert(0 <= sq && sq < N_SQUARES);
     return FileOf(sq);
 }
 
-int mirrorFile(int file) {
+constexpr int mirrorFile(int file) {
     assert(0 <= file && file < N_FILES);
     return MIRROR_FILE[file];
 }
 
-int rankOf(int sq) {
+constexpr int rankOf(int sq) {
     assert(0 <= sq && sq < N_SQUARES);
     return RankOf(sq);
 }
 
-int relativeRankOf(int colour, int sq) {
+constexpr int relativeRankOf(int colour, int sq) {
     assert(0 <= colour && colour < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
     return colour == WHITE ? rankOf(sq) : 7 - rankOf(sq);
 }
 
-int square(int rank, int file) {
+constexpr int square(int rank, int file) {
     assert(0 <= rank && rank < N_RANKS);
     assert(0 <= file && file < N_FILES);
     return rank * N_FILES + file;
 }
 
-int relativeSquare(int colour, int sq) {
+constexpr int relativeSquare(int colour, int sq) {
     assert(0 <= colour && colour < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
     return square(relativeRankOf(colour, sq), fileOf(sq));
 }
 
-int relativeSquare32(int colour, int sq) {
+constexpr int relativeSquare32(int colour, int sq) {
     assert(0 <= colour && colour < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
     return 4 * relativeRankOf(colour, sq) + mirrorFile(fileOf(sq));
 }
 
-bool testBit(uint64_t bb, int i) {
+constexpr bool testBit(uint64_t bb, int i) {
     assert(0 <= i && i < N_SQUARES);
     return bb & (1ull << i);
 }
 
-void setBit(uint64_t* bb, int i) {
+constexpr void setBit(uint64_t* bb, int i) {
     assert(!testBit(*bb, i));
     *bb ^= 1ull << i;
 }
 
-void clearBit(uint64_t* bb, int i) {
+constexpr void clearBit(uint64_t* bb, int i) {
     assert(testBit(*bb, i));
     *bb ^= 1ull << i;
 }
@@ -276,8 +291,8 @@ bool onlyOne(uint64_t bb) {
     return bb && !several(bb);
 }
 
-void printBitboard(uint64_t bb) {
-
+void printBitboard(uint64_t bb) 
+{
     for (int rank = 7; rank >= 0; rank--) {
         char line[] = ". . . . . . . .";
 
@@ -297,7 +312,9 @@ void printBitboard(uint64_t bb) {
 
 #define S MakeScore
 
-const int PawnPSQT[N_SQUARES] = {
+using PSQVals = array<int, N_SQUARES>;
+
+constexpr PSQVals PawnPSQT = {
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
     S(-13,   7), S(-4,   0), S(1,   4), S(6,   1),
@@ -316,7 +333,7 @@ const int PawnPSQT[N_SQUARES] = {
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
 };
 
-const int KnightPSQT[N_SQUARES] = {
+constexpr PSQVals KnightPSQT = {
     S(-31, -38), S(-6, -24), S(-20, -22), S(-16,  -1),
     S(-11,  -1), S(-22, -19), S(-8, -20), S(-41, -30),
     S(1,  -5), S(-11,   3), S(-6, -19), S(-1,  -2),
@@ -335,7 +352,7 @@ const int KnightPSQT[N_SQUARES] = {
     S(-18,  19), S(-105,  48), S(-119,  24), S(-165, -17),
 };
 
-const int BishopPSQT[N_SQUARES] = {
+constexpr PSQVals BishopPSQT = {
     S(5, -21), S(1,   1), S(-1,   5), S(1,   5),
     S(2,   8), S(-6,  -2), S(0,   1), S(4, -25),
     S(26, -17), S(2, -31), S(15,  -2), S(8,   8),
@@ -354,7 +371,7 @@ const int BishopPSQT[N_SQUARES] = {
     S(-112,  53), S(-97,  43), S(-33,  22), S(-74,  15),
 };
 
-const int RookPSQT[N_SQUARES] = {
+constexpr PSQVals RookPSQT = {
     S(-26,  -1), S(-21,   3), S(-14,   4), S(-6,  -4),
     S(-5,  -4), S(-10,   3), S(-13,  -2), S(-22, -14),
     S(-70,   5), S(-25, -10), S(-18,  -7), S(-11, -11),
@@ -373,7 +390,7 @@ const int RookPSQT[N_SQUARES] = {
     S(10,  67), S(0,  69), S(34,  59), S(37,  56),
 };
 
-const int QueenPSQT[N_SQUARES] = {
+constexpr PSQVals QueenPSQT = {
     S(20, -34), S(4, -26), S(9, -34), S(17, -16),
     S(18, -18), S(14, -46), S(9, -28), S(22, -44),
     S(6, -15), S(15, -22), S(22, -42), S(13,   2),
@@ -392,7 +409,7 @@ const int QueenPSQT[N_SQUARES] = {
     S(-3,  89), S(13,  65), S(18,  79), S(21,  56),
 };
 
-const int KingPSQT[N_SQUARES] = {
+constexpr PSQVals KingPSQT = {
     S(87, -77), S(67, -49), S(4,  -7), S(-9, -26),
     S(-10, -27), S(-8,  -1), S(57, -50), S(79, -82),
     S(35,   3), S(-27,  -3), S(-41,  16), S(-89,  29),
@@ -414,42 +431,52 @@ const int KingPSQT[N_SQUARES] = {
 
 /* Material Value Evaluation Terms */
 
-const int PawnValue = S(82, 144);
-const int KnightValue = S(426, 475);
-const int BishopValue = S(441, 510);
-const int RookValue = S(627, 803);
-const int QueenValue = S(1292, 1623);
-const int KingValue = S(0, 0);
+constexpr int PawnValue = S(82, 144);
+constexpr int KnightValue = S(426, 475);
+constexpr int BishopValue = S(441, 510);
+constexpr int RookValue = S(627, 803);
+constexpr int QueenValue = S(1292, 1623);
+constexpr int KingValue = S(0, 0);
 
 #undef S
 
+constexpr PSQVals NullPSQT = make_array<64>([](int) { return 0; });
 
-int PSQT[32][N_SQUARES];
-void initPSQT()
+constexpr array<PSQVals, 32> PSQT =
 {
-    // Init a normalized 64-length PSQT for the evaluation which
-    // combines the Piece Values with the original PSQT Values
-
-    for (int sq = 0; sq < N_SQUARES; sq++) {
-
-        const int sq1 = relativeSquare(WHITE, sq);
-        const int sq2 = relativeSquare(BLACK, sq);
-
-        PSQT[WHITE_PAWN][sq] = +PawnValue + PawnPSQT[sq1];
-        PSQT[WHITE_KNIGHT][sq] = +KnightValue + KnightPSQT[sq1];
-        PSQT[WHITE_BISHOP][sq] = +BishopValue + BishopPSQT[sq1];
-        PSQT[WHITE_ROOK][sq] = +RookValue + RookPSQT[sq1];
-        PSQT[WHITE_QUEEN][sq] = +QueenValue + QueenPSQT[sq1];
-        PSQT[WHITE_KING][sq] = +KingValue + KingPSQT[sq1];
-
-        PSQT[BLACK_PAWN][sq] = -PawnValue - PawnPSQT[sq2];
-        PSQT[BLACK_KNIGHT][sq] = -KnightValue - KnightPSQT[sq2];
-        PSQT[BLACK_BISHOP][sq] = -BishopValue - BishopPSQT[sq2];
-        PSQT[BLACK_ROOK][sq] = -RookValue - RookPSQT[sq2];
-        PSQT[BLACK_QUEEN][sq] = -QueenValue - QueenPSQT[sq2];
-        PSQT[BLACK_KING][sq] = -KingValue - KingPSQT[sq2];
-    }
-}
+    make_array<64>([&](int sq) { return PawnValue + PawnPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -PawnValue - PawnPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    make_array<64>([&](int sq) { return KnightValue + KnightPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -KnightValue - KnightPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    make_array<64>([&](int sq) { return BishopValue + BishopPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -BishopValue - BishopPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    make_array<64>([&](int sq) { return RookValue + RookPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -RookValue - RookPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    make_array<64>([&](int sq) { return QueenValue + QueenPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -QueenValue - QueenPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    make_array<64>([&](int sq) { return KingValue + KingPSQT[relativeSquare(WHITE, sq)]; }),
+    make_array<64>([&](int sq) { return -KingValue - KingPSQT[relativeSquare(BLACK, sq)]; }),
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT,
+    NullPSQT
+};
 
 
 /// zobrist.c
@@ -516,13 +543,13 @@ inline int MovePromoType(int move) { return  (move) & (3 << 14); }
 inline int MovePromoPiece(int move) { return  1 + ((move) >> 14); }
 inline int MoveMake(int from, int to, int flag) { return from | (to << 6) | flag; }
 
-const char* PieceLabel[N_COLORS] = { "PNBRQK", "pnbrqk" };
+constexpr array<const char*, N_COLORS> PieceLabel = { "PNBRQK", "pnbrqk" };
 
-int castleKingTo(int king, int rook) {
+inline int castleKingTo(int king, int rook) {
     return square(rankOf(king), (rook > king) ? 6 : 2);
 }
 
-int castleRookTo(int king, int rook) {
+inline int castleRookTo(int king, int rook) {
     return square(rankOf(king), (rook > king) ? 5 : 3);
 }
 
@@ -545,8 +572,8 @@ void squareToString(int sq, char* str)
     *str++ = '\0';
 }
 
-void moveToString(uint16_t move, char* str, int chess960) {
-
+void moveToString(uint16_t move, char* str, int chess960) 
+{
     int from = MoveFrom(move), to = MoveTo(move);
 
     // FRC reports using KxR notation, but standard does not
@@ -573,21 +600,7 @@ void printMove(uint16_t move, int chess960) {
 
 /// history.h
 
-struct Thread;
-
-static const int HistoryDivisor = 16384;
-
-void update_history_heuristics(Thread* thread, uint16_t* moves, int length, int depth);
-void update_killer_moves(Thread* thread, uint16_t move);
-void get_refutation_moves(Thread* thread, uint16_t* killer1, uint16_t* killer2, uint16_t* counter);
-
-int  get_capture_history(Thread* thread, uint16_t move);
-void get_capture_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length);
-void update_capture_histories(Thread* thread, uint16_t best, uint16_t* moves, int length, int depth);
-
-int  get_quiet_history(Thread* thread, uint16_t move, int* cmhist, int* fmhist);
-void get_quiet_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length);
-void update_quiet_histories(Thread* thread, uint16_t* moves, int length, int depth);
+constexpr int HistoryDivisor = 16384;
 
 /// movepicker.h
 
@@ -602,18 +615,6 @@ enum {
     STAGE_BAD_NOISY,
     STAGE_DONE,
 };
-
-struct MovePicker {
-    int split, noisy_size, quiet_size;
-    int stage, type, threshold;
-    int values[MAX_MOVES];
-    uint16_t moves[MAX_MOVES];
-    uint16_t tt_move, killer1, killer2, counter;
-};
-
-void     init_picker(MovePicker* mp, Thread* thread, uint16_t tt_move);
-void     init_noisy_picker(MovePicker* mp, Thread* thread, uint16_t tt_move, int threshold);
-uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets);
 
 
 /// timeman.h
@@ -635,73 +636,55 @@ struct TimeManager {
     uint64_t nodes[0x10000];
 };
 
-double get_real_time();
-double elapsed_time(const TimeManager* tm);
-void tm_init(const Limits* limits, TimeManager* tm);
-void tm_update(const Thread* thread, const Limits* limits, TimeManager* tm);
-bool tm_finished(const Thread* thread, const TimeManager* tm);
-bool tm_stop_early(const Thread* thread);
-
 
 /// search.h
-
-struct Board;
 
 struct PVariation {
     int length, score;
     uint16_t line[MAX_PLY];
 };
 
-void initSearch();
-void* start_search_threads(void* arguments);
-void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, uint16_t* ponder, int* score);
-void* iterativeDeepening(void* vthread);
-void aspirationWindow(Thread* thread);
-int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool cutnode);
-int qsearch(Thread* thread, PVariation* pv, int alpha, int beta);
-int staticExchangeEvaluation(Board* board, uint16_t move, int threshold);
-int singularity(Thread* thread, uint16_t ttMove, int ttValue, int depth, int PvNode, int alpha, int beta, bool cutnode);
 
-static const int WindowDepth = 5;
-static const int WindowSize = 10;
-static const int WindowTimerMS = 2500;
+constexpr int WindowDepth = 5;
+constexpr int WindowSize = 10;
+constexpr int WindowTimerMS = 2500;
 
-static const int CurrmoveTimerMS = 2500;
+constexpr int CurrmoveTimerMS = 2500;
 
-static const int TTResearchMargin = 128;
+constexpr int TTResearchMargin = 128;
 
-static const int BetaPruningDepth = 8;
-static const int BetaMargin = 75;
+constexpr int BetaPruningDepth = 8;
+constexpr int BetaMargin = 75;
 
-static const int AlphaPruningDepth = 5;
-static const int AlphaMargin = 3000;
+constexpr int AlphaPruningDepth = 5;
+constexpr int AlphaMargin = 3000;
 
-static const int NullMovePruningDepth = 2;
+constexpr int NullMovePruningDepth = 2;
 
-static const int ProbCutDepth = 5;
-static const int ProbCutMargin = 100;
+constexpr int ProbCutDepth = 5;
+constexpr int ProbCutMargin = 100;
 
-static const int FutilityPruningDepth = 8;
-static const int FutilityMarginBase = 92;
-static const int FutilityMarginPerDepth = 59;
-static const int FutilityMarginNoHistory = 158;
-static const int FutilityPruningHistoryLimit[] = { 12000, 6000 };
+constexpr int FutilityPruningDepth = 8;
+constexpr int FutilityMarginBase = 92;
+constexpr int FutilityMarginPerDepth = 59;
+constexpr int FutilityMarginNoHistory = 158;
+constexpr array<int, 2> FutilityPruningHistoryLimit = { 12000, 6000 };
 
-static const int ContinuationPruningDepth[] = { 3, 2 };
-static const int ContinuationPruningHistoryLimit[] = { -1000, -2500 };
+constexpr array<int, 2> ContinuationPruningDepth = { 3, 2 };
+constexpr array<int, 2> ContinuationPruningHistoryLimit = { -1000, -2500 };
 
-static const int LateMovePruningDepth = 8;
+constexpr int LateMovePruningDepth = 8;
 
-static const int SEEPruningDepth = 9;
-static const int SEEQuietMargin = -64;
-static const int SEENoisyMargin = -19;
-static const int SEEPieceValues[] = {
+constexpr int SEEPruningDepth = 9;
+constexpr int SEEQuietMargin = -64;
+constexpr int SEENoisyMargin = -19;
+constexpr int SEEPieceValues[] = {
      100,  450,  450,  675,
     1300,    0,    0,    0,
 };
 
-static const int QSSeeMargin = 110;
-static const int QSDeltaMargin = 150;
+constexpr int QSSeeMargin = 110;
+constexpr int QSDeltaMargin = 150;
 
 
 /// board.h
@@ -769,7 +752,7 @@ uint64_t attackersToKingSquare(Board* board);
 
 uint64_t discoveredAttacks(Board* board, int sq, int US);
 
-static const uint64_t RookMagics[N_SQUARES] = {
+constexpr array<uint64_t, N_SQUARES> RookMagics = {
     0xA180022080400230ull, 0x0040100040022000ull, 0x0080088020001002ull, 0x0080080280841000ull,
     0x4200042010460008ull, 0x04800A0003040080ull, 0x0400110082041008ull, 0x008000A041000880ull,
     0x10138001A080C010ull, 0x0000804008200480ull, 0x00010011012000C0ull, 0x0022004128102200ull,
@@ -788,7 +771,7 @@ static const uint64_t RookMagics[N_SQUARES] = {
     0x411FFFDDFFDBF4D6ull, 0x0801000804000603ull, 0x0003FFEF27EEBE74ull, 0x7645FFFECBFEA79Eull,
 };
 
-static const uint64_t BishopMagics[N_SQUARES] = {
+constexpr array<uint64_t, N_SQUARES> BishopMagics = {
     0xFFEDF9FD7CFCFFFFull, 0xFC0962854A77F576ull, 0x5822022042000000ull, 0x2CA804A100200020ull,
     0x0204042200000900ull, 0x2002121024000002ull, 0xFC0A66C64A7EF576ull, 0x7FFDFDFCBD79FFFFull,
     0xFC0846A64A34FFF6ull, 0xFC087A874A3CF7F6ull, 0x1001080204002100ull, 0x1810080489021800ull,
@@ -807,7 +790,7 @@ static const uint64_t BishopMagics[N_SQUARES] = {
     0x0400000260142410ull, 0x0800633408100500ull, 0xFC087E8E4BB2F736ull, 0x43FF9E4EF4CA2C89ull,
 };
 
-// Pyrrhic
+// Pyrrhic -- must see kingAttacks etc
 
 extern int TB_LARGEST;   // Set by Pyrrhic in tb_init()
 #include "pyrrhic/tbprobe.cpp"
@@ -816,29 +799,6 @@ using namespace std;    // only after pyrrhic
 
 
 // these are from move.h
-
-int apply(Thread* thread, Board* board, uint16_t move);
-void applyLegal(Thread* thread, Board* board, uint16_t move);
-void applyMove(Board* board, uint16_t move, Undo* undo);
-void applyNormalMove(Board* board, uint16_t move, Undo* undo);
-void applyCastleMove(Board* board, uint16_t move, Undo* undo);
-void applyEnpassMove(Board* board, uint16_t move, Undo* undo);
-void applyPromotionMove(Board* board, uint16_t move, Undo* undo);
-void applyNullMove(Board* board, Undo* undo);
-
-void revert(Thread* thread, Board* board, uint16_t move);
-void revertMove(Board* board, uint16_t move, Undo* undo);
-void revertNullMove(Board* board, Undo* undo);
-
-int legalMoveCount(Board* board);
-int moveExaminedByMultiPV(Thread* thread, uint16_t move);
-int moveIsInRootMoves(Thread* thread, uint16_t move);
-int moveIsTactical(Board* board, uint16_t move);
-int moveEstimatedValue(Board* board, uint16_t move);
-int moveBestCaseValue(Board* board);
-int moveIsLegal(Board* board, uint16_t move);
-int moveIsPseudoLegal(Board* board, uint16_t move);
-int moveWasLegal(Board* board);
 
 
 /// masks.h
@@ -881,22 +841,20 @@ void initMasks() {
             DistanceBetween[sq1][sq2] = Max(abs(fileOf(sq1) - fileOf(sq2)), abs(rankOf(sq1) - rankOf(sq2)));
 
     // Init a table to compute the distance between Pawns and Kings file-wise
-    for (uint64_t mask = 0ull; mask <= 0xFF; mask++) {
-        for (int file = 0; file < N_FILES; file++) {
-
-            int ldist, rdist, dist;
-            uint64_t left, right;
-
+    for (uint64_t mask = 0ull; mask <= 0xFF; mask++) 
+    {
+        for (int file = 0; file < N_FILES; file++) 
+        {
             // Look at only one side at a time by shifting off the other pawns
-            left = (0xFFull & (mask << (N_FILES - file - 1))) >> (N_FILES - file - 1);
-            right = (mask >> file) << file;
+            uint64_t left = (0xFFull & (mask << (N_FILES - file - 1))) >> (N_FILES - file - 1);
+            uint64_t right = (mask >> file) << file;
 
             // Find closest Pawn on each side. If no pawn, use "max" distance
-            ldist = left ? file - getmsb(left) : N_FILES - 1;
-            rdist = right ? getlsb(right) - file : N_FILES - 1;
+            int ldist = left ? file - getmsb(left) : N_FILES - 1;
+            int rdist = right ? getlsb(right) - file : N_FILES - 1;
 
             // Take the min distance, unless there are no pawns, then use 0
-            dist = (left | right) ? Min(ldist, rdist) : 0;
+            int dist = (left | right) ? Min(ldist, rdist) : 0;
             KingPawnFileDistance[file][mask] = dist;
         }
     }
@@ -1083,7 +1041,7 @@ static array<string, 224> PKWeights = {
     ""
 };
 
-static int computePKNetworkIndex(int colour, int piece, int sq) {
+inline int computePKNetworkIndex(int colour, int piece, int sq) {
     return (64 + 48) * colour
         + (48 * (piece == KING))
         + sq - 8 * (piece == PAWN);
@@ -1285,17 +1243,7 @@ struct TTable {
     uint8_t generation;
 };
 
-void tt_update();
-void tt_prefetch(uint64_t hash);
-
-int tt_init(size_t nthreads, int megabytes);
-int tt_hashfull();
-bool tt_probe(uint64_t hash, int height, uint16_t* move, int* value, int* eval, int* depth, int* bound);
 void tt_store(uint64_t hash, int height, uint16_t move, int value, int eval, int depth, int bound);
-
-struct TTClear { size_t index, count; };
-void tt_clear(size_t nthreads);
-void* tt_clear_threaded(void* cargo);
 
 /// The Pawn King table contains saved evaluations, and additional Pawn information
 /// that is expensive to compute during evaluation. This includes the location of all
@@ -1316,18 +1264,24 @@ typedef PKEntry PKTable[PK_CACHE_SIZE];
 PKEntry* getCachedPawnKingEval(Thread* thread, const Board* board);
 void storeCachedPawnKingEval(Thread* thread, const Board* board, uint64_t passed, int eval, int safety[2]);
 
+struct MovePicker {
+    int split, noisy_size, quiet_size;
+    int stage, type, threshold;
+    int values[MAX_MOVES];
+    uint16_t moves[MAX_MOVES];
+    uint16_t tt_move, killer1, killer2, counter;
+};
+
 
 /// thread.h
-
-struct NNUEEvaluator;
 
 enum {
     STACK_OFFSET = 4,
     STACK_SIZE = MAX_PLY + STACK_OFFSET
 };
 
-struct NodeState {
-
+struct NodeState 
+{
     int eval;          // Static evaluation of the Node
     int movedPiece;    // Moving piece, otherwise UB
     int dextensions;   // Number of Double Extensions
@@ -1448,13 +1402,13 @@ void nnue_refresh_accumulator(NNUEEvaluator* nnue, NNUEAccumulator* accum, Board
 /// nnue.accumulator.c
 
 
-static int sq64_to_sq32(int sq) {
-    static const int Mirror[] = { 3, 2, 1, 0, 0, 1, 2, 3 };
+constexpr inline int sq64_to_sq32(int sq) {
+    constexpr int Mirror[] = { 3, 2, 1, 0, 0, 1, 2, 3 };
     return ((sq >> 1) & ~0x3) + Mirror[sq & 0x7];
 }
 
-static int nnue_index(int piece, int relksq, int colour, int sq) {
-
+int nnue_index(int piece, int relksq, int colour, int sq) 
+{
     const int ptype = pieceType(piece);
     const int pcolour = pieceColour(piece);
     const int relpsq = relativeSquare(colour, sq);
@@ -1486,8 +1440,8 @@ int nnue_can_update(NNUEAccumulator* accum, Board* board, int colour) {
     return FALSE;
 }
 
-void nnue_update_accumulator(NNUEAccumulator* accum, Board* board, int colour, int relksq) {
-
+void nnue_update_accumulator(NNUEAccumulator* accum, Board* board, int colour, int relksq) 
+{
     int add = 0, remove = 0;
     int add_list[3], remove_list[3];
     vepi16* inputs, * outputs, * weights, registers[NUM_REGS];
@@ -1544,8 +1498,8 @@ void nnue_update_accumulator(NNUEAccumulator* accum, Board* board, int colour, i
     return;
 }
 
-void nnue_refresh_accumulator(NNUEEvaluator* nnue, NNUEAccumulator* accum, Board* board, int colour, int relsq) {
-
+void nnue_refresh_accumulator(NNUEEvaluator* nnue, NNUEAccumulator* accum, Board* board, int colour, int relsq) 
+{
     vepi16* outputs, * weights, registers[NUM_REGS];
     const int ksq = getlsb(board->pieces[KING] & board->colours[colour]);
     NNUEAccumulatorTableEntry* entry = &nnue->table[ksq];
@@ -1616,56 +1570,14 @@ ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves);
 /// move.c
 
 
-static void updateCastleZobrist(Board* board, uint64_t oldRooks, uint64_t newRooks) {
+inline void updateCastleZobrist(Board* board, uint64_t oldRooks, uint64_t newRooks) {
     uint64_t diff = oldRooks ^ newRooks;
     while (diff)
         board->hash ^= ZobristCastleKeys[poplsb(&diff)];
 }
 
-void applyMove(Board* board, uint16_t move, Undo* undo) {
-
-    static void (*table[4])(Board*, uint16_t, Undo*) = {
-        applyNormalMove, applyCastleMove,
-        applyEnpassMove, applyPromotionMove
-    };
-
-    // Save information which is hard to recompute
-    undo->hash = board->hash;
-    undo->pkhash = board->pkhash;
-    undo->kingAttackers = board->kingAttackers;
-    undo->threats = board->threats;
-    undo->castleRooks = board->castleRooks;
-    undo->epSquare = board->epSquare;
-    undo->halfMoveCounter = board->halfMoveCounter;
-    undo->psqtmat = board->psqtmat;
-
-    // Store hash history for repetition checking
-    board->history[board->numMoves++] = board->hash;
-    board->fullMoveCounter++;
-
-    // Update the hash for before changing the enpass square
-    if (board->epSquare != -1)
-        board->hash ^= ZobristEnpassKeys[fileOf(board->epSquare)];
-
-    // Run the correct move application function
-    table[MoveType(move) >> 12](board, move, undo);
-
-    // No function updated epsquare so we reset
-    if (board->epSquare == undo->epSquare)
-        board->epSquare = -1;
-
-    // No function updates this so we do it here
-    board->turn = !board->turn;
-
-    // Need king attackers for move generation
-    board->kingAttackers = attackersToKingSquare(board);
-
-    // Need squares attacked by the opposing player
-    board->threats = allAttackedSquares(board, !board->turn);
-}
-
-void applyNormalMove(Board* board, uint16_t move, Undo* undo) {
-
+void applyNormalMove(Board* board, uint16_t move, Undo* undo)
+{
     const int from = MoveFrom(move);
     const int to = MoveTo(move);
 
@@ -1895,17 +1807,51 @@ void applyNullMove(Board* board, Undo* undo) {
     board->threats = allAttackedSquares(board, !board->turn);
 }
 
+void applyMove(Board* board, uint16_t move, Undo* undo)
+{
+    static void (*table[4])(Board*, uint16_t, Undo*) = {
+        applyNormalMove, applyCastleMove,
+        applyEnpassMove, applyPromotionMove
+    };
 
-void revert(Thread* thread, Board* board, uint16_t move) {
+    // Save information which is hard to recompute
+    undo->hash = board->hash;
+    undo->pkhash = board->pkhash;
+    undo->kingAttackers = board->kingAttackers;
+    undo->threats = board->threats;
+    undo->castleRooks = board->castleRooks;
+    undo->epSquare = board->epSquare;
+    undo->halfMoveCounter = board->halfMoveCounter;
+    undo->psqtmat = board->psqtmat;
 
-    if (move == NULL_MOVE)
-        revertNullMove(board, &thread->undoStack[--thread->height]);
-    else
-        revertMove(board, move, &thread->undoStack[--thread->height]);
+    // Store hash history for repetition checking
+    board->history[board->numMoves++] = board->hash;
+    board->fullMoveCounter++;
+
+    // Update the hash for before changing the enpass square
+    if (board->epSquare != -1)
+        board->hash ^= ZobristEnpassKeys[fileOf(board->epSquare)];
+
+    // Run the correct move application function
+    table[MoveType(move) >> 12](board, move, undo);
+
+    // No function updated epsquare so we reset
+    if (board->epSquare == undo->epSquare)
+        board->epSquare = -1;
+
+    // No function updates this so we do it here
+    board->turn = !board->turn;
+
+    // Need king attackers for move generation
+    board->kingAttackers = attackersToKingSquare(board);
+
+    // Need squares attacked by the opposing player
+    board->threats = allAttackedSquares(board, !board->turn);
 }
 
-void revertMove(Board* board, uint16_t move, Undo* undo) {
 
+void revertMove(Board* board, uint16_t move, Undo* undo)
+{
     const int to = MoveTo(move);
     const int from = MoveFrom(move);
 
@@ -2011,6 +1957,14 @@ void revertNullMove(Board* board, Undo* undo) {
     board->fullMoveCounter--;
 }
 
+void revert(Thread* thread, Board* board, uint16_t move) 
+{
+    if (move == NULL_MOVE)
+        revertNullMove(board, &thread->undoStack[--thread->height]);
+    else
+        revertMove(board, move, &thread->undoStack[--thread->height]);
+}
+
 
 int legalMoveCount(Board* board) {
 
@@ -2108,26 +2062,11 @@ int moveBestCaseValue(Board* board) {
     return value;
 }
 
-int moveIsLegal(Board* board, uint16_t move) {
-
-    int legal; Undo undo;
-
-    if (!moveIsPseudoLegal(board, move))
-        return 0;
-
-    applyMove(board, move, &undo);
-    legal = moveWasLegal(board);
-    revertMove(board, move, &undo);
-
-    return legal;
-}
-
-int moveIsPseudoLegal(Board* board, uint16_t move) {
-
+int moveIsPseudoLegal(Board* board, uint16_t move)
+{
     int from = MoveFrom(move);
     int type = MoveType(move);
     int ftype = pieceType(board->squares[from]);
-    int rook, king, rookTo, kingTo;
 
     uint64_t friendly = board->colours[board->turn];
     uint64_t enemy = board->colours[!board->turn];
@@ -2210,12 +2149,11 @@ int moveIsPseudoLegal(Board* board, uint16_t move) {
     // player. If one matches, we can then verify the pseudo legality
     // using the same code as from movegen.c
 
-    while (castles && !board->kingAttackers) {
-
+    while (castles && !board->kingAttackers) 
+    {
         // Figure out which pieces are moving to which squares
-        rook = poplsb(&castles), king = from;
-        rookTo = castleRookTo(king, rook);
-        kingTo = castleKingTo(king, rook);
+        int rook = poplsb(&castles), king = from;
+        int rookTo = castleRookTo(king, rook), kingTo = castleKingTo(king, rook);
 
         // Make sure the move actually matches what we have
         if (move != MoveMake(king, rook, CASTLE_MOVE)) continue;
@@ -2238,14 +2176,33 @@ int moveIsPseudoLegal(Board* board, uint16_t move) {
     return 0;
 }
 
-int moveWasLegal(Board* board) {
-
+int moveWasLegal(Board* board) 
+{
     // Grab the last player's King's square and verify safety
     int sq = getlsb(board->colours[!board->turn] & board->pieces[KING]);
     assert(board->squares[sq] == makePiece(KING, !board->turn));
     return !squareIsAttacked(board, !board->turn, sq);
 }
 
+int moveIsLegal(Board* board, uint16_t move)
+{
+    if (!moveIsPseudoLegal(board, move))
+        return 0;
+
+    Undo undo;
+    applyMove(board, move, &undo);
+    int legal = moveWasLegal(board);
+    revertMove(board, move, &undo);
+
+    return legal;
+}
+
+TTable Table; // Global Transposition Table
+
+/// Trivial helper functions to Transposition Table handleing
+
+void tt_update() { Table.generation += TT_MASK_BOUND + 1; }
+void tt_prefetch(uint64_t hash) { Prefetch<2>(reinterpret_cast<const char*>(&Table.buckets[hash & Table.hashMask])); }
 
 
 
@@ -2312,30 +2269,30 @@ void applyLegal(Thread* thread, Board* board, uint16_t move)
 
 /// history.c
 
-static int stat_bonus(int depth) {
+inline int stat_bonus(int depth) {
 
     // Approximately verbatim stat bonus formula from Stockfish
     return depth > 13 ? 32 : 16 * depth * depth + 128 * Max(depth - 1, 0);
 }
 
-static void update_history(int16_t* current, int depth, bool good) {
-
+inline void update_history(int16_t* current, int depth, bool good) 
+{
     // HistoryDivisor is essentially the max value of history
     const int delta = good ? stat_bonus(depth) : -stat_bonus(depth);
     *current += delta - *current * abs(delta) / HistoryDivisor;
 }
 
 
-static int history_captured_piece(Thread* thread, uint16_t move) {
-
+inline int history_captured_piece(Thread* thread, uint16_t move) 
+{
     // Handle Enpassant; Consider promotions as Pawn Captures
     return MoveType(move) != NORMAL_MOVE
         ? PAWN
         : pieceType(thread->board.squares[MoveTo(move)]);
 }
 
-static int16_t* underlying_capture_history(Thread* thread, uint16_t move) {
-
+int16_t* underlying_capture_history(Thread* thread, uint16_t move) 
+{
     const int captured = history_captured_piece(thread, move);
     const int piece = pieceType(thread->board.squares[MoveFrom(move)]);
 
@@ -2349,8 +2306,8 @@ static int16_t* underlying_capture_history(Thread* thread, uint16_t move) {
     return &thread->chistory[piece][threat_from][threat_to][MoveTo(move)][captured];
 }
 
-static void underlying_quiet_history(Thread* thread, uint16_t move, int16_t* histories[3]) {
-
+void underlying_quiet_history(Thread* thread, uint16_t move, int16_t* histories[3]) 
+{
     static int16_t NULL_HISTORY; // Always zero to handle missing CM/FM history
 
     NodeState* const ns = &thread->states[thread->height];
@@ -2371,85 +2328,16 @@ static void underlying_quiet_history(Thread* thread, uint16_t move, int16_t* his
 
     // Set Followup Move History if it exists
     histories[1] = (ns - 2)->continuations == NULL
-        ? &NULL_HISTORY : &(*(ns - 2)->continuations)[1][piece][to];
+            ? &NULL_HISTORY 
+            : &(*(ns - 2)->continuations)[1][piece][to];
 
     // Set Butterfly History, which will always exist
     histories[2] = &thread->history[thread->board.turn][threat_from][threat_to][from][to];
 }
 
 
-void update_history_heuristics(Thread* thread, uint16_t* moves, int length, int depth) {
-
-    NodeState* const prev = &thread->states[thread->height - 1];
-    const int colour = thread->board.turn;
-
-    update_killer_moves(thread, moves[length - 1]);
-
-    if (prev->move != NONE_MOVE && prev->move != NULL_MOVE)
-        thread->cmtable[!colour][prev->movedPiece][MoveTo(prev->move)] = moves[length - 1];
-
-    update_quiet_histories(thread, moves, length, depth);
-}
-
-void update_killer_moves(Thread* thread, uint16_t move) {
-
-    // Avoid saving the same Killer Move twice
-    if (thread->killers[thread->height][0] != move) {
-        thread->killers[thread->height][1] = thread->killers[thread->height][0];
-        thread->killers[thread->height][0] = move;
-    }
-}
-
-void get_refutation_moves(Thread* thread, uint16_t* killer1, uint16_t* killer2, uint16_t* counter) {
-
-    // At each ply, we should have two potential Killer moves that have produced cutoffs
-    // at the same ply in sibling nodes. Additionally, we may have a counter move, which
-    // refutes the previously moved piece's destination square, somewhere in the search tree
-
-    NodeState* const prev = &thread->states[thread->height - 1];
-
-    *counter = (prev->move == NONE_MOVE || prev->move == NULL_MOVE) ? NONE_MOVE
-        : thread->cmtable[!thread->board.turn][prev->movedPiece][MoveTo(prev->move)];
-
-    *killer1 = thread->killers[thread->height][0];
-    *killer2 = thread->killers[thread->height][1];
-}
-
-
-int get_capture_history(Thread* thread, uint16_t move) {
-
-    // Inflate Queen Promotions beyond the range of reductions
-    return  64000 * (MovePromoPiece(move) == QUEEN)
-        + *underlying_capture_history(thread, move);
-}
-
-void get_capture_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length) {
-
-    // Grab histories for all of the capture moves. Since this is used for sorting,
-    // we include an MVV-LVA factor to improve sorting. Additionally, we add 64k to
-    // the history score to ensure it is >= 0 to differentiate good from bad later on
-
-    static const int MVVAugment[] = { 0, 2400, 2400, 4800, 9600 };
-
-    for (int i = start; i < start + length; i++)
-        scores[i] = 64000 + get_capture_history(thread, moves[i])
-        + MVVAugment[history_captured_piece(thread, moves[i])];
-}
-
-void update_capture_histories(Thread* thread, uint16_t best, uint16_t* moves, int length, int depth) {
-
-    // Update the history for each capture move that was attempted. One of them
-    // might have been the move which produced a cutoff, and thus earn a bonus
-
-    for (int i = 0; i < length; i++) {
-        int16_t* hist = underlying_capture_history(thread, moves[i]);
-        update_history(hist, depth, moves[i] == best);
-    }
-}
-
-
-int get_quiet_history(Thread* thread, uint16_t move, int* cmhist, int* fmhist) {
-
+int get_quiet_history(Thread* thread, uint16_t move, int* cmhist, int* fmhist) 
+{
     int16_t* histories[3];
     underlying_quiet_history(thread, move, histories);
 
@@ -2457,16 +2345,16 @@ int get_quiet_history(Thread* thread, uint16_t move, int* cmhist, int* fmhist) {
     return *histories[0] + *histories[1] + *histories[2];
 }
 
-void get_quiet_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length) {
-
+void get_quiet_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length) 
+{
     int null_hist; // cmhist & fmhist are set, although ignored
 
     for (int i = start; i < start + length; i++)
         scores[i] = get_quiet_history(thread, moves[i], &null_hist, &null_hist);
 }
 
-void update_quiet_histories(Thread* thread, uint16_t* moves, int length, int depth) {
-
+void update_quiet_histories(Thread* thread, uint16_t* moves, int length, int depth) 
+{
     NodeState* const ns = &thread->states[thread->height];
 
     // We found a low-depth cutoff too easily
@@ -2495,15 +2383,16 @@ void update_quiet_histories(Thread* thread, uint16_t* moves, int length, int dep
 /// movepicker.c
 
 
-static uint16_t pop_move(int* size, uint16_t* moves, int* values, int index) {
+uint16_t pop_move(int* size, uint16_t* moves, int* values, int index) 
+{
     uint16_t popped = moves[index];
     moves[index] = moves[--*size];
     values[index] = values[*size];
     return popped;
 }
 
-static int best_index(MovePicker* mp, int start, int end) {
-
+int best_index(MovePicker* mp, int start, int end) 
+{
     int best = start;
 
     for (int i = start + 1; i < end; i++)
@@ -2514,8 +2403,24 @@ static int best_index(MovePicker* mp, int start, int end) {
 }
 
 
-void init_picker(MovePicker* mp, Thread* thread, uint16_t tt_move) {
+void get_refutation_moves(Thread* thread, uint16_t* killer1, uint16_t* killer2, uint16_t* counter) 
+{
+    // At each ply, we should have two potential Killer moves that have produced cutoffs
+    // at the same ply in sibling nodes. Additionally, we may have a counter move, which
+    // refutes the previously moved piece's destination square, somewhere in the search tree
 
+    NodeState* const prev = &thread->states[thread->height - 1];
+
+    *counter = (prev->move == NONE_MOVE || prev->move == NULL_MOVE) ? NONE_MOVE
+        : thread->cmtable[!thread->board.turn][prev->movedPiece][MoveTo(prev->move)];
+
+    *killer1 = thread->killers[thread->height][0];
+    *killer2 = thread->killers[thread->height][1];
+}
+
+
+void init_picker(MovePicker* mp, Thread* thread, uint16_t tt_move) 
+{
     // Start with the tt-move
     mp->stage = STAGE_TABLE;
     mp->tt_move = tt_move;
@@ -2531,8 +2436,98 @@ void init_picker(MovePicker* mp, Thread* thread, uint16_t tt_move) {
     mp->stage += !moveIsPseudoLegal(&thread->board, tt_move);
 }
 
-void init_noisy_picker(MovePicker* mp, Thread* thread, uint16_t tt_move, int threshold) {
+int staticExchangeEvaluation(Board* board, uint16_t move, int threshold)
+{
+    // Unpack move information
+    int from = MoveFrom(move);
+    int to = MoveTo(move);
+    int type = MoveType(move);
 
+    // Next victim is moved piece or promotion type
+    int nextVictim = type != PROMOTION_MOVE
+            ? pieceType(board->squares[from])
+            : MovePromoPiece(move);
+
+    // Balance is the value of the move minus threshold. Function
+    // call takes care for Enpass, Promotion and Castling moves.
+    int balance = moveEstimatedValue(board, move) - threshold;
+
+    // Best case still fails to beat the threshold
+    if (balance < 0) return 0;
+
+    // Worst case is losing the moved piece
+    balance -= SEEPieceValues[nextVictim];
+
+    // If the balance is positive even if losing the moved piece,
+    // the exchange is guaranteed to beat the threshold.
+    if (balance >= 0) return 1;
+
+    // Grab sliders for updating revealed attackers
+    uint64_t bishops = board->pieces[BISHOP] | board->pieces[QUEEN];
+    uint64_t rooks = board->pieces[ROOK] | board->pieces[QUEEN];
+
+    // Let occupied suppose that the move was actually made
+    uint64_t occupied = (board->colours[WHITE] | board->colours[BLACK]);
+    occupied = (occupied ^ (1ull << from)) | (1ull << to);
+    if (type == ENPASS_MOVE) occupied ^= (1ull << board->epSquare);
+
+    // Get all pieces which attack the target square. And with occupied
+    // so that we do not let the same piece attack twice
+    uint64_t attackers = allAttackersToSquare(board, occupied, to) & occupied;
+
+    // Now our opponents turn to recapture
+    int colour = !board->turn;
+
+    while (1) 
+    {
+        // If we have no more attackers left we lose
+        uint64_t myAttackers = attackers & board->colours[colour];
+        if (myAttackers == 0ull) break;
+
+        // Find our weakest piece to attack with
+        for (nextVictim = PAWN; nextVictim <= QUEEN; nextVictim++)
+            if (myAttackers & board->pieces[nextVictim])
+                break;
+
+        // Remove this attacker from the occupied
+        occupied ^= (1ull << getlsb(myAttackers & board->pieces[nextVictim]));
+
+        // A diagonal move may reveal bishop or queen attackers
+        if (nextVictim == PAWN || nextVictim == BISHOP || nextVictim == QUEEN)
+            attackers |= bishopAttacks(to, occupied) & bishops;
+
+        // A vertical or horizontal move may reveal rook or queen attackers
+        if (nextVictim == ROOK || nextVictim == QUEEN)
+            attackers |= rookAttacks(to, occupied) & rooks;
+
+        // Make sure we did not add any already used attacks
+        attackers &= occupied;
+
+        // Swap the turn
+        colour = !colour;
+
+        // Negamax the balance and add the value of the next victim
+        balance = -balance - 1 - SEEPieceValues[nextVictim];
+
+        // If the balance is non negative after giving away our piece then we win
+        if (balance >= 0) 
+        {
+            // As a slight speed up for move legality checking, if our last attacking
+            // piece is a king, and our opponent still has attackers, then we've
+            // lost as the move we followed would be illegal
+            if (nextVictim == KING && (attackers & board->colours[colour]))
+                colour = !colour;
+
+            break;
+        }
+    }
+
+    // Side to move after the loop loses
+    return board->turn != colour;
+}
+
+void init_noisy_picker(MovePicker* mp, Thread* thread, uint16_t tt_move, int threshold)
+{
     // Start with the tt-move potentially
     mp->stage = STAGE_TABLE;
     mp->tt_move = tt_move;
@@ -2550,14 +2545,32 @@ void init_noisy_picker(MovePicker* mp, Thread* thread, uint16_t tt_move, int thr
         || !staticExchangeEvaluation(&thread->board, tt_move, threshold);
 }
 
-uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
+int get_capture_history(Thread* thread, uint16_t move) 
+{
+    // Inflate Queen Promotions beyond the range of reductions
+    return  64000 * (MovePromoPiece(move) == QUEEN)
+        + *underlying_capture_history(thread, move);
+}
 
-    int best;
-    uint16_t best_move;
+void get_capture_histories(Thread* thread, uint16_t* moves, int* scores, int start, int length) 
+{
+    // Grab histories for all of the capture moves. Since this is used for sorting,
+    // we include an MVV-LVA factor to improve sorting. Additionally, we add 64k to
+    // the history score to ensure it is >= 0 to differentiate good from bad later on
+
+    constexpr array<int, 5> MVVAugment = { 0, 2400, 2400, 4800, 9600 };
+
+    for (int i = start; i < start + length; i++)
+        scores[i] = 64000 + get_capture_history(thread, moves[i])
+                + MVVAugment[history_captured_piece(thread, moves[i])];
+}
+
+uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets)
+{
     Board* board = &thread->board;
 
-    switch (mp->stage) {
-
+    switch (mp->stage) 
+    {
     case STAGE_TABLE:
 
         // Play table move ( Already shown to be legal )
@@ -2573,15 +2586,15 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
         get_capture_histories(thread, mp->moves, mp->values, 0, mp->noisy_size);
         mp->stage = STAGE_GOOD_NOISY;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_GOOD_NOISY:
 
         // Check to see if there are still more noisy moves
-        while (mp->noisy_size) {
-
+        while (mp->noisy_size) 
+        {
             // Grab the next best move index
-            best = best_index(mp, 0, mp->noisy_size);
+            int best = best_index(mp, 0, mp->noisy_size);
 
             // Values below zero are flagged as failing an SEE (bad noisy)
             if (mp->values[best] < 0)
@@ -2595,7 +2608,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
             }
 
             // Reduce effective move list size
-            best_move = pop_move(&mp->noisy_size, mp->moves, mp->values, best);
+            uint16_t best_move = pop_move(&mp->noisy_size, mp->moves, mp->values, best);
 
             // Don't play the table move twice
             if (best_move == mp->tt_move)
@@ -2617,7 +2630,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
 
         mp->stage = STAGE_KILLER_1;
 
-        /* fallthrough */
+        [[fallthrough]];
 
     case STAGE_KILLER_1:
 
@@ -2628,7 +2641,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
             && moveIsPseudoLegal(board, mp->killer1))
             return mp->killer1;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_KILLER_2:
 
@@ -2639,7 +2652,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
             && moveIsPseudoLegal(board, mp->killer2))
             return mp->killer2;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_COUNTER_MOVE:
 
@@ -2652,7 +2665,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
             && moveIsPseudoLegal(board, mp->counter))
             return mp->counter;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_GENERATE_QUIET:
 
@@ -2664,16 +2677,16 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
 
         mp->stage = STAGE_QUIET;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_QUIET:
 
         // Check to see if there are still more quiet moves
-        while (!skip_quiets && mp->quiet_size) {
-
+        while (!skip_quiets && mp->quiet_size) 
+        {
             // Select next best quiet and reduce the effective move list size
-            best = best_index(mp, mp->split, mp->split + mp->quiet_size) - mp->split;
-            best_move = pop_move(&mp->quiet_size, mp->moves + mp->split, mp->values + mp->split, best);
+            int best = best_index(mp, mp->split, mp->split + mp->quiet_size) - mp->split;
+            uint16_t best_move = pop_move(&mp->quiet_size, mp->moves + mp->split, mp->values + mp->split, best);
 
             // Don't play a move more than once
             if (best_move == mp->tt_move || best_move == mp->killer1
@@ -2686,15 +2699,15 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
         // Out of quiet moves, only bad quiets remain
         mp->stage = STAGE_BAD_NOISY;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_BAD_NOISY:
 
         // Check to see if there are still more noisy moves
-        while (mp->noisy_size && mp->type != NOISY_PICKER) {
-
+        while (mp->noisy_size && mp->type != NOISY_PICKER) 
+        {
             // Reduce effective move list size
-            best_move = pop_move(&mp->noisy_size, mp->moves, mp->values, 0);
+            uint16_t best_move = pop_move(&mp->noisy_size, mp->moves, mp->values, 0);
 
             // Don't play a move more than once
             if (best_move == mp->tt_move || best_move == mp->killer1
@@ -2706,7 +2719,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
 
         mp->stage = STAGE_DONE;
 
-        /* fallthrough */
+        [[ fallthrough ]];
 
     case STAGE_DONE:
         return NONE_MOVE;
@@ -2723,7 +2736,7 @@ uint16_t select_next(MovePicker* mp, Thread* thread, int skip_quiets) {
 
 
 
-static void clearBoard(Board* board) 
+void clearBoard(Board* board) 
 {
     // Wipe the entire board structure, and also set all of
     // the pieces on the board to be EMPTY. Ideally, before
@@ -2733,8 +2746,8 @@ static void clearBoard(Board* board)
     memset(&board->squares, EMPTY, sizeof(board->squares));
 }
 
-static void setSquare(Board* board, int colour, int piece, int sq) {
-
+void setSquare(Board* board, int colour, int piece, int sq) 
+{
     // Generate a piece on the given square. This serves as an aid
     // to setting up the board from a FEN. We make sure update any
     // related hash values, as well as the PSQT + material values
@@ -2753,8 +2766,8 @@ static void setSquare(Board* board, int colour, int piece, int sq) {
         board->pkhash ^= ZobristKeys[board->squares[sq]][sq];
 }
 
-static int stringToSquare(char* str) {
-
+int stringToSquare(char* str) 
+{
     // Helper for reading the enpass square from a FEN. If no square
     // is provided, Ethereal will use -1 to represent this internally
 
@@ -2763,15 +2776,15 @@ static int stringToSquare(char* str) {
 
 void boardToFEN(Board* board, char* fen) 
 {
-    int sq;
     char str[3];
-    uint64_t castles;
 
     // Piece placement
-    for (int r = N_RANKS - 1; r >= 0; r--) {
+    for (int r = N_RANKS - 1; r >= 0; r--) 
+    {
         int cnt = 0;
 
-        for (int f = 0; f < N_FILES; f++) {
+        for (int f = 0; f < N_FILES; f++) 
+        {
             const int s = square(r, f);
             const int p = board->squares[s];
 
@@ -2797,9 +2810,9 @@ void boardToFEN(Board* board, char* fen)
     *fen++ = ' ';
 
     // Castle rights for White
-    castles = board->colours[WHITE] & board->castleRooks;
+    uint64_t castles = board->colours[WHITE] & board->castleRooks;
     while (castles) {
-        sq = popmsb(&castles);
+        int sq = popmsb(&castles);
         if (board->chess960) *fen++ = 'A' + fileOf(sq);
         else if (testBit(FILE_H, sq)) *fen++ = 'K';
         else if (testBit(FILE_A, sq)) *fen++ = 'Q';
@@ -2808,7 +2821,7 @@ void boardToFEN(Board* board, char* fen)
     // Castle rights for Black
     castles = board->colours[BLACK] & board->castleRooks;
     while (castles) {
-        sq = popmsb(&castles);
+        int sq = popmsb(&castles);
         if (board->chess960) *fen++ = 'a' + fileOf(sq);
         else if (testBit(FILE_H, sq)) *fen++ = 'k';
         else if (testBit(FILE_A, sq)) *fen++ = 'q';
@@ -2935,15 +2948,15 @@ double elapsed_time(const TimeManager* tm) {
 }
 
 
-void tm_init(const Limits* limits, TimeManager* tm) {
-
+void tm_init(const Limits* limits, TimeManager* tm) 
+{
     tm->pv_stability = 0; // Clear our stability time usage heuristic
     tm->start_time = limits->start; // Save off the start time of the search
     memset(tm->nodes, 0, sizeof(uint16_t) * 0x10000); // Clear Node counters
 
     // Allocate time if Ethereal is handling the clock
-    if (limits->limitedBySelf) {
-
+    if (limits->limitedBySelf) 
+    {
         // Playing using X / Y + Z time control
         if (limits->mtg >= 0) {
             tm->ideal_usage = 1.80 * (limits->time - MoveOverhead) / (limits->mtg + 5) + limits->inc;
@@ -3067,8 +3080,8 @@ unsigned tablebasesProbeWDL(Board* board, int depth, int height);
 
 unsigned TB_PROBE_DEPTH; // Set by UCI options
 
-static uint16_t convertPyrrhicMove(Board* board, unsigned result) {
-
+uint16_t convertPyrrhicMove(Board* board, unsigned result) 
+{
     // Extract Pyrhic's move representation
     unsigned to = TB_GET_TO(result);
     unsigned from = TB_GET_FROM(result);
@@ -3081,8 +3094,8 @@ static uint16_t convertPyrrhicMove(Board* board, unsigned result) {
     else /* if (promo != 0u) */  return MoveMake(from, to, PROMOTION_MOVE | ((4 - promo) << 14));
 }
 
-static void removeBadWDL(Board* board, Limits* limits, unsigned result, unsigned* results) {
-
+void removeBadWDL(Board* board, Limits* limits, unsigned result, unsigned* results) 
+{
     // Remove for any moves that fail to maintain the ideal WDL outcome
     for (int i = 0; i < MAX_MOVES && results[i] != TB_RESULT_FAILED; i++)
         if (TB_GET_WDL(results[i]) != TB_GET_WDL(result))
@@ -3187,18 +3200,8 @@ enum {
 };
 
 struct EvalTrace {
-    int PawnValue[N_COLORS];
-    int KnightValue[N_COLORS];
-    int BishopValue[N_COLORS];
-    int RookValue[N_COLORS];
-    int QueenValue[N_COLORS];
-    int KingValue[N_COLORS];
-    int PawnPSQT[N_SQUARES][N_COLORS];
-    int KnightPSQT[N_SQUARES][N_COLORS];
-    int BishopPSQT[N_SQUARES][N_COLORS];
-    int RookPSQT[N_SQUARES][N_COLORS];
-    int QueenPSQT[N_SQUARES][N_COLORS];
-    int KingPSQT[N_SQUARES][N_COLORS];
+    array<int, N_COLORS> PawnValue, KnightValue, BishopValue, RookValue, QueenValue, KingValue;
+    array<array<int, N_COLORS>, N_SQUARES> PawnPSQT, KnightPSQT, BishopPSQT, RookPSQT, QueenPSQT, KingPSQT;
     int PawnCandidatePasser[2][8][N_COLORS];
     int PawnIsolated[8][N_COLORS];
     int PawnStacked[2][8][N_COLORS];
@@ -3287,26 +3290,21 @@ struct EvalInfo {
 
 int evaluateBoard(Thread* thread, Board* board);
 int evaluatePieces(EvalInfo* ei, Board* board);
-int evaluatePawns(EvalInfo* ei, Board* board, int colour);
-int evaluateKnights(EvalInfo* ei, Board* board, int colour);
-int evaluateBishops(EvalInfo* ei, Board* board, int colour);
-int evaluateRooks(EvalInfo* ei, Board* board, int colour);
-int evaluateQueens(EvalInfo* ei, Board* board, int colour);
-int evaluateKingsPawns(EvalInfo* ei, Board* board, int colour);
-int evaluateKings(EvalInfo* ei, Board* board, int colour);
-int evaluatePassed(EvalInfo* ei, Board* board, int colour);
-int evaluateThreats(EvalInfo* ei, Board* board, int colour);
-int evaluateSpace(EvalInfo* ei, Board* board, int colour);
+template<int US> int evaluatePawns(EvalInfo* ei, Board* board);
+template<int US> int evaluateKnights(EvalInfo* ei, Board* board);
+template<int US> int evaluateBishops(EvalInfo* ei, Board* board);
+template<int US> int evaluateRooks(EvalInfo* ei, Board* board);
+template<int US> int evaluateQueens(EvalInfo* ei, Board* board);
+template<int US> void evaluateKingsPawns(EvalInfo* ei, Board* board);
+template<int US> int evaluateKings(EvalInfo* ei, Board* board);
+template<int US> int evaluatePassed(EvalInfo* ei, Board* board);
+template<int US> int evaluateThreats(EvalInfo* ei, Board* board);
+template<int US> int evaluateSpace(EvalInfo* ei, Board* board);
 int evaluateClosedness(EvalInfo* ei, Board* board);
 int evaluateComplexity(EvalInfo* ei, Board* board, int eval);
 int evaluateScaleFactor(Board* board, int eval);
 void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei);
 
-#define MakeScore(mg, eg) ((int)((unsigned int)(eg) << 16) + (mg))
-#define ScoreMG(s) ((int16_t)((uint16_t)((unsigned)((s)))))
-#define ScoreEG(s) ((int16_t)((uint16_t)((unsigned)((s) + 0x8000) >> 16)))
-
-extern const int Tempo;
 
 /// nnue/nnue.h
 
@@ -3358,7 +3356,7 @@ ALIGN64 float   l3_biases[OUTSIZE];
 
 static int NNUE_LOADED = 0;
 
-static void scale_weights() 
+void scale_weights() 
 {
     // Delayed dequantization of the results of L1 forces an upshift in
     // biases of L2 and L3 to compensate. This saves SRAI calls, as well as
@@ -3385,7 +3383,7 @@ template<class E_> void e_transpose(E_* matrix, int rows, int cols) {
     memcpy(matrix, &cpy[0], sizeof(int8_t) * rows * cols);
 }
 
-static void shuffle_input_layer() 
+void shuffle_input_layer() 
 {
 #if defined(USE_AVX2)
 
@@ -3418,7 +3416,7 @@ static void shuffle_input_layer()
 #endif
 }
 
-static void abort_nnue(const char* reason) {
+void abort_nnue(const char* reason) {
     printf("info string %s\n", reason);
     fflush(stdout); exit(EXIT_FAILURE);
 }
@@ -3426,7 +3424,7 @@ static void abort_nnue(const char* reason) {
 
 INLINE void maddubs_x4(vepi32* acc, const vepi8* inp, const vepi8* wgt, int i, int j, int k) 
 {
-    static const int InChunks = L1SIZE / vepi8_cnt;
+    constexpr int InChunks = L1SIZE / vepi8_cnt;
 
     vepi16 sum0 = vepi16_maubs(inp[j + 0], wgt[InChunks * (i * 8 + k) + j + 0]);
     vepi16 sum1 = vepi16_maubs(inp[j + 1], wgt[InChunks * (i * 8 + k) + j + 1]);
@@ -3817,33 +3815,29 @@ EvalTrace T, EmptyTrace;
 
 /* Pawn Evaluation Terms */
 
-const int PawnCandidatePasser[2][N_RANKS] = {
-   {S(0,   0), S(-11, -18), S(-16,  18), S(-18,  29),
-    S(-22,  61), S(21,  59), S(0,   0), S(0,   0)},
-   {S(0,   0), S(-12,  21), S(-7,  27), S(2,  53),
-    S(22, 116), S(49,  78), S(0,   0), S(0,   0)},
+constexpr array<array<int, N_RANKS>, 2> PawnCandidatePasser = 
+{
+   array<int, N_RANKS>{S(0,   0), S(-11, -18), S(-16,  18), S(-18,  29), S(-22,  61), S(21,  59), S(0,   0), S(0,   0)},
+   array<int, N_RANKS>{S(0,   0), S(-12,  21), S(-7,  27), S(2,  53), S(22, 116), S(49,  78), S(0,   0), S(0,   0)},
 };
 
-const int PawnIsolated[N_FILES] = {
+constexpr array<int, N_FILES> PawnIsolated = {
     S(-13, -12), S(-1, -16), S(1, -16), S(3, -18),
     S(7, -19), S(3, -15), S(-4, -14), S(-4, -17),
 };
 
-const int PawnStacked[2][N_FILES] = {
-   {S(10, -29), S(-2, -26), S(0, -23), S(0, -20),
-    S(3, -20), S(5, -26), S(4, -30), S(8, -31)},
-   {S(3, -14), S(0, -15), S(-6,  -9), S(-7, -10),
-    S(-4,  -9), S(-2, -10), S(0, -13), S(0, -17)},
+constexpr array<array<int, N_FILES>, 2> PawnStacked = 
+{
+   array<int, N_FILES>{S(10, -29), S(-2, -26), S(0, -23), S(0, -20), S(3, -20), S(5, -26), S(4, -30), S(8, -31)},
+   array<int, N_FILES>{S(3, -14), S(0, -15), S(-6,  -9), S(-7, -10), S(-4,  -9), S(-2, -10), S(0, -13), S(0, -17)},
 };
 
-const int PawnBackwards[2][N_RANKS] = {
-   {S(0,   0), S(0,  -7), S(7,  -7), S(6, -18),
-    S(-4, -29), S(0,   0), S(0,   0), S(0,   0)},
-   {S(0,   0), S(-9, -32), S(-5, -30), S(3, -31),
-    S(29, -41), S(0,   0), S(0,   0), S(0,   0)},
+constexpr array<array<int, N_RANKS>, 2> PawnBackwards = {
+   array<int, N_RANKS>{S(0,   0), S(0,  -7), S(7,  -7), S(6, -18), S(-4, -29), S(0,   0), S(0,   0), S(0,   0)},
+   array<int, N_RANKS>{S(0,   0), S(-9, -32), S(-5, -30), S(3, -31), S(29, -41), S(0,   0), S(0,   0), S(0,   0)},
 };
 
-const int PawnConnected32[32] = {
+constexpr array<int, 32> PawnConnected32 = {
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
     S(-1, -11), S(12,  -4), S(0,  -2), S(6,   8),
     S(14,   0), S(20,  -6), S(19,   3), S(17,   8),
@@ -3856,18 +3850,18 @@ const int PawnConnected32[32] = {
 
 /* Knight Evaluation Terms */
 
-const int KnightOutpost[2][2] = {
-   {S(12, -32), S(40,   0)},
-   {S(7, -24), S(21,  -3)},
+constexpr array<array<int, 2>, 2> KnightOutpost = {
+   array<int, 2>{S(12, -32), S(40,   0)},
+   array<int, 2>{S(7, -24), S(21,  -3)},
 };
 
-const int KnightBehindPawn = S(3, 28);
+constexpr int KnightBehindPawn = S(3, 28);
 
-const int KnightInSiberia[4] = {
+constexpr array<int, 4> KnightInSiberia = {
     S(-9,  -6), S(-12, -20), S(-27, -20), S(-47, -19),
 };
 
-const int KnightMobility[9] = {
+constexpr array<int, 9> KnightMobility = {
     S(-104,-139), S(-45,-114), S(-22, -37), S(-8,   3),
     S(6,  15), S(11,  34), S(19,  38), S(30,  37),
     S(43,  17),
@@ -3875,20 +3869,20 @@ const int KnightMobility[9] = {
 
 /* Bishop Evaluation Terms */
 
-const int BishopPair = S(22, 88);
+constexpr int BishopPair = S(22, 88);
 
-const int BishopRammedPawns = S(-8, -17);
+constexpr int BishopRammedPawns = S(-8, -17);
 
-const int BishopOutpost[2][2] = {
-   {S(16, -16), S(50,  -3)},
-   {S(9,  -9), S(-4,  -4)},
+constexpr array<array<int, 2>, 2> BishopOutpost = {
+   array<int, 2>{S(16, -16), S(50,  -3)},
+   array<int, 2>{S(9,  -9), S(-4,  -4)},
 };
 
-const int BishopBehindPawn = S(4, 24);
+constexpr int BishopBehindPawn = S(4, 24);
 
-const int BishopLongDiagonal = S(26, 20);
+constexpr int BishopLongDiagonal = S(26, 20);
 
-const int BishopMobility[14] = {
+constexpr array<int, 14> BishopMobility = {
     S(-99,-186), S(-46,-124), S(-16, -54), S(-4, -14),
     S(6,   1), S(14,  20), S(17,  35), S(19,  39),
     S(19,  49), S(27,  48), S(26,  48), S(52,  32),
@@ -3897,11 +3891,11 @@ const int BishopMobility[14] = {
 
 /* Rook Evaluation Terms */
 
-const int RookFile[2] = { S(10,   9), S(34,   8) };
+constexpr array<int, 2> RookFile = { S(10,   9), S(34,   8) };
 
-const int RookOnSeventh = S(-1, 42);
+constexpr int RookOnSeventh = S(-1, 42);
 
-const int RookMobility[15] = {
+constexpr array<int, 15> RookMobility = {
     S(-127,-148), S(-56,-127), S(-25, -85), S(-12, -28),
     S(-10,   2), S(-12,  27), S(-11,  42), S(-4,  46),
     S(4,  52), S(9,  55), S(11,  64), S(19,  68),
@@ -3910,9 +3904,9 @@ const int RookMobility[15] = {
 
 /* Queen Evaluation Terms */
 
-const int QueenRelativePin = S(-22, -13);
+constexpr int QueenRelativePin = S(-22, -13);
 
-const int QueenMobility[28] = {
+constexpr array<int, 28> QueenMobility = {
     S(-111,-273), S(-253,-401), S(-127,-228), S(-46,-236),
     S(-20,-173), S(-9, -86), S(-1, -35), S(2,  -1),
     S(8,   8), S(10,  31), S(15,  37), S(17,  55),
@@ -3924,154 +3918,124 @@ const int QueenMobility[28] = {
 
 /* King Evaluation Terms */
 
-const int KingDefenders[12] = {
+constexpr array<int, 12> KingDefenders = {
     S(-37,  -3), S(-17,   2), S(0,   6), S(11,   8),
     S(21,   8), S(32,   0), S(38, -14), S(10,  -5),
     S(12,   6), S(12,   6), S(12,   6), S(12,   6),
 };
 
-const int KingPawnFileProximity[N_FILES] = {
+constexpr array<int, N_FILES> KingPawnFileProximity = {
     S(36,  46), S(22,  31), S(13,  15), S(-8, -22),
     S(-5, -62), S(-3, -75), S(-15, -81), S(-12, -75),
 };
 
-const int KingShelter[2][N_FILES][N_RANKS] = {
-  {{S(-5,  -5), S(17, -31), S(26,  -3), S(24,   8),
-    S(4,   1), S(-12,   4), S(-16, -33), S(-59,  24)},
-   {S(11,  -6), S(3, -15), S(-5,  -2), S(5,  -4),
-    S(-11,   7), S(-53,  70), S(81,  82), S(-19,   1)},
-   {S(38,  -3), S(5,  -6), S(-34,   5), S(-17, -15),
-    S(-9,  -5), S(-26,  12), S(11,  73), S(-16,  -1)},
-   {S(18,  11), S(25, -18), S(0, -14), S(10, -21),
-    S(22, -34), S(-48,   9), S(-140,  49), S(-5,  -5)},
-   {S(-11,  15), S(1,  -3), S(-44,   6), S(-28,  10),
-    S(-24,  -2), S(-35,  -5), S(40, -24), S(-13,   3)},
-   {S(51, -14), S(15, -14), S(-24,   5), S(-10, -20),
-    S(10, -34), S(34, -20), S(48, -38), S(-21,   1)},
-   {S(40, -17), S(2, -24), S(-31,  -1), S(-24,  -8),
-    S(-31,   2), S(-20,  29), S(4,  49), S(-16,   3)},
-   {S(10, -20), S(4, -24), S(10,   2), S(2,  16),
-    S(-10,  24), S(-10,  44), S(-184,  81), S(-17,  17)}},
-  {{S(0,   0), S(-15, -39), S(9, -29), S(-49,  14),
-    S(-36,   6), S(-8,  50), S(-168,  -3), S(-59,  19)},
-   {S(0,   0), S(17, -18), S(9, -11), S(-11,  -5),
-    S(-1, -24), S(26,  73), S(-186,   4), S(-32,  11)},
-   {S(0,   0), S(19,  -9), S(1, -11), S(9, -26),
-    S(28,  -5), S(-92,  56), S(-88, -74), S(-8,   1)},
-   {S(0,   0), S(0,   3), S(-6,  -6), S(-35,  10),
-    S(-46,  13), S(-98,  33), S(-7, -45), S(-35,  -5)},
-   {S(0,   0), S(12,  -3), S(17, -15), S(17, -15),
-    S(-5, -14), S(-36,   5), S(-101, -52), S(-18,  -1)},
-   {S(0,   0), S(-8,  -5), S(-22,   1), S(-16,  -6),
-    S(25, -22), S(-27,  10), S(52,  39), S(-14,  -2)},
-   {S(0,   0), S(32, -22), S(19, -15), S(-9,  -6),
-    S(-29,  13), S(-7,  23), S(-50, -39), S(-27,  18)},
-   {S(0,   0), S(16, -57), S(17, -32), S(-18,  -7),
-    S(-31,  24), S(-11,  24), S(-225, -49), S(-30,   5)}},
+constexpr array<array<array<int, N_RANKS>, N_FILES>, 2> KingShelter = 
+{
+  array<array<int, N_RANKS>, N_FILES>{
+        array<int, N_RANKS>{S(-5,  -5), S(17, -31), S(26,  -3), S(24,   8), S(4,   1), S(-12,   4), S(-16, -33), S(-59,  24)},
+        array<int, N_RANKS>{S(11,  -6), S(3, -15), S(-5,  -2), S(5,  -4), S(-11,   7), S(-53,  70), S(81,  82), S(-19,   1)},
+        array<int, N_RANKS>{S(38,  -3), S(5,  -6), S(-34,   5), S(-17, -15), S(-9,  -5), S(-26,  12), S(11,  73), S(-16,  -1)},
+        array<int, N_RANKS>{S(18,  11), S(25, -18), S(0, -14), S(10, -21), S(22, -34), S(-48,   9), S(-140,  49), S(-5,  -5)},
+        array<int, N_RANKS>{S(-11,  15), S(1,  -3), S(-44,   6), S(-28,  10), S(-24,  -2), S(-35,  -5), S(40, -24), S(-13,   3)},
+        array<int, N_RANKS>{S(51, -14), S(15, -14), S(-24,   5), S(-10, -20), S(10, -34), S(34, -20), S(48, -38), S(-21,   1)},
+        array<int, N_RANKS>{S(40, -17), S(2, -24), S(-31,  -1), S(-24,  -8), S(-31,   2), S(-20,  29), S(4,  49), S(-16,   3)},
+        array<int, N_RANKS>{S(10, -20), S(4, -24), S(10,   2), S(2,  16), S(-10,  24), S(-10,  44), S(-184,  81), S(-17,  17)}},
+  array<array<int, N_RANKS>, N_FILES>{
+        array<int, N_RANKS>{S(0,   0), S(-15, -39), S(9, -29), S(-49,  14), S(-36,   6), S(-8,  50), S(-168,  -3), S(-59,  19)},
+        array<int, N_RANKS>{S(0,   0), S(17, -18), S(9, -11), S(-11,  -5), S(-1, -24), S(26,  73), S(-186,   4), S(-32,  11)},
+        array<int, N_RANKS>{S(0,   0), S(19,  -9), S(1, -11), S(9, -26), S(28,  -5), S(-92,  56), S(-88, -74), S(-8,   1)},
+        array<int, N_RANKS>{S(0,   0), S(0,   3), S(-6,  -6), S(-35,  10), S(-46,  13), S(-98,  33), S(-7, -45), S(-35,  -5)},
+        array<int, N_RANKS>{S(0,   0), S(12,  -3), S(17, -15), S(17, -15), S(-5, -14), S(-36,   5), S(-101, -52), S(-18,  -1)},
+        array<int, N_RANKS>{S(0,   0), S(-8,  -5), S(-22,   1), S(-16,  -6), S(25, -22), S(-27,  10), S(52,  39), S(-14,  -2)},
+        array<int, N_RANKS>{S(0,   0), S(32, -22), S(19, -15), S(-9,  -6), S(-29,  13), S(-7,  23), S(-50, -39), S(-27,  18)},
+        array<int, N_RANKS>{S(0,   0), S(16, -57), S(17, -32), S(-18,  -7), S(-31,  24), S(-11,  24), S(-225, -49), S(-30,   5)}},
 };
 
-const int KingStorm[2][N_FILES / 2][N_RANKS] = {
-  {{S(-6,  36), S(144,  -4), S(-13,  26), S(-7,   1),
-    S(-12,  -3), S(-8,  -7), S(-19,   8), S(-28,  -2)},
-   {S(-17,  60), S(64,  17), S(-9,  21), S(8,  12),
-    S(3,   9), S(6,  -2), S(-5,   2), S(-16,   8)},
-   {S(2,  48), S(15,  30), S(-17,  20), S(-13,  10),
-    S(-1,   6), S(7,   3), S(8,  -7), S(7,   8)},
-   {S(-1,  25), S(15,  22), S(-31,  10), S(-22,   1),
-    S(-15,   4), S(13, -10), S(3,  -5), S(-20,   8)}},
-  {{S(0,   0), S(-18, -16), S(-18,  -2), S(27, -24),
-    S(10,  -6), S(15, -24), S(-6,   9), S(9,  30)},
-   {S(0,   0), S(-15, -42), S(-3, -15), S(53, -17),
-    S(15,  -5), S(20, -28), S(-12, -17), S(-34,   5)},
-   {S(0,   0), S(-34, -62), S(-15, -13), S(9,  -6),
-    S(6,  -2), S(-2, -17), S(-5, -21), S(-3,   3)},
-   {S(0,   0), S(-1, -26), S(-27, -19), S(-21,   4),
-    S(-10,  -6), S(7, -35), S(66, -29), S(11,  25)}},
+constexpr array<array<array<int, N_RANKS>, N_FILES / 2>, 2> KingStorm = {
+  array<array<int, N_RANKS>, N_FILES / 2>{
+        array<int, N_RANKS>{S(-6,  36), S(144,  -4), S(-13,  26), S(-7,   1), S(-12,  -3), S(-8,  -7), S(-19,   8), S(-28,  -2)},
+        array<int, N_RANKS>{S(-17,  60), S(64,  17), S(-9,  21), S(8,  12), S(3,   9), S(6,  -2), S(-5,   2), S(-16,   8)},
+        array<int, N_RANKS>{S(2,  48), S(15,  30), S(-17,  20), S(-13,  10), S(-1,   6), S(7,   3), S(8,  -7), S(7,   8)},
+        array<int, N_RANKS>{S(-1,  25), S(15,  22), S(-31,  10), S(-22,   1), S(-15,   4), S(13, -10), S(3,  -5), S(-20,   8)}},
+  array<array<int, N_RANKS>, N_FILES / 2>{
+        array<int, N_RANKS>{S(0,   0), S(-18, -16), S(-18,  -2), S(27, -24), S(10,  -6), S(15, -24), S(-6,   9), S(9,  30)},
+        array<int, N_RANKS>{S(0,   0), S(-15, -42), S(-3, -15), S(53, -17), S(15,  -5), S(20, -28), S(-12, -17), S(-34,   5)},
+        array<int, N_RANKS>{S(0,   0), S(-34, -62), S(-15, -13), S(9,  -6), S(6,  -2), S(-2, -17), S(-5, -21), S(-3,   3)},
+        array<int, N_RANKS>{S(0,   0), S(-1, -26), S(-27, -19), S(-21,   4), S(-10,  -6), S(7, -35), S(66, -29), S(11,  25)}},
 };
 
 /* Safety Evaluation Terms */
 
-const int SafetyKnightWeight = S(48, 41);
-const int SafetyBishopWeight = S(24, 35);
-const int SafetyRookWeight = S(36, 8);
-const int SafetyQueenWeight = S(30, 6);
+constexpr int SafetyKnightWeight = S(48, 41);
+constexpr int SafetyBishopWeight = S(24, 35);
+constexpr int SafetyRookWeight = S(36, 8);
+constexpr int SafetyQueenWeight = S(30, 6);
 
-const int SafetyAttackValue = S(45, 34);
-const int SafetyWeakSquares = S(42, 41);
-const int SafetyNoEnemyQueens = S(-237, -259);
-const int SafetySafeQueenCheck = S(93, 83);
-const int SafetySafeRookCheck = S(90, 98);
-const int SafetySafeBishopCheck = S(59, 59);
-const int SafetySafeKnightCheck = S(112, 117);
-const int SafetyAdjustment = S(-74, -26);
+constexpr int SafetyAttackValue = S(45, 34);
+constexpr int SafetyWeakSquares = S(42, 41);
+constexpr int SafetyNoEnemyQueens = S(-237, -259);
+constexpr int SafetySafeQueenCheck = S(93, 83);
+constexpr int SafetySafeRookCheck = S(90, 98);
+constexpr int SafetySafeBishopCheck = S(59, 59);
+constexpr int SafetySafeKnightCheck = S(112, 117);
+constexpr int SafetyAdjustment = S(-74, -26);
 
-const int SafetyShelter[2][N_RANKS] = {
-   {S(-2,   7), S(-1,  13), S(0,   8), S(4,   7),
-    S(6,   2), S(-1,   0), S(2,   0), S(0, -13)},
-   {S(0,   0), S(-2,  13), S(-2,   9), S(4,   5),
-    S(3,   1), S(-3,   0), S(-2,   0), S(-1,  -9)},
-};
-
-const int SafetyStorm[2][N_RANKS] = {
-   {S(-4,  -1), S(-8,   3), S(0,   5), S(1,  -1),
-    S(3,   6), S(-2,  20), S(-2,  18), S(2, -12)},
-   {S(0,   0), S(1,   0), S(-1,   4), S(0,   0),
-    S(0,   5), S(-1,   1), S(1,   0), S(1,   0)},
+constexpr array<array<int, N_RANKS>, 2> SafetyShelter = {
+   array<int, N_RANKS>{S(-2,   7), S(-1,  13), S(0,   8), S(4,   7), S(6,   2), S(-1,   0), S(2,   0), S(0, -13)},
+   array<int, N_RANKS>{S(0,   0), S(-2,  13), S(-2,   9), S(4,   5), S(3,   1), S(-3,   0), S(-2,   0), S(-1,  -9)},
+}, 
+SafetyStorm = {
+   array<int, N_RANKS>{S(-4,  -1), S(-8,   3), S(0,   5), S(1,  -1), S(3,   6), S(-2,  20), S(-2,  18), S(2, -12)},
+   array<int, N_RANKS>{S(0,   0), S(1,   0), S(-1,   4), S(0,   0), S(0,   5), S(-1,   1), S(1,   0), S(1,   0)},
 };
 
 /* Passed Pawn Evaluation Terms */
 
-const int PassedPawn[2][2][N_RANKS] = {
-  {{S(0,   0), S(-39,  -4), S(-43,  25), S(-62,  28),
-    S(8,  19), S(97,  -4), S(162,  46), S(0,   0)},
-   {S(0,   0), S(-28,  13), S(-40,  42), S(-56,  44),
-    S(-2,  56), S(114,  54), S(193,  94), S(0,   0)}},
-  {{S(0,   0), S(-28,  29), S(-47,  36), S(-60,  54),
-    S(8,  65), S(106,  76), S(258, 124), S(0,   0)},
-   {S(0,   0), S(-28,  23), S(-40,  35), S(-55,  60),
-    S(8,  89), S(95, 166), S(124, 293), S(0,   0)}},
+constexpr array<array<array<int, N_RANKS>, 2>, 2> PassedPawn = {
+  array<array<int, N_RANKS>, 2>{
+        array<int, N_RANKS>{S(0,   0), S(-39,  -4), S(-43,  25), S(-62,  28), S(8,  19), S(97,  -4), S(162,  46), S(0,   0)},
+        array<int, N_RANKS>{S(0,   0), S(-28,  13), S(-40,  42), S(-56,  44), S(-2,  56), S(114,  54), S(193,  94), S(0,   0)}},
+  array<array<int, N_RANKS>, 2>{
+        array<int, N_RANKS>{S(0,   0), S(-28,  29), S(-47,  36), S(-60,  54), S(8,  65), S(106,  76), S(258, 124), S(0,   0)},
+        array<int, N_RANKS>{S(0,   0), S(-28,  23), S(-40,  35), S(-55,  60), S(8,  89), S(95, 166), S(124, 293), S(0,   0)}},
 };
 
-const int PassedFriendlyDistance[N_FILES] = {
-    S(0,   0), S(-3,   1), S(0,  -4), S(5, -13),
-    S(6, -19), S(-9, -19), S(-9,  -7), S(0,   0),
+constexpr array<int, N_FILES> PassedFriendlyDistance = {
+    S(0,   0), S(-3,   1), S(0,  -4), S(5, -13), S(6, -19), S(-9, -19), S(-9,  -7), S(0,   0),
+}, 
+PassedEnemyDistance = {
+    S(0,   0), S(5,  -1), S(7,   0), S(9,  11), S(0,  25), S(1,  37), S(16,  37), S(0,   0),
 };
 
-const int PassedEnemyDistance[N_FILES] = {
-    S(0,   0), S(5,  -1), S(7,   0), S(9,  11),
-    S(0,  25), S(1,  37), S(16,  37), S(0,   0),
-};
-
-const int PassedSafePromotionPath = S(-49, 57);
+constexpr int PassedSafePromotionPath = S(-49, 57);
 
 /* Threat Evaluation Terms */
 
-const int ThreatWeakPawn = S(-11, -38);
-const int ThreatMinorAttackedByPawn = S(-55, -83);
-const int ThreatMinorAttackedByMinor = S(-25, -45);
-const int ThreatMinorAttackedByMajor = S(-30, -55);
-const int ThreatRookAttackedByLesser = S(-48, -28);
-const int ThreatMinorAttackedByKing = S(-43, -21);
-const int ThreatRookAttackedByKing = S(-33, -18);
-const int ThreatQueenAttackedByOne = S(-50, -7);
-const int ThreatOverloadedPieces = S(-7, -16);
-const int ThreatByPawnPush = S(15, 32);
+constexpr int ThreatWeakPawn = S(-11, -38);
+constexpr int ThreatMinorAttackedByPawn = S(-55, -83);
+constexpr int ThreatMinorAttackedByMinor = S(-25, -45);
+constexpr int ThreatMinorAttackedByMajor = S(-30, -55);
+constexpr int ThreatRookAttackedByLesser = S(-48, -28);
+constexpr int ThreatMinorAttackedByKing = S(-43, -21);
+constexpr int ThreatRookAttackedByKing = S(-33, -18);
+constexpr int ThreatQueenAttackedByOne = S(-50, -7);
+constexpr int ThreatOverloadedPieces = S(-7, -16);
+constexpr int ThreatByPawnPush = S(15, 32);
 
 /* Space Evaluation Terms */
 
-const int SpaceRestrictPiece = S(-4, -1);
-const int SpaceRestrictEmpty = S(-4, -2);
-const int SpaceCenterControl = S(3, 0);
+constexpr int SpaceRestrictPiece = S(-4, -1);
+constexpr int SpaceRestrictEmpty = S(-4, -2);
+constexpr int SpaceCenterControl = S(3, 0);
 
 /* Closedness Evaluation Terms */
 
-const int ClosednessKnightAdjustment[9] = {
+constexpr array<int, 9> ClosednessKnightAdjustment = {
     S(-7,  10), S(-7,  29), S(-9,  37), S(-5,  37),
     S(-3,  44), S(-1,  36), S(1,  33), S(-10,  51),
     S(-7,  30),
-};
-
-const int ClosednessRookAdjustment[9] = {
+},
+ClosednessRookAdjustment = {
     S(42,  43), S(-6,  80), S(3,  59), S(-5,  47),
     S(-7,  41), S(-3,  23), S(-6,  11), S(-17,  11),
     S(-34, -12),
@@ -4079,38 +4043,43 @@ const int ClosednessRookAdjustment[9] = {
 
 /* Complexity Evaluation Terms */
 
-const int ComplexityTotalPawns = S(0, 8);
-const int ComplexityPawnFlanks = S(0, 82);
-const int ComplexityPawnEndgame = S(0, 76);
-const int ComplexityAdjustment = S(0, -157);
+constexpr int ComplexityTotalPawns = S(0, 8);
+constexpr int ComplexityPawnFlanks = S(0, 82);
+constexpr int ComplexityPawnEndgame = S(0, 76);
+constexpr int ComplexityAdjustment = S(0, -157);
 
 /* General Evaluation Terms */
 
-const int Tempo = 20;
-
 #undef S
 
-int evaluateBoard(Thread* thread, Board* board) {
+constexpr int Tempo = 20;
 
-    int phase, eval, pkeval, factor = SCALE_NORMAL;
+int evaluateBoard(Thread* thread, Board* board) 
+{
+    int factor = SCALE_NORMAL;
 
     // We can recognize positions we just evaluated
     if (thread->states[thread->height - 1].move == NULL_MOVE)
+    {
+        int phase = 4 * popcount(board->pieces[QUEEN])
+            + 2 * popcount(board->pieces[ROOK])
+            + 1 * popcount(board->pieces[KNIGHT] | board->pieces[BISHOP]);
         return -thread->states[thread->height - 1].eval + 2 * Tempo;
+    }
 
     // Use the NNUE unless we are in an extremely unbalanced position
+    int eval;
     if (USE_NNUE && abs(ScoreEG(board->psqtmat)) <= 2000) {
         eval = nnue_evaluate(thread, board);
         eval = board->turn == WHITE ? eval : -eval;
     }
-
     else 
     {
         EvalInfo ei;
         initPSQTInfo(thread, board, &ei);
         eval = evaluatePieces(&ei, board);
 
-        pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
+        int pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
         if (ei.pkentry == NULL) pkeval += computePKNetwork(board);
 
         eval += pkeval + board->psqtmat;
@@ -4127,7 +4096,7 @@ int evaluateBoard(Thread* thread, Board* board) {
     }
 
     // Calculate the game phase based on remaining material (Fruit Method)
-    phase = 4 * popcount(board->pieces[QUEEN])
+    int phase = 4 * popcount(board->pieces[QUEEN])
         + 2 * popcount(board->pieces[ROOK])
         + 1 * popcount(board->pieces[KNIGHT] | board->pieces[BISHOP]);
 
@@ -4140,32 +4109,30 @@ int evaluateBoard(Thread* thread, Board* board) {
     return Tempo + (board->turn == WHITE ? eval : -eval);
 }
 
-int evaluatePieces(EvalInfo* ei, Board* board) {
-
-    int eval;
-
-    eval = evaluatePawns(ei, board, WHITE) - evaluatePawns(ei, board, BLACK);
+int evaluatePieces(EvalInfo* ei, Board* board) 
+{
+    int eval = evaluatePawns<WHITE>(ei, board) - evaluatePawns<BLACK>(ei, board);
 
     // This needs to be done after pawn evaluation but before king safety evaluation
-    evaluateKingsPawns(ei, board, WHITE);
-    evaluateKingsPawns(ei, board, BLACK);
+    evaluateKingsPawns<WHITE>(ei, board);
+    evaluateKingsPawns<BLACK>(ei, board);
 
-    eval += evaluateKnights(ei, board, WHITE) - evaluateKnights(ei, board, BLACK);
-    eval += evaluateBishops(ei, board, WHITE) - evaluateBishops(ei, board, BLACK);
-    eval += evaluateRooks(ei, board, WHITE) - evaluateRooks(ei, board, BLACK);
-    eval += evaluateQueens(ei, board, WHITE) - evaluateQueens(ei, board, BLACK);
-    eval += evaluateKings(ei, board, WHITE) - evaluateKings(ei, board, BLACK);
-    eval += evaluatePassed(ei, board, WHITE) - evaluatePassed(ei, board, BLACK);
-    eval += evaluateThreats(ei, board, WHITE) - evaluateThreats(ei, board, BLACK);
-    eval += evaluateSpace(ei, board, WHITE) - evaluateSpace(ei, board, BLACK);
+    eval += evaluateKnights<WHITE>(ei, board) - evaluateKnights<BLACK>(ei, board);
+    eval += evaluateBishops<WHITE>(ei, board) - evaluateBishops<BLACK>(ei, board);
+    eval += evaluateRooks<WHITE>(ei, board) - evaluateRooks<BLACK>(ei, board);
+    eval += evaluateQueens<WHITE>(ei, board) - evaluateQueens<BLACK>(ei, board);
+    eval += evaluateKings<WHITE>(ei, board) - evaluateKings<BLACK>(ei, board);
+    eval += evaluatePassed<WHITE>(ei, board) - evaluatePassed<BLACK>(ei, board);
+    eval += evaluateThreats<WHITE>(ei, board) - evaluateThreats<BLACK>(ei, board);
+    eval += evaluateSpace<WHITE>(ei, board) - evaluateSpace<BLACK>(ei, board);
 
     return eval;
 }
 
-int evaluatePawns(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
-    const int Forward = (colour == WHITE) ? 8 : -8;
+template<int US> int evaluatePawns(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
+    const int Forward = (US == WHITE) ? 8 : -8;
 
     int sq, flag, eval = 0, pkeval = 0;
     uint64_t pawns, myPawns, tempPawns, enemyPawns, attacks;
@@ -4255,9 +4222,9 @@ int evaluatePawns(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateKnights(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluateKnights(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
     int sq, outside, kingDistance, defended, count, eval = 0;
     uint64_t attacks;
@@ -4268,8 +4235,8 @@ int evaluateKnights(EvalInfo* ei, Board* board, int colour) {
     ei->attackedBy[US][KNIGHT] = 0ull;
 
     // Evaluate each knight
-    while (tempKnights) {
-
+    while (tempKnights) 
+    {
         // Pop off the next knight
         sq = poplsb(&tempKnights);
         if (TRACE) T.KnightValue[US]++;
@@ -4321,9 +4288,9 @@ int evaluateKnights(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateBishops(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluateBishops(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
     int sq, outside, defended, count, eval = 0;
     uint64_t attacks;
@@ -4399,9 +4366,9 @@ int evaluateBishops(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateRooks(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluateRooks(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
     int sq, open, count, eval = 0;
     uint64_t attacks;
@@ -4459,28 +4426,27 @@ int evaluateRooks(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateQueens(EvalInfo* ei, Board* board, int colour) {
+template<int US> int evaluateQueens(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
-    const int US = colour, THEM = !colour;
+    int eval = 0;
 
-    int sq, count, eval = 0;
-    uint64_t tempQueens, attacks, occupied;
-
-    tempQueens = board->pieces[QUEEN] & board->colours[US];
-    occupied = board->colours[WHITE] | board->colours[BLACK];
+    uint64_t tempQueens = board->pieces[QUEEN] & board->colours[US];
+    uint64_t occupied = board->colours[WHITE] | board->colours[BLACK];
 
     ei->attackedBy[US][QUEEN] = 0ull;
 
     // Evaluate each queen
-    while (tempQueens) {
-
+    while (tempQueens) 
+    {
         // Pop off the next queen
-        sq = poplsb(&tempQueens);
+        int sq = poplsb(&tempQueens);
         if (TRACE) T.QueenValue[US]++;
         if (TRACE) T.QueenPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
-        attacks = queenAttacks(sq, occupied);
+        uint64_t attacks = queenAttacks(sq, occupied);
         ei->attackedBy2[US] |= attacks & ei->attacked[US];
         ei->attacked[US] |= attacks;
         ei->attackedBy[US][QUEEN] |= attacks;
@@ -4492,7 +4458,7 @@ int evaluateQueens(EvalInfo* ei, Board* board, int colour) {
         }
 
         // Apply a bonus (or penalty) based on the mobility of the queen
-        count = popcount(ei->mobilityAreas[US] & attacks);
+        int count = popcount(ei->mobilityAreas[US] & attacks);
         eval += QueenMobility[count];
         if (TRACE) T.QueenMobility[count][US]++;
 
@@ -4508,11 +4474,13 @@ int evaluateQueens(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateKingsPawns(EvalInfo* ei, Board* board, int colour) {
+template<int US> void evaluateKingsPawns(EvalInfo* ei, Board* board)
+{
     // Skip computations if results are cached in the Pawn King Table
-    if (ei->pkentry != NULL) return 0;
+    if (ei->pkentry != NULL) 
+        return;
 
-    const int US = colour, THEM = !colour;
+    const int THEM = !US;
 
     int dist, blocked;
 
@@ -4561,13 +4529,12 @@ int evaluateKingsPawns(EvalInfo* ei, Board* board, int colour) {
         if (TRACE) T.SafetyStorm[blocked][theirDist][US]++;
     }
 
-    return 0;
+    return;
 }
 
-int evaluateKings(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
-
+template<int US> int evaluateKings(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
     int count, safety, mg, eg, eval = 0;
 
     uint64_t enemyQueens = board->pieces[QUEEN] & board->colours[THEM];
@@ -4662,9 +4629,9 @@ int evaluateKings(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluatePassed(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluatePassed(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
     int sq, rank, dist, flag, canAdvance, safeAdvance, eval = 0;
 
@@ -4710,9 +4677,9 @@ int evaluatePassed(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateThreats(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluateThreats(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
     const uint64_t Rank3Rel = US == WHITE ? RANK_3 : RANK_6;
 
     int count, eval = 0;
@@ -4803,9 +4770,9 @@ int evaluateThreats(EvalInfo* ei, Board* board, int colour) {
     return eval;
 }
 
-int evaluateSpace(EvalInfo* ei, Board* board, int colour) {
-
-    const int US = colour, THEM = !colour;
+template<int US> int evaluateSpace(EvalInfo* ei, Board* board) 
+{
+    const int THEM = !US;
 
     int count, eval = 0;
 
@@ -5029,6 +4996,53 @@ void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei)
     ei->pksafety[BLACK] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyb;
 }
 
+/// Mate and Tablebase scores need to be adjusted relative to the Root
+/// when going into the Table and when coming out of the Table. Otherwise,
+/// we will not know when we have a "faster" vs "slower" Mate or TB Win/Loss
+
+int tt_value_from(int value, int height) 
+{
+    return value == VALUE_NONE ? VALUE_NONE
+        : value >= TBWIN_IN_MAX ? value - height
+        : value <= -TBWIN_IN_MAX ? value + height : value;
+}
+
+int tt_value_to(int value, int height) 
+{
+    return value == VALUE_NONE ? VALUE_NONE
+        : value >= TBWIN_IN_MAX ? value + height
+        : value <= -TBWIN_IN_MAX ? value - height : value;
+}
+
+
+bool tt_probe(uint64_t hash, int height, uint16_t* move, int* value, int* eval, int* depth, int* bound)
+{
+    /// Search for a Transposition matching the provided Zobrist Hash. If one is found,
+    /// we update its age in order to indicate that it is still relevant, before copying
+    /// over its contents and signaling to the caller that an Entry was found.
+
+    const uint16_t hash16 = hash >> 48;
+    TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
+
+    for (int i = 0; i < TT_BUCKET_NB; i++) {
+
+        if (slots[i].hash16 == hash16) {
+
+            slots[i].generation = Table.generation | (slots[i].generation & TT_MASK_BOUND);
+
+            *move = slots[i].move;
+            *value = tt_value_from(slots[i].value, height);
+            *eval = slots[i].eval;
+            *depth = slots[i].depth;
+            *bound = slots[i].generation & TT_MASK_BOUND;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+
 /// search.c
 
 int LMRTable[64][64];
@@ -5039,8 +5053,8 @@ volatile int IS_PONDERING; // Global PONDER flag for threads
 volatile int ANALYSISMODE; // Whether to make some changes for Analysis
 
 
-static void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponder, int* score) {
-
+void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponder, int* score) 
+{
     /// A thread is better than another if any are true:
     /// [1] The thread has an equal depth and greater score.
     /// [2] The thread has a mate score and is closer to mate.
@@ -5048,8 +5062,8 @@ static void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponde
 
     Thread* best_thread = &threads[0];
 
-    for (int i = 1; i < threads->nthreads; i++) {
-
+    for (int i = 1; i < threads->nthreads; i++) 
+    {
         const int best_depth = best_thread->completed;
         const int best_score = best_thread->pvs[best_depth].score;
 
@@ -5082,8 +5096,8 @@ static void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponde
     }
 }
 
-static void update_best_line(Thread* thread, PVariation* pv) {
-
+void update_best_line(Thread* thread, PVariation* pv) 
+{
     /// Upon finishing a depth, or reaching a fail-high, we update
     /// this Thread's line of best play for the newly completed depth.
     /// We store seperately the lines that we explore in multipv searches
@@ -5098,8 +5112,8 @@ static void update_best_line(Thread* thread, PVariation* pv) {
     memcpy(&thread->mpvs[thread->multiPV], pv, sizeof(PVariation));
 }
 
-static void revert_best_line(Thread* thread) {
-
+void revert_best_line(Thread* thread) 
+{
     /// A fail-low during occured during the search, and therefore we need
     /// to remove any fail-highs that we may have originally marked as best
     /// lines, since we now believe the line to much worse than before
@@ -5108,8 +5122,8 @@ static void revert_best_line(Thread* thread) {
         thread->completed = thread->depth - 1;
 }
 
-static void report_multipv_lines(Thread* thread) {
-
+void report_multipv_lines(Thread* thread) 
+{
     /// We've just finished a depth during a MultiPV search. Now we will
     /// once again report the lines, but this time ordering them based on
     /// their scores. It is possible, although generally unusual, for a
@@ -5146,173 +5160,201 @@ void initSearch() {
     }
 }
 
-void* start_search_threads(void* arguments) 
+
+int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
 {
-    // Unpack the UCIGoStruct that was cast to void*
-    auto go = reinterpret_cast<UCIGoStruct*>(arguments);
-    Thread* threads = go->threads;
-    Board* board = go->board;
-    Limits* limits = &go->limits;
+    Board* const board = &thread->board;
+    NodeState* const ns = &thread->states[thread->height];
 
-    int score;
-    char str[6];
-    uint16_t best = NONE_MOVE, ponder = NONE_MOVE;
+    int eval, value, best, oldAlpha = alpha;
+    int ttHit, ttValue = 0, ttEval = VALUE_NONE, ttDepth = 0, ttBound = 0;
+    uint16_t move, ttMove = NONE_MOVE, bestMove = NONE_MOVE;
+    PVariation lpv;
 
-    // Execute search, setting best and ponder moves
-    getBestMove(threads, board, limits, &best, &ponder, &score);
+    // Ensure a fresh PV
+    pv->length = 0;
 
-    // UCI spec does not want reports until out of pondering
-    while (IS_PONDERING);
+    // Updates for UCI reporting
+    thread->seldepth = Max(thread->seldepth, thread->height);
+    thread->nodes++;
 
-    go->elapsedSofar += elapsed_time(threads->tm);
-    go->nodesSofar += nodesSearchedThreadPool(threads);
-    int nps = (int)(1000 * (go->nodesSofar / (1 + go->elapsedSofar)));
-    printf("info nps %d\n", nps);
+    // Step 1. Abort Check. Exit the search if signaled by main thread or the
+    // UCI thread, or if the search time has expired outside pondering mode
+    if ((ABORT_SIGNAL && thread->depth > 1)
+        || (tm_stop_early(thread) && !IS_PONDERING))
+        longjmp(thread->jbuffer, 1);
 
-    // Report best move ( we should always have one )
-    moveToString(best, str, board->chess960);
-    printf("bestmove %s", str);
+    // Step 2. Draw Detection. Check for the fifty move rule, repetition, or insufficient
+    // material. Add variance to the draw score, to avoid blindness to 3-fold lines
+    if (boardIsDrawn(board, thread->height)) return 1 - (thread->nodes & 2);
 
-    // Report ponder move ( if we have one )
-    if (ponder != NONE_MOVE) {
-        moveToString(ponder, str, board->chess960);
-        printf(" ponder %s", str);
+    // Step 3. Max Draft Cutoff. If we are at the maximum search draft,
+    // then end the search here with a static eval of the current board
+    if (thread->height >= MAX_PLY)
+        return evaluateBoard(thread, board);
+
+    // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
+    if ((ttHit = tt_probe(board->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
+
+        // Table is exact or produces a cutoff
+        if (ttBound == BOUND_EXACT
+            || (ttBound == BOUND_LOWER && ttValue >= beta)
+            || (ttBound == BOUND_UPPER && ttValue <= alpha))
+            return ttValue;
     }
 
-    // Make sure this all gets reported
-    printf("\n"); fflush(stdout);
+    // Save a history of the static evaluations
+    eval = ns->eval = ttEval != VALUE_NONE
+        ? ttEval : evaluateBoard(thread, board);
 
-    return NULL;
-}
+    // Toss the static evaluation into the TT if we won't overwrite something
+    if (!ttHit && !board->kingAttackers)
+        tt_store(board->hash, thread->height, NONE_MOVE, VALUE_NONE, eval, 0, BOUND_NONE);
 
-void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, uint16_t* ponder, int* score) 
-{
-    vector<unique_ptr<thread>> pthreads(threads->nthreads);
-    TimeManager tm = { 0 }; tm_init(limits, &tm);
+    // Step 5. Eval Pruning. If a static evaluation of the board will
+    // exceed beta, then we can stop the search here. Also, if the static
+    // eval exceeds alpha, we can call our static eval the new alpha
+    best = eval;
+    alpha = Max(alpha, eval);
+    if (alpha >= beta) return eval;
 
-    // Minor house keeping for starting a search
-    tt_update(); // Table has an age component
-    ABORT_SIGNAL = 0; // Otherwise Threads will exit
-    newSearchThreadPool(threads, board, limits, &tm);
+    // Step 6. Delta Pruning. Even the best possible capture and or promotion
+    // combo, with a minor boost for pawn captures, would still fail to cover
+    // the distance between alpha and the evaluation. Playing a move is futile.
+    if (Max(QSDeltaMargin, moveBestCaseValue(board)) < alpha - eval)
+        return eval;
 
-    // Allow Syzygy to refine the move list for optimal results
-    if (!limits->limitedByMoves && limits->multiPV == 1)
-        tablebasesProbeDTZ(board, limits);
+    // Step 7. Move Generation and Looping. Generate all tactical moves
+    // and return those which are winning via SEE, and also strong enough
+    // to beat the margin computed in the Delta Pruning step found above
+    init_noisy_picker(&ns->mp, thread, NONE_MOVE, Max(1, alpha - eval - QSSeeMargin));
+    while ((move = select_next(&ns->mp, thread, 1)) != NONE_MOVE) {
 
-    // Create a new thread for each of the helpers and reuse the current
-    // thread for the main thread, which avoids some overhead and saves
-    // us from having the current thread eating CPU time while waiting
-    for (int i = 1; i < threads->nthreads; i++)
-        pthreads[i].reset(new thread(&iterativeDeepening, &threads[i]));
-    iterativeDeepening((void*)&threads[0]);
+        // Worst case which assumes we lose our piece immediately
+        int pessimism = moveEstimatedValue(board, move)
+            - SEEPieceValues[pieceType(board->squares[MoveFrom(move)])];
 
-    // When the main thread exits it should signal for the helpers to
-    // shutdown. Wait until all helpers have finished before moving on
-    ABORT_SIGNAL = 1;
-    for (int i = 1; i < threads->nthreads; i++)
-        pthreads[i]->join();
+        // Search the next ply if the move is legal
+        if (!apply(thread, board, move)) continue;
 
-    // Pick the best of our completed threads
-    select_from_threads(threads, best, ponder, score);
-}
-
-void* iterativeDeepening(void* vthread) 
-{
-    Thread* const thread = (Thread*)vthread;
-    TimeManager* const tm = thread->tm;
-    Limits* const limits = thread->limits;
-    const int mainThread = thread->index == 0;
-
-    // Bind when we expect to deal with NUMA
-    //if (thread->nthreads > 8)
-    //    bindThisThread(thread->index);
-
-    // Perform iterative deepening until exit conditions
-    for (thread->depth = 1; thread->depth < MAX_PLY; thread->depth++) 
-    {
-        // If we abort to here, we stop searching
-#ifdef _MSC_VER
-        if (_setjmp(thread->jbuffer)) break;
-#else
-        if (setjmp(thread->jbuffer)) break;
-#endif
-
-        // Perform a search for the current depth for each requested line of play
-        for (thread->multiPV = 0; thread->multiPV < limits->multiPV; thread->multiPV++)
-            aspirationWindow(thread);
-
-        // Helper threads need not worry about time and search info updates
-        if (!mainThread) continue;
-
-        // We delay reporting during MultiPV searches
-        if (limits->multiPV > 1) report_multipv_lines(thread);
-
-        // Update clock based on score and pv changes
-        tm_update(thread, limits, tm);
-
-        // Don't want to exit while pondering
-        if (IS_PONDERING) continue;
-
-        // Check for termination by any of the possible limits
-        if ((limits->limitedBySelf && tm_finished(thread, tm))
-            || (limits->limitedByDepth && thread->depth >= limits->depthLimit)
-            || (limits->limitedByTime && elapsed_time(tm) >= limits->timeLimit))
-            break;
-    }
-
-    return NULL;
-}
-
-void aspirationWindow(Thread* thread) 
-{
-    PVariation pv;
-    int depth = thread->depth;
-    int alpha = -MATE, beta = MATE, delta = WindowSize;
-    int report = !thread->index && thread->limits->multiPV == 1;
-
-    // After a few depths use a previous result to form the window
-    if (thread->depth >= WindowDepth) {
-        alpha = Max(-MATE, thread->pvs[thread->completed].score - delta);
-        beta = Min(MATE, thread->pvs[thread->completed].score + delta);
-    }
-
-    while (1) 
-    {
-        // Perform a search and consider reporting results
-        pv.score = search(thread, &pv, alpha, beta, Max(1, depth), FALSE);
-        if ((report && pv.score > alpha && pv.score < beta)
-            || (report && elapsed_time(thread->tm) >= WindowTimerMS))
-            uciReport(thread->threads, &pv, alpha, beta);
-
-        // Search returned a result within our window
-        if (pv.score > alpha && pv.score < beta) {
-            thread->bestMoves[thread->multiPV] = pv.line[0];
-            update_best_line(thread, &pv);
-            return;
+        // Short-circuit QS and assume a stand-pat matches the SEE
+        if (eval + pessimism > beta && abs(eval + pessimism) < MATE / 2) {
+            revert(thread, board, move);
+            pv->length = 1;
+            pv->line[0] = move;
+            return beta;
         }
 
-        // Search failed low, adjust window and reset depth
-        if (pv.score <= alpha) {
-            beta = (alpha + beta) / 2;
-            alpha = Max(-MATE, alpha - delta);
-            depth = thread->depth;
-            revert_best_line(thread);
-        }
+        value = -qsearch(thread, &lpv, -beta, -alpha);
+        revert(thread, board, move);
 
-        // Search failed high, adjust window and reduce depth
-        else if (pv.score >= beta) {
-            beta = Min(MATE, beta + delta);
-            depth = depth - (abs(pv.score) <= MATE / 2);
-            update_best_line(thread, &pv);
-        }
+        // Improved current value
+        if (value > best) {
 
-        // Expand the search window
-        delta = delta + delta / 2;
+            best = value;
+            bestMove = move;
+
+            // Improved current lower bound
+            if (value > alpha) {
+                alpha = value;
+
+                // Update the Principle Variation
+                pv->length = 1 + lpv.length;
+                pv->line[0] = move;
+                memcpy(pv->line + 1, lpv.line, sizeof(uint16_t) * lpv.length);
+            }
+
+            // Search has failed high
+            if (alpha >= beta)
+                break;
+        }
+    }
+
+    // Step 8. Store results of search into the Transposition Table.
+    ttBound = best >= beta ? BOUND_LOWER
+        : best > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
+    tt_store(board->hash, thread->height, bestMove, best, eval, 0, ttBound);
+
+    return best;
+}
+
+void update_killer_moves(Thread* thread, uint16_t move)
+{
+    // Avoid saving the same Killer Move twice
+    if (thread->killers[thread->height][0] != move) {
+        thread->killers[thread->height][1] = thread->killers[thread->height][0];
+        thread->killers[thread->height][0] = move;
     }
 }
 
-int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool cutnode) {
+void update_history_heuristics(Thread* thread, uint16_t* moves, int length, int depth)
+{
+    NodeState* const prev = &thread->states[thread->height - 1];
+    const int colour = thread->board.turn;
 
+    update_killer_moves(thread, moves[length - 1]);
+
+    if (prev->move != NONE_MOVE && prev->move != NULL_MOVE)
+        thread->cmtable[!colour][prev->movedPiece][MoveTo(prev->move)] = moves[length - 1];
+
+    update_quiet_histories(thread, moves, length, depth);
+}
+
+void update_capture_histories(Thread* thread, uint16_t best, uint16_t* moves, int length, int depth)
+{
+    // Update the history for each capture move that was attempted. One of them
+    // might have been the move which produced a cutoff, and thus earn a bonus
+
+    for (int i = 0; i < length; i++) {
+        int16_t* hist = underlying_capture_history(thread, moves[i]);
+        update_history(hist, depth, moves[i] == best);
+    }
+}
+
+
+// search and singularity are coroutines
+int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool cutnode);
+
+int singularity(Thread* thread, uint16_t ttMove, int ttValue, int depth, int PvNode, int alpha, int beta, bool cutnode)
+{
+    Board* const board = &thread->board;
+    NodeState* const ns = &thread->states[thread->height - 1];
+
+    PVariation lpv; lpv.length = 0;
+    int value, rBeta = Max(ttValue - depth, -MATE);
+
+    // Table move was already applied
+    revert(thread, board, ttMove);
+
+    // Search on a null rBeta window, excluding the tt-move
+    ns->excluded = ttMove;
+    value = search(thread, &lpv, rBeta - 1, rBeta, (depth - 1) / 2, cutnode);
+    ns->excluded = NONE_MOVE;
+
+    // We reused the Move Picker, so make sure we cleanup
+    ns->mp.stage = STAGE_TABLE + 1;
+
+    // MultiCut. We signal the Move Picker to terminate the search
+    if (value >= rBeta && rBeta >= beta)
+        ns->mp.stage = STAGE_DONE;
+
+    // Reapply the table move we took off
+    else applyLegal(thread, board, ttMove);
+
+    bool double_extend = !PvNode
+        && value < rBeta - 15
+        && (ns - 1)->dextensions <= 6;
+
+    return double_extend ? 2 // Double extension in some non-pv nodes
+        : value < rBeta ? 1 // Singular due to no cutoffs produced
+        : ttValue >= beta ? -1 // Potential multi-cut even at current depth
+        : ttValue <= alpha ? -1 // Negative extension if ttValue was already failing-low
+        : 0;                    // Not singular, and unlikely to produce a cutoff
+}
+
+
+int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool cutnode)
+{
     Board* const board = &thread->board;
     NodeState* const ns = &thread->states[thread->height];
 
@@ -5373,80 +5415,82 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     }
 
     // Don't probe the TT or TB during singluar searches
-    if (ns->excluded != NONE_MOVE)
-        goto search_init_goto;
+    if (ns->excluded == NONE_MOVE)
+    {
 
-    // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
-    if ((ttHit = tt_probe(board->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
+        // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
+        if ((ttHit = tt_probe(board->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
 
-        // Only cut with a greater depth search, and do not return
-        // when in a PvNode, unless we would otherwise hit a qsearch
-        if (ttDepth >= depth
-            && (depth == 0 || !PvNode)
-            && (cutnode || ttValue <= alpha)) {
+            // Only cut with a greater depth search, and do not return
+            // when in a PvNode, unless we would otherwise hit a qsearch
+            if (ttDepth >= depth
+                && (depth == 0 || !PvNode)
+                && (cutnode || ttValue <= alpha)) {
 
-            // Table is exact or produces a cutoff
-            if (ttBound == BOUND_EXACT
-                || (ttBound == BOUND_LOWER && ttValue >= beta)
-                || (ttBound == BOUND_UPPER && ttValue <= alpha))
-                return ttValue;
+                // Table is exact or produces a cutoff
+                if (ttBound == BOUND_EXACT
+                    || (ttBound == BOUND_LOWER && ttValue >= beta)
+                    || (ttBound == BOUND_UPPER && ttValue <= alpha))
+                    return ttValue;
+            }
+
+            // An entry coming from one depth lower than we would accept for a cutoff will
+            // still be accepted if it appears that failing low will trigger a research.
+            if (!PvNode
+                && ttDepth >= depth - 1
+                && (ttBound & BOUND_UPPER)
+                && (cutnode || ttValue <= alpha)
+                && ttValue + TTResearchMargin <= alpha)
+                return alpha;
         }
 
-        // An entry coming from one depth lower than we would accept for a cutoff will
-        // still be accepted if it appears that failing low will trigger a research.
-        if (!PvNode
-            && ttDepth >= depth - 1
-            && (ttBound & BOUND_UPPER)
-            && (cutnode || ttValue <= alpha)
-            && ttValue + TTResearchMargin <= alpha)
-            return alpha;
-    }
+        // Step 5. Probe the Syzygy Tablebases. tablebasesProbeWDL() handles all of
+        // the conditions about the board, the existance of tables, the probe depth,
+        // as well as to not probe at the Root. The return is defined by the Pyrrhic API
+        if ((tbresult = tablebasesProbeWDL(board, depth, thread->height)) != TB_RESULT_FAILED) {
 
-    // Step 5. Probe the Syzygy Tablebases. tablebasesProbeWDL() handles all of
-    // the conditions about the board, the existance of tables, the probe depth,
-    // as well as to not probe at the Root. The return is defined by the Pyrrhic API
-    if ((tbresult = tablebasesProbeWDL(board, depth, thread->height)) != TB_RESULT_FAILED) {
+            thread->tbhits++; // Increment tbhits counter for this thread
 
-        thread->tbhits++; // Increment tbhits counter for this thread
+            // Convert the WDL value to a score. We consider blessed losses
+            // and cursed wins to be a draw, and thus set value to zero.
+            value = tbresult == TB_LOSS ? -TBWIN + thread->height
+                : tbresult == TB_WIN ? TBWIN - thread->height : 0;
 
-        // Convert the WDL value to a score. We consider blessed losses
-        // and cursed wins to be a draw, and thus set value to zero.
-        value = tbresult == TB_LOSS ? -TBWIN + thread->height
-            : tbresult == TB_WIN ? TBWIN - thread->height : 0;
+            // Identify the bound based on WDL scores. For wins and losses the
+            // bound is not exact because we are dependent on the height, but
+            // for draws (and blessed / cursed) we know the tbresult to be exact
+            tbBound = tbresult == TB_LOSS ? BOUND_UPPER
+                : tbresult == TB_WIN ? BOUND_LOWER : BOUND_EXACT;
 
-        // Identify the bound based on WDL scores. For wins and losses the
-        // bound is not exact because we are dependent on the height, but
-        // for draws (and blessed / cursed) we know the tbresult to be exact
-        tbBound = tbresult == TB_LOSS ? BOUND_UPPER
-            : tbresult == TB_WIN ? BOUND_LOWER : BOUND_EXACT;
+            // Check to see if the WDL value would cause a cutoff
+            if (tbBound == BOUND_EXACT
+                || (tbBound == BOUND_LOWER && value >= beta)
+                || (tbBound == BOUND_UPPER && value <= alpha)) {
 
-        // Check to see if the WDL value would cause a cutoff
-        if (tbBound == BOUND_EXACT
-            || (tbBound == BOUND_LOWER && value >= beta)
-            || (tbBound == BOUND_UPPER && value <= alpha)) {
+                tt_store(board->hash, thread->height, NONE_MOVE, value, VALUE_NONE, depth, tbBound);
+                return value;
+            }
 
-            tt_store(board->hash, thread->height, NONE_MOVE, value, VALUE_NONE, depth, tbBound);
-            return value;
+            // Never score something worse than the known Syzygy value
+            if (PvNode && tbBound == BOUND_LOWER)
+                syzygyMin = value, alpha = Max(alpha, value);
+
+            // Never score something better than the known Syzygy value
+            if (PvNode && tbBound == BOUND_UPPER)
+                syzygyMax = value;
         }
-
-        // Never score something worse than the known Syzygy value
-        if (PvNode && tbBound == BOUND_LOWER)
-            syzygyMin = value, alpha = Max(alpha, value);
-
-        // Never score something better than the known Syzygy value
-        if (PvNode && tbBound == BOUND_UPPER)
-            syzygyMax = value;
     }
-
     // Step 6. Initialize flags and values used by pruning and search methods
-search_init_goto:
 
     // We can grab in check based on the already computed king attackers bitboard
     inCheck = !!board->kingAttackers;
 
     // Save a history of the static evaluations when not checked
-    eval = ns->eval = inCheck ? VALUE_NONE
-        : ttEval != VALUE_NONE ? ttEval : evaluateBoard(thread, board);
+    eval = ns->eval = inCheck 
+            ? VALUE_NONE
+            : ttEval != VALUE_NONE 
+                    ? ttEval 
+                    : evaluateBoard(thread, board);
 
     // Static Exchange Evaluation Pruning Margins
     seeMargin[0] = SEENoisyMargin * depth * depth;
@@ -5788,282 +5832,219 @@ search_init_goto:
     return best;
 }
 
-int qsearch(Thread* thread, PVariation* pv, int alpha, int beta) {
+void aspirationWindow(Thread* thread)
+{
+    PVariation pv;
+    int depth = thread->depth;
+    int alpha = -MATE, beta = MATE, delta = WindowSize;
+    int report = !thread->index && thread->limits->multiPV == 1;
 
-    Board* const board = &thread->board;
-    NodeState* const ns = &thread->states[thread->height];
-
-    int eval, value, best, oldAlpha = alpha;
-    int ttHit, ttValue = 0, ttEval = VALUE_NONE, ttDepth = 0, ttBound = 0;
-    uint16_t move, ttMove = NONE_MOVE, bestMove = NONE_MOVE;
-    PVariation lpv;
-
-    // Ensure a fresh PV
-    pv->length = 0;
-
-    // Updates for UCI reporting
-    thread->seldepth = Max(thread->seldepth, thread->height);
-    thread->nodes++;
-
-    // Step 1. Abort Check. Exit the search if signaled by main thread or the
-    // UCI thread, or if the search time has expired outside pondering mode
-    if ((ABORT_SIGNAL && thread->depth > 1)
-        || (tm_stop_early(thread) && !IS_PONDERING))
-        longjmp(thread->jbuffer, 1);
-
-    // Step 2. Draw Detection. Check for the fifty move rule, repetition, or insufficient
-    // material. Add variance to the draw score, to avoid blindness to 3-fold lines
-    if (boardIsDrawn(board, thread->height)) return 1 - (thread->nodes & 2);
-
-    // Step 3. Max Draft Cutoff. If we are at the maximum search draft,
-    // then end the search here with a static eval of the current board
-    if (thread->height >= MAX_PLY)
-        return evaluateBoard(thread, board);
-
-    // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
-    if ((ttHit = tt_probe(board->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
-
-        // Table is exact or produces a cutoff
-        if (ttBound == BOUND_EXACT
-            || (ttBound == BOUND_LOWER && ttValue >= beta)
-            || (ttBound == BOUND_UPPER && ttValue <= alpha))
-            return ttValue;
+    // After a few depths use a previous result to form the window
+    if (thread->depth >= WindowDepth) {
+        alpha = Max(-MATE, thread->pvs[thread->completed].score - delta);
+        beta = Min(MATE, thread->pvs[thread->completed].score + delta);
     }
 
-    // Save a history of the static evaluations
-    eval = ns->eval = ttEval != VALUE_NONE
-        ? ttEval : evaluateBoard(thread, board);
+    while (1)
+    {
+        // Perform a search and consider reporting results
+        pv.score = search(thread, &pv, alpha, beta, Max(1, depth), FALSE);
+        if ((report && pv.score > alpha && pv.score < beta)
+            || (report && elapsed_time(thread->tm) >= WindowTimerMS))
+            uciReport(thread->threads, &pv, alpha, beta);
 
-    // Toss the static evaluation into the TT if we won't overwrite something
-    if (!ttHit && !board->kingAttackers)
-        tt_store(board->hash, thread->height, NONE_MOVE, VALUE_NONE, eval, 0, BOUND_NONE);
-
-    // Step 5. Eval Pruning. If a static evaluation of the board will
-    // exceed beta, then we can stop the search here. Also, if the static
-    // eval exceeds alpha, we can call our static eval the new alpha
-    best = eval;
-    alpha = Max(alpha, eval);
-    if (alpha >= beta) return eval;
-
-    // Step 6. Delta Pruning. Even the best possible capture and or promotion
-    // combo, with a minor boost for pawn captures, would still fail to cover
-    // the distance between alpha and the evaluation. Playing a move is futile.
-    if (Max(QSDeltaMargin, moveBestCaseValue(board)) < alpha - eval)
-        return eval;
-
-    // Step 7. Move Generation and Looping. Generate all tactical moves
-    // and return those which are winning via SEE, and also strong enough
-    // to beat the margin computed in the Delta Pruning step found above
-    init_noisy_picker(&ns->mp, thread, NONE_MOVE, Max(1, alpha - eval - QSSeeMargin));
-    while ((move = select_next(&ns->mp, thread, 1)) != NONE_MOVE) {
-
-        // Worst case which assumes we lose our piece immediately
-        int pessimism = moveEstimatedValue(board, move)
-            - SEEPieceValues[pieceType(board->squares[MoveFrom(move)])];
-
-        // Search the next ply if the move is legal
-        if (!apply(thread, board, move)) continue;
-
-        // Short-circuit QS and assume a stand-pat matches the SEE
-        if (eval + pessimism > beta && abs(eval + pessimism) < MATE / 2) {
-            revert(thread, board, move);
-            pv->length = 1;
-            pv->line[0] = move;
-            return beta;
+        // Search returned a result within our window
+        if (pv.score > alpha && pv.score < beta) {
+            thread->bestMoves[thread->multiPV] = pv.line[0];
+            update_best_line(thread, &pv);
+            return;
         }
 
-        value = -qsearch(thread, &lpv, -beta, -alpha);
-        revert(thread, board, move);
-
-        // Improved current value
-        if (value > best) {
-
-            best = value;
-            bestMove = move;
-
-            // Improved current lower bound
-            if (value > alpha) {
-                alpha = value;
-
-                // Update the Principle Variation
-                pv->length = 1 + lpv.length;
-                pv->line[0] = move;
-                memcpy(pv->line + 1, lpv.line, sizeof(uint16_t) * lpv.length);
-            }
-
-            // Search has failed high
-            if (alpha >= beta)
-                break;
+        // Search failed low, adjust window and reset depth
+        if (pv.score <= alpha) {
+            beta = (alpha + beta) / 2;
+            alpha = Max(-MATE, alpha - delta);
+            depth = thread->depth;
+            revert_best_line(thread);
         }
+
+        // Search failed high, adjust window and reduce depth
+        else if (pv.score >= beta) {
+            beta = Min(MATE, beta + delta);
+            depth = depth - (abs(pv.score) <= MATE / 2);
+            update_best_line(thread, &pv);
+        }
+
+        // Expand the search window
+        delta = delta + delta / 2;
     }
-
-    // Step 8. Store results of search into the Transposition Table.
-    ttBound = best >= beta ? BOUND_LOWER
-        : best > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
-    tt_store(board->hash, thread->height, bestMove, best, eval, 0, ttBound);
-
-    return best;
 }
 
-int staticExchangeEvaluation(Board* board, uint16_t move, int threshold) {
+void* iterativeDeepening(void* vthread)
+{
+    Thread* const thread = (Thread*)vthread;
+    TimeManager* const tm = thread->tm;
+    Limits* const limits = thread->limits;
+    const int mainThread = thread->index == 0;
 
-    int from, to, type, colour, balance, nextVictim;
-    uint64_t bishops, rooks, occupied, attackers, myAttackers;
+    // Bind when we expect to deal with NUMA
+    //if (thread->nthreads > 8)
+    //    bindThisThread(thread->index);
 
-    // Unpack move information
-    from = MoveFrom(move);
-    to = MoveTo(move);
-    type = MoveType(move);
+    // Perform iterative deepening until exit conditions
+    for (thread->depth = 1; thread->depth < MAX_PLY; thread->depth++)
+    {
+        // If we abort to here, we stop searching
+#ifdef _MSC_VER
+        if (_setjmp(thread->jbuffer)) break;
+#else
+        if (setjmp(thread->jbuffer)) break;
+#endif
 
-    // Next victim is moved piece or promotion type
-    nextVictim = type != PROMOTION_MOVE
-        ? pieceType(board->squares[from])
-        : MovePromoPiece(move);
+        // Perform a search for the current depth for each requested line of play
+        for (thread->multiPV = 0; thread->multiPV < limits->multiPV; thread->multiPV++)
+            aspirationWindow(thread);
 
-    // Balance is the value of the move minus threshold. Function
-    // call takes care for Enpass, Promotion and Castling moves.
-    balance = moveEstimatedValue(board, move) - threshold;
+        // Helper threads need not worry about time and search info updates
+        if (!mainThread) continue;
 
-    // Best case still fails to beat the threshold
-    if (balance < 0) return 0;
+        // We delay reporting during MultiPV searches
+        if (limits->multiPV > 1) report_multipv_lines(thread);
 
-    // Worst case is losing the moved piece
-    balance -= SEEPieceValues[nextVictim];
+        // Update clock based on score and pv changes
+        tm_update(thread, limits, tm);
 
-    // If the balance is positive even if losing the moved piece,
-    // the exchange is guaranteed to beat the threshold.
-    if (balance >= 0) return 1;
+        // Don't want to exit while pondering
+        if (IS_PONDERING) continue;
 
-    // Grab sliders for updating revealed attackers
-    bishops = board->pieces[BISHOP] | board->pieces[QUEEN];
-    rooks = board->pieces[ROOK] | board->pieces[QUEEN];
-
-    // Let occupied suppose that the move was actually made
-    occupied = (board->colours[WHITE] | board->colours[BLACK]);
-    occupied = (occupied ^ (1ull << from)) | (1ull << to);
-    if (type == ENPASS_MOVE) occupied ^= (1ull << board->epSquare);
-
-    // Get all pieces which attack the target square. And with occupied
-    // so that we do not let the same piece attack twice
-    attackers = allAttackersToSquare(board, occupied, to) & occupied;
-
-    // Now our opponents turn to recapture
-    colour = !board->turn;
-
-    while (1) {
-
-        // If we have no more attackers left we lose
-        myAttackers = attackers & board->colours[colour];
-        if (myAttackers == 0ull) break;
-
-        // Find our weakest piece to attack with
-        for (nextVictim = PAWN; nextVictim <= QUEEN; nextVictim++)
-            if (myAttackers & board->pieces[nextVictim])
-                break;
-
-        // Remove this attacker from the occupied
-        occupied ^= (1ull << getlsb(myAttackers & board->pieces[nextVictim]));
-
-        // A diagonal move may reveal bishop or queen attackers
-        if (nextVictim == PAWN || nextVictim == BISHOP || nextVictim == QUEEN)
-            attackers |= bishopAttacks(to, occupied) & bishops;
-
-        // A vertical or horizontal move may reveal rook or queen attackers
-        if (nextVictim == ROOK || nextVictim == QUEEN)
-            attackers |= rookAttacks(to, occupied) & rooks;
-
-        // Make sure we did not add any already used attacks
-        attackers &= occupied;
-
-        // Swap the turn
-        colour = !colour;
-
-        // Negamax the balance and add the value of the next victim
-        balance = -balance - 1 - SEEPieceValues[nextVictim];
-
-        // If the balance is non negative after giving away our piece then we win
-        if (balance >= 0) {
-
-            // As a slide speed up for move legality checking, if our last attacking
-            // piece is a king, and our opponent still has attackers, then we've
-            // lost as the move we followed would be illegal
-            if (nextVictim == KING && (attackers & board->colours[colour]))
-                colour = !colour;
-
+        // Check for termination by any of the possible limits
+        if ((limits->limitedBySelf && tm_finished(thread, tm))
+            || (limits->limitedByDepth && thread->depth >= limits->depthLimit)
+            || (limits->limitedByTime && elapsed_time(tm) >= limits->timeLimit))
             break;
-        }
     }
 
-    // Side to move after the loop loses
-    return board->turn != colour;
+    return NULL;
 }
 
-int singularity(Thread* thread, uint16_t ttMove, int ttValue, int depth, int PvNode, int alpha, int beta, bool cutnode) {
+void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, uint16_t* ponder, int* score)
+{
+    vector<unique_ptr<thread>> pthreads(threads->nthreads);
+    TimeManager tm = { 0 }; tm_init(limits, &tm);
 
-    Board* const board = &thread->board;
-    NodeState* const ns = &thread->states[thread->height - 1];
+    // Minor house keeping for starting a search
+    tt_update(); // Table has an age component
+    ABORT_SIGNAL = 0; // Otherwise Threads will exit
+    newSearchThreadPool(threads, board, limits, &tm);
 
-    PVariation lpv; lpv.length = 0;
-    int value, rBeta = Max(ttValue - depth, -MATE);
+    // Allow Syzygy to refine the move list for optimal results
+    if (!limits->limitedByMoves && limits->multiPV == 1)
+        tablebasesProbeDTZ(board, limits);
 
-    // Table move was already applied
-    revert(thread, board, ttMove);
+    // Create a new thread for each of the helpers and reuse the current
+    // thread for the main thread, which avoids some overhead and saves
+    // us from having the current thread eating CPU time while waiting
+    for (int i = 1; i < threads->nthreads; i++)
+        pthreads[i].reset(new thread(&iterativeDeepening, &threads[i]));
+    iterativeDeepening((void*)&threads[0]);
 
-    // Search on a null rBeta window, excluding the tt-move
-    ns->excluded = ttMove;
-    value = search(thread, &lpv, rBeta - 1, rBeta, (depth - 1) / 2, cutnode);
-    ns->excluded = NONE_MOVE;
+    // When the main thread exits it should signal for the helpers to
+    // shutdown. Wait until all helpers have finished before moving on
+    ABORT_SIGNAL = 1;
+    for (int i = 1; i < threads->nthreads; i++)
+        pthreads[i]->join();
 
-    // We reused the Move Picker, so make sure we cleanup
-    ns->mp.stage = STAGE_TABLE + 1;
+    // Pick the best of our completed threads
+    select_from_threads(threads, best, ponder, score);
+}
 
-    // MultiCut. We signal the Move Picker to terminate the search
-    if (value >= rBeta && rBeta >= beta)
-        ns->mp.stage = STAGE_DONE;
+void* start_search_threads(void* arguments)
+{
+    auto go = reinterpret_cast<UCIGoStruct*>(arguments);
+    // Unpack the UCIGoStruct that was cast to void*
+    Thread* threads = go->threads;
+    Board* board = go->board;
+    Limits* limits = &go->limits;
 
-    // Reapply the table move we took off
-    else applyLegal(thread, board, ttMove);
+    int score;
+    char str[6];
+    uint16_t best = NONE_MOVE, ponder = NONE_MOVE;
 
-    bool double_extend = !PvNode
-        && value < rBeta - 15
-        && (ns - 1)->dextensions <= 6;
+    // Execute search, setting best and ponder moves
+    getBestMove(threads, board, limits, &best, &ponder, &score);
 
-    return double_extend ? 2 // Double extension in some non-pv nodes
-        : value < rBeta ? 1 // Singular due to no cutoffs produced
-        : ttValue >= beta ? -1 // Potential multi-cut even at current depth
-        : ttValue <= alpha ? -1 // Negative extension if ttValue was already failing-low
-        : 0;                    // Not singular, and unlikely to produce a cutoff
+    // UCI spec does not want reports until out of pondering
+    while (IS_PONDERING);
+
+    go->elapsedSofar += elapsed_time(threads->tm);
+    go->nodesSofar += nodesSearchedThreadPool(threads);
+    int nps = (int)(1000 * (go->nodesSofar / (1 + go->elapsedSofar)));
+    printf("info nps %d\n", nps);
+
+    // Report best move ( we should always have one )
+    moveToString(best, str, board->chess960);
+    printf("bestmove %s", str);
+
+    // Report ponder move ( if we have one )
+    if (ponder != NONE_MOVE) {
+        moveToString(ponder, str, board->chess960);
+        printf(" ponder %s", str);
+    }
+
+    // Make sure this all gets reported
+    printf("\n"); fflush(stdout);
+
+    return arguments;
 }
 
 
 /// transposition.c
 
-TTable Table; // Global Transposition Table
 
-/// Mate and Tablebase scores need to be adjusted relative to the Root
-/// when going into the Table and when coming out of the Table. Otherwise,
-/// we will not know when we have a "faster" vs "slower" Mate or TB Win/Loss
 
-static int tt_value_from(int value, int height) {
-    return value == VALUE_NONE ? VALUE_NONE
-        : value >= TBWIN_IN_MAX ? value - height
-        : value <= -TBWIN_IN_MAX ? value + height : value;
+
+struct TTClear { size_t index, count; };
+
+void* tt_clear_threaded(void* cargo)
+{
+    const uint64_t MB = 1ull << 20;
+    struct TTClear* ttclear = (struct TTClear*)cargo;
+
+    // Logic for dividing the Table taken from Weiss and CFish
+    const uint64_t size = (Table.hashMask + 1) * sizeof(TTBucket);
+    const uint64_t slice = (size + ttclear->count - 1) / ttclear->count;
+    const uint64_t blocks = (slice + 2 * MB - 1) / (2 * MB);
+    const uint64_t begin = Min(size, ttclear->index * blocks * 2 * MB);
+    const uint64_t end = Min(size, begin + blocks * 2 * MB);
+
+    memset(&Table.buckets[0] + begin / sizeof(TTBucket), 0, end - begin);
+    return NULL;
 }
 
-static int tt_value_to(int value, int height) {
-    return value == VALUE_NONE ? VALUE_NONE
-        : value >= TBWIN_IN_MAX ? value + height
-        : value <= -TBWIN_IN_MAX ? value - height : value;
+void tt_clear(size_t nthreads)
+{
+    // Only use 1/4th of the enabled search Threads
+    size_t nworkers = Max<size_t>(1, nthreads / 4);
+    vector<unique_ptr<thread>> pthreads(nworkers);
+    vector<TTClear> ttclears(nworkers);
+
+    // Initalize the data passed via a void* in pthread_create()
+    for (size_t i = 0; i < nworkers; i++)
+        ttclears[i] = { i, nworkers };
+
+    // Launch each of the helper threads to clear their sections
+    for (int i = 1; i < nworkers; i++)
+        pthreads[i].reset(new thread(tt_clear_threaded, &ttclears[i]));
+
+    // Reuse this thread for the 0th sections of the Transposition Table
+    tt_clear_threaded(&ttclears[0]);
+
+    // Join each of the helper threads after they've cleared their sections
+    for (int i = 1; i < nworkers; i++)
+        pthreads[i]->join();
 }
 
-
-/// Trivial helper functions to Transposition Table handleing
-
-void tt_update() { Table.generation += TT_MASK_BOUND + 1; }
-void tt_prefetch(uint64_t hash) { Prefetch<2>(reinterpret_cast<const char*>(&Table.buckets[hash & Table.hashMask])); }
-
-
-int tt_init(size_t nthreads, int megabytes) 
+int tt_init(size_t nthreads, int megabytes)
 {
     const uint64_t MB = 1ull << 20;
     uint64_t keySize = 16ull;
@@ -6115,33 +6096,6 @@ int tt_hashfull() {
     return used / TT_BUCKET_NB;
 }
 
-bool tt_probe(uint64_t hash, int height, uint16_t* move, int* value, int* eval, int* depth, int* bound) {
-
-    /// Search for a Transposition matching the provided Zobrist Hash. If one is found,
-    /// we update its age in order to indicate that it is still relevant, before copying
-    /// over its contents and signaling to the caller that an Entry was found.
-
-    const uint16_t hash16 = hash >> 48;
-    TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
-
-    for (int i = 0; i < TT_BUCKET_NB; i++) {
-
-        if (slots[i].hash16 == hash16) {
-
-            slots[i].generation = Table.generation | (slots[i].generation & TT_MASK_BOUND);
-
-            *move = slots[i].move;
-            *value = tt_value_from(slots[i].value, height);
-            *eval = slots[i].eval;
-            *depth = slots[i].depth;
-            *bound = slots[i].generation & TT_MASK_BOUND;
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
 void tt_store(uint64_t hash, int height, uint16_t move, int value, int eval, int depth, int bound) {
 
     int i;
@@ -6178,46 +6132,6 @@ void tt_store(uint64_t hash, int height, uint16_t move, int value, int eval, int
     replace->hash16 = (uint16_t)hash16;
 }
 
-
-void tt_clear(size_t nthreads) 
-{
-    // Only use 1/4th of the enabled search Threads
-    size_t nworkers = Max<size_t>(1, nthreads / 4);
-    vector<unique_ptr<thread>> pthreads(nworkers);
-    vector<TTClear> ttclears(nworkers);
-
-    // Initalize the data passed via a void* in pthread_create()
-    for (size_t i = 0; i < nworkers; i++)
-        ttclears[i] = { i, nworkers };
-
-    // Launch each of the helper threads to clear their sections
-    for (int i = 1; i < nworkers; i++)
-        pthreads[i].reset(new thread(tt_clear_threaded, &ttclears[i]));
-
-    // Reuse this thread for the 0th sections of the Transposition Table
-    tt_clear_threaded(&ttclears[0]);
-
-    // Join each of the helper threads after they've cleared their sections
-    for (int i = 1; i < nworkers; i++)
-        pthreads[i]->join();
-}
-
-void* tt_clear_threaded(void* cargo) {
-
-    const uint64_t MB = 1ull << 20;
-    struct TTClear* ttclear = (struct TTClear*)cargo;
-
-    // Logic for dividing the Table taken from Weiss and CFish
-    const uint64_t size = (Table.hashMask + 1) * sizeof(TTBucket);
-    const uint64_t slice = (size + ttclear->count - 1) / ttclear->count;
-    const uint64_t blocks = (slice + 2 * MB - 1) / (2 * MB);
-    const uint64_t begin = Min(size, ttclear->index * blocks * 2 * MB);
-    const uint64_t end = Min(size, begin + blocks * 2 * MB);
-
-    memset(&Table.buckets[0] + begin / sizeof(TTBucket), 0, end - begin);
-    return NULL;
-}
-
 /// Simple Pawn+King Evaluation Hash Table, which also stores some additional
 /// safety information for use in King Safety, when not using NNUE evaluations
 
@@ -6248,17 +6162,19 @@ ALIGN64 uint64_t KingAttacks[N_SQUARES];
 ALIGN64 Magic BishopTable[N_SQUARES];
 ALIGN64 Magic RookTable[N_SQUARES];
 
-static int validCoordinate(int rank, int file) {
+inline int validCoordinate(int rank, int file) 
+{
     return 0 <= rank && rank < N_RANKS
         && 0 <= file && file < N_FILES;
 }
 
-static void setSquare(uint64_t* bb, int rank, int file) {
+inline void setSquare(uint64_t* bb, int rank, int file) 
+{
     if (validCoordinate(rank, file))
         *bb |= 1ull << square(rank, file);
 }
 
-static int sliderIndex(uint64_t occupied, Magic* table) 
+inline int sliderIndex(uint64_t occupied, Magic* table) 
 {
 #ifdef USE_PEXT
     return _pext_u64(occupied, table->mask);
@@ -6267,7 +6183,8 @@ static int sliderIndex(uint64_t occupied, Magic* table)
 #endif
 }
 
-static uint64_t sliderAttacks(int sq, uint64_t occupied, const int delta[4][2]) {
+uint64_t sliderAttacks(int sq, uint64_t occupied, const int delta[4][2]) 
+{
 
     int rank, file, dr, df;
     uint64_t result = 0ull;
@@ -6286,7 +6203,7 @@ static uint64_t sliderAttacks(int sq, uint64_t occupied, const int delta[4][2]) 
     return result;
 }
 
-static void initSliderAttacks(int sq, Magic* table, uint64_t magic, const int delta[4][2]) 
+void initSliderAttacks(int sq, Magic* table, uint64_t magic, const int delta[4][2]) 
 {
     uint64_t edges = ((RANK_1 | RANK_8) & ~Ranks[rankOf(sq)])
         | ((FILE_A | FILE_H) & ~Files[fileOf(sq)]);
@@ -6722,7 +6639,6 @@ typedef struct PGNData {
     char buffer[65536];
 } PGNData;
 
-void process_pgn(const char* fin, const char* fout);
 
 
 /// pgn.c
@@ -6740,8 +6656,8 @@ typedef struct HalfKPSample {
     uint8_t  packed[15]; // 1-byte int per two non-King pieces
 } HalfKPSample;
 
-static void pack_bitboard(uint8_t* packed, Board* board, uint64_t pieces) {
-
+void pack_bitboard(uint8_t* packed, Board* board, uint64_t pieces) 
+{
 #define encode_piece(p) (8 * pieceColour(p) + pieceType(p))
 #define pack_pieces(p1, p2) (((p1) << 4) | (p2))
 
@@ -6760,8 +6676,8 @@ static void pack_bitboard(uint8_t* packed, Board* board, uint64_t pieces) {
 #undef pack_pieces
 }
 
-static void build_halfkp_sample(Board* board, HalfKPSample* sample, unsigned result, int16_t eval) {
-
+void build_halfkp_sample(Board* board, HalfKPSample* sample, unsigned result, int16_t eval) 
+{
     const uint64_t white = board->colours[WHITE];
     const uint64_t black = board->colours[BLACK];
     const uint64_t pieces = (white | black);
@@ -6776,37 +6692,37 @@ static void build_halfkp_sample(Board* board, HalfKPSample* sample, unsigned res
 }
 
 
-static bool san_is_file(char chr) {
+inline bool san_is_file(char chr) {
     return 'a' <= chr && chr <= 'h';
 }
 
-static bool san_is_rank(char chr) {
+inline bool san_is_rank(char chr) {
     return '1' <= chr && chr <= '8';
 }
 
-static bool san_is_square(const char* SAN) {
+inline bool san_is_square(const char* SAN) {
     return san_is_file(SAN[0]) && san_is_rank(SAN[1]);
 }
 
 
-static bool san_has_promotion(const char* SAN) {
+inline bool san_has_promotion(const char* SAN) {
     for (const char* ptr = SAN; *ptr != '\0' && *ptr != ' '; ptr++)
         if (*ptr == '=') return true;
     return false;
 }
 
-static bool san_has_capture(const char* SAN) {
+inline bool san_has_capture(const char* SAN) {
     for (const char* ptr = SAN; *ptr != '\0' && *ptr != ' '; ptr++)
         if (*ptr == 'x') return true;
     return false;
 }
 
-static int san_square(const char* str) {
+inline int san_square(const char* str) {
     return 8 * (str[1] - '1') + (str[0] - 'a');
 }
 
-static int san_promotion_type(char chr) {
-
+inline int san_promotion_type(char chr) 
+{
     switch (chr) {
     case 'N': return KNIGHT_PROMO_MOVE;
     case 'B': return BISHOP_PROMO_MOVE;
@@ -6816,8 +6732,8 @@ static int san_promotion_type(char chr) {
 }
 
 
-static uint16_t san_pawn_push(Board* board, const char* SAN) {
-
+uint16_t san_pawn_push(Board* board, const char* SAN) 
+{
     int to, from, type;
 
     if (!san_is_square(SAN))
@@ -6839,8 +6755,8 @@ static uint16_t san_pawn_push(Board* board, const char* SAN) {
     return MoveMake(from, to, type);
 }
 
-static uint16_t san_pawn_capture(Board* board, const char* SAN) {
-
+uint16_t san_pawn_capture(Board* board, const char* SAN) 
+{
     uint64_t pawns;
     int file, tosq, type;
 
@@ -6871,8 +6787,8 @@ static uint16_t san_pawn_capture(Board* board, const char* SAN) {
     return MoveMake(getlsb(pawns), tosq, type);
 }
 
-static uint16_t san_castle_move(Board* board, const char* SAN) {
-
+uint16_t san_castle_move(Board* board, const char* SAN) 
+{
     // Trivially check and build Queen Side Castles
     if (!strncmp(SAN, "O-O-O", 5)) {
         uint64_t friendly = board->colours[board->turn];
@@ -6892,8 +6808,8 @@ static uint16_t san_castle_move(Board* board, const char* SAN) {
     return NONE_MOVE;
 }
 
-static uint16_t san_piece_move(Board* board, const char* SAN) {
-
+uint16_t san_piece_move(Board* board, const char* SAN) 
+{
     int piece, tosq = -1;
     bool has_file, has_rank, has_capt;
     uint64_t options, occupied;
@@ -6959,8 +6875,8 @@ static uint16_t san_piece_move(Board* board, const char* SAN) {
     return NONE_MOVE;
 }
 
-static uint16_t parse_san(Board* board, const char* SAN) {
-
+uint16_t parse_san(Board* board, const char* SAN) 
+{
     uint16_t move = NONE_MOVE;
 
     // Keep trying to parse the move until success or out of attempts
@@ -6974,19 +6890,19 @@ static uint16_t parse_san(Board* board, const char* SAN) {
 }
 
 
-static int pgn_read_until_move(char* buffer, int index) {
+int pgn_read_until_move(char* buffer, int index) {
     for (; !isalpha(buffer[index]) && buffer[index] != '\0'; index++);
     return index;
 }
 
-static int pgn_read_until_space(char* buffer, int index) {
+int pgn_read_until_space(char* buffer, int index) {
     for (; buffer[index] != ' ' && buffer[index] != '\0'; index++);
     return index;
 }
 
 
-static bool pgn_read_headers(FILE* pgn, PGNData* data) {
-
+bool pgn_read_headers(FILE* pgn, PGNData* data) 
+{
     if (fgets(data->buffer, 65536, pgn) == NULL)
         return false;
 
@@ -7016,8 +6932,8 @@ static bool pgn_read_headers(FILE* pgn, PGNData* data) {
     return data->buffer[0] == '[';
 }
 
-static void pgn_read_moves(FILE* pgn, FILE* bindata, PGNData* data, HalfKPSample* samples, Board* board) {
-
+void pgn_read_moves(FILE* pgn, FILE* bindata, PGNData* data, HalfKPSample* samples, Board* board) 
+{
     Undo undo;
     double feval;
     uint16_t move;
@@ -7060,8 +6976,8 @@ static void pgn_read_moves(FILE* pgn, FILE* bindata, PGNData* data, HalfKPSample
         fwrite(samples, sizeof(HalfKPSample), placed, bindata);
 }
 
-static bool process_next_pgn(FILE* pgn, FILE* bindata, PGNData* data, HalfKPSample* samples, Board* board) {
-
+bool process_next_pgn(FILE* pgn, FILE* bindata, PGNData* data, HalfKPSample* samples, Board* board) 
+{
     // Make sure to cleanup previous PGNs
     if (data->startpos != NULL)
         free(data->startpos);
@@ -7115,8 +7031,7 @@ void process_pgn(const char* fin, const char* fout)
 
 void boardFromFEN(Board* board, const char* fen, int chess960) 
 {
-    static const uint64_t StandardCastles = (1ull << 0) | (1ull << 7)
-        | (1ull << 56) | (1ull << 63);
+    constexpr uint64_t StandardCastles = (1ull << 0) | (1ull << 7) | (1ull << 56) | (1ull << 63);
 
     int sq = 56;
     char ch;
@@ -7231,7 +7146,7 @@ void handleCommandLine(int argc, char** argv);
 
 /// cmdline.c
 
-static void runBenchmark(int argc, char** argv)
+void runBenchmark(int argc, char** argv)
 {
     static const char* Benchmarks[] = {
         #include "bench.csv"
@@ -7269,7 +7184,8 @@ static void runBenchmark(int argc, char** argv)
     limits.limitedByDepth = 1;
     limits.depthLimit = depth;
 
-    for (int i = 0; strcmp(Benchmarks[i], ""); i++) {
+    for (int i = 0; strcmp(Benchmarks[i], ""); i++) 
+    {
 
         // Perform the search on the position
         limits.start = get_real_time();
@@ -7307,8 +7223,8 @@ static void runBenchmark(int argc, char** argv)
     clearThreadPool(&threads);
 }
 
-static void runEvalBook(int argc, char** argv) {
-
+void runEvalBook(int argc, char** argv) 
+{
     int score;
     Board board;
     char line[256];
@@ -7457,8 +7373,8 @@ void newSearchThreadPool(Thread* threads, Board* board, Limits* limits, TimeMana
     }
 }
 
-uint64_t nodesSearchedThreadPool(Thread* threads) {
-
+uint64_t nodesSearchedThreadPool(Thread* threads) 
+{
     // Sum up the node counters across each Thread. Threads have
     // their own node counters to avoid true sharing the cache
 
@@ -7499,7 +7415,7 @@ int main(int argc, char** argv)
     int multiPV = 1;
 
     // Initialize core components of Ethereal
-    initAttacks(); initMasks(); initPSQT();
+    initAttacks(); initMasks(); 
     initSearch(); initZobrist(); tt_init(1, 16);
     initPKNetwork(); nnue_incbin_init();
 
@@ -7814,13 +7730,12 @@ void uciReport(Thread* threads, PVariation* pv, int alpha, int beta)
     puts(""); fflush(stdout);
 }
 
-void uciReportCurrentMove(Board* board, uint16_t move, int currmove, int depth) {
-
+void uciReportCurrentMove(Board* board, uint16_t move, int currmove, int depth) 
+{
     char moveStr[6];
     moveToString(move, moveStr, board->chess960);
     printf("info depth %d currmove %s currmovenumber %d\n", depth, moveStr, currmove);
     fflush(stdout);
-
 }
 
 
