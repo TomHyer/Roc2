@@ -1,27 +1,23 @@
 
 /// Roc and Platform
-
+#include "Base/Platform.h"
 #include <array>
+#include "Chess/Chess.h"
+#include "Chess/Bit.h"
+#include "Chess/Pack.h"
+#include "Chess/Array.h"
+
+INLINE constexpr sint64 EPack(sint16 mid, sint16 eg)
+{
+    return Pack(mid, mid, eg, 0);
+}
+
+#include "Chess/Board.h"
+
 
 using std::array;
 
-template<class T_> inline const T_& Max(const T_& lhs, const T_& rhs) { return lhs < rhs ? rhs : lhs; }
-template<class T_> inline const T_& Min(const T_& lhs, const T_& rhs) { return lhs < rhs ? lhs : rhs; }
 #pragma warning(disable: 4996)
-
-template<class Function, std::size_t... Indices>
-constexpr auto make_array_helper(Function f, std::index_sequence<Indices...>)
--> std::array<decltype(f(std::size_t(0))), sizeof...(Indices)>
-{
-    return { { f(Indices)... } };
-}
-
-template<int N, class Function>
-constexpr auto make_array(Function f)
--> std::array<decltype(f(std::size_t(0))), N>
-{
-    return make_array_helper(f, std::make_index_sequence<N>{});
-}
 
 // config
 
@@ -131,51 +127,20 @@ template<int N> void Prefetch(const char* p)
 /// bitboards.h
 
 constexpr uint64_t
-    RANK_1 = 0x00000000000000FFull,
-    RANK_2 = 0x000000000000FF00ull,
-    RANK_3 = 0x0000000000FF0000ull,
-    RANK_4 = 0x00000000FF000000ull,
-    RANK_5 = 0x000000FF00000000ull,
-    RANK_6 = 0x0000FF0000000000ull,
-    RANK_7 = 0x00FF000000000000ull,
-    RANK_8 = 0xFF00000000000000ull,
+LONG_DIAGONALS = 0x8142241818244281ull,
+CENTER_SQUARES = 0x0000001818000000ull,
+CENTER_BIG = 0x00003C3C3C3C0000ull,
 
-    FILE_A = 0x0101010101010101ull,
-    FILE_B = 0x0202020202020202ull,
-    FILE_C = 0x0404040404040404ull,
-    FILE_D = 0x0808080808080808ull,
-    FILE_E = 0x1010101010101010ull,
-    FILE_F = 0x2020202020202020ull,
-    FILE_G = 0x4040404040404040ull,
-    FILE_H = 0x8080808080808080ull,
+LEFT_FLANK = File[0] | File[1] | File[2] | File[3],
+RIGHT_FLANK = File[4] | File[5] | File[6] | File[7],
 
-    WHITE_SQUARES = 0x55AA55AA55AA55AAull,
-    BLACK_SQUARES = 0xAA55AA55AA55AA55ull,
-
-    LONG_DIAGONALS = 0x8142241818244281ull,
-    CENTER_SQUARES = 0x0000001818000000ull,
-    CENTER_BIG = 0x00003C3C3C3C0000ull,
-
-    LEFT_FLANK = FILE_A | FILE_B | FILE_C | FILE_D,
-    RIGHT_FLANK = FILE_E | FILE_F | FILE_G | FILE_H,
-
-    PROMOTION_RANKS = RANK_1 | RANK_8;
+    PROMOTION_RANKS = Line[0] | Line[7];
 
 
-constexpr int INLINE FileOf(int sq) { return sq % N_FILES; }
 constexpr array<int, 8> MIRROR_FILE = { 0, 1, 2, 3, 3, 2, 1, 0 };
-constexpr INLINE int RankOf(int sq) { return sq / N_FILES; }
 
 
 /// bitboards.c
-
-constexpr array<uint64_t, 8> Files = { FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H };
-constexpr array<uint64_t, 8> Ranks = { RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 };
-
-constexpr int fileOf(int sq) {
-    assert(0 <= sq && sq < N_SQUARES);
-    return FileOf(sq);
-}
 
 constexpr int mirrorFile(int file) {
     assert(0 <= file && file < N_FILES);
@@ -187,28 +152,28 @@ constexpr int rankOf(int sq) {
     return RankOf(sq);
 }
 
-constexpr int relativeRankOf(int colour, int sq) {
-    assert(0 <= colour && colour < N_COLORS);
-    assert(0 <= sq && sq < N_SQUARES);
-    return colour == WHITE ? rankOf(sq) : 7 - rankOf(sq);
-}
-
 constexpr int square(int rank, int file) {
     assert(0 <= rank && rank < N_RANKS);
     assert(0 <= file && file < N_FILES);
     return rank * N_FILES + file;
 }
 
-constexpr int relativeSquare(int colour, int sq) {
-    assert(0 <= colour && colour < N_COLORS);
+template<int US> constexpr int RelativeSquare(int sq) 
+{
+    static_assert(0 <= US && US < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
-    return square(relativeRankOf(colour, sq), fileOf(sq));
+    return square(OwnRankOf<US>(sq), FileOf(sq));
+}
+INLINE int relativeSquare(int colour, int sq)
+{
+    return (colour == WHITE ? RelativeSquare<WHITE> : RelativeSquare<BLACK>)(sq);
 }
 
-constexpr int relativeSquare32(int colour, int sq) {
-    assert(0 <= colour && colour < N_COLORS);
+template<int US> constexpr int RelativeSquare32(int sq) 
+{
+    static_assert(0 <= US && US < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
-    return 4 * relativeRankOf(colour, sq) + mirrorFile(fileOf(sq));
+    return 4 * OwnRankOf<US>(sq) + mirrorFile(FileOf(sq));
 }
 
 constexpr bool testBit(uint64_t bb, int i) {
@@ -228,7 +193,7 @@ constexpr void clearBit(uint64_t* bb, int i) {
 
 uint64_t squaresOfMatchingColour(int sq) {
     assert(0 <= sq && sq < N_SQUARES);
-    return testBit(WHITE_SQUARES, sq) ? WHITE_SQUARES : BLACK_SQUARES;
+    return testBit(LightArea, sq) ? LightArea : DarkArea;
 }
 
 int popcount(uint64_t bb) {
@@ -239,48 +204,26 @@ int popcount(uint64_t bb) {
 #endif
 }
 
-int getlsb(uint64_t bb) {
-    assert(bb);  // lsb(0) is undefined
-#ifdef _MSC_VER
-    unsigned long y;
-    _BitScanForward64(&y, bb);
-    return y;
-#else
-    return __builtin_ctzll(bb);
-#endif
-}
-
-int getmsb(uint64_t bb) {
-    assert(bb);  // msb(0) is undefined
-#ifdef _MSC_VER
-    unsigned long y;
-    _BitScanReverse64(&y, bb);
-    return y;
-#else
-    return __builtin_clzll(bb) ^ 63;
-#endif
-}
-
 int frontmost(int colour, uint64_t bb) {
     assert(0 <= colour && colour < N_COLORS);
-    return colour == WHITE ? getmsb(bb) : getlsb(bb);
+    return colour == WHITE ? msb(bb) : lsb(bb);
 }
 
 int backmost(int colour, uint64_t bb) {
     assert(0 <= colour && colour < N_COLORS);
-    return colour == WHITE ? getlsb(bb) : getmsb(bb);
+    return colour == WHITE ? lsb(bb) : msb(bb);
 }
 
 int poplsb(uint64_t* bb) {
-    int lsb = getlsb(*bb);
+    int retval = lsb(*bb);
     *bb &= *bb - 1;
-    return lsb;
+    return retval;
 }
 
 int popmsb(uint64_t* bb) {
-    int msb = getmsb(*bb);
-    *bb ^= 1ull << msb;
-    return msb;
+    int retval = msb(*bb);
+    *bb ^= 1ull << retval;
+    return retval;
 }
 
 bool several(uint64_t bb) {
@@ -444,28 +387,28 @@ constexpr PSQVals NullPSQT = make_array<64>([](int) { return 0; });
 
 constexpr array<PSQVals, 32> PSQT =
 {
-    make_array<64>([&](int sq) { return PawnValue + PawnPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -PawnValue - PawnPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return PawnValue + PawnPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -PawnValue - PawnPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
-    make_array<64>([&](int sq) { return KnightValue + KnightPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -KnightValue - KnightPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return KnightValue + KnightPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -KnightValue - KnightPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
-    make_array<64>([&](int sq) { return BishopValue + BishopPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -BishopValue - BishopPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return BishopValue + BishopPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -BishopValue - BishopPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
-    make_array<64>([&](int sq) { return RookValue + RookPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -RookValue - RookPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return RookValue + RookPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -RookValue - RookPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
-    make_array<64>([&](int sq) { return QueenValue + QueenPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -QueenValue - QueenPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return QueenValue + QueenPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -QueenValue - QueenPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
-    make_array<64>([&](int sq) { return KingValue + KingPSQT[relativeSquare(WHITE, sq)]; }),
-    make_array<64>([&](int sq) { return -KingValue - KingPSQT[relativeSquare(BLACK, sq)]; }),
+    make_array<64>([&](int sq) { return KingValue + KingPSQT[RelativeSquare<WHITE>(sq)]; }),
+    make_array<64>([&](int sq) { return -KingValue - KingPSQT[RelativeSquare<BLACK>(sq)]; }),
     NullPSQT,
     NullPSQT,
     NullPSQT,
@@ -565,7 +508,7 @@ void squareToString(int sq, char* str)
     if (sq == -1)
         *str++ = '-';
     else {
-        *str++ = fileOf(sq) + 'a';
+        *str++ = FileOf(sq) + 'a';
         *str++ = rankOf(sq) + '1';
     }
 
@@ -838,7 +781,7 @@ void initMasks() {
     // Init a table for the distance between two given squares
     for (int sq1 = 0; sq1 < N_SQUARES; sq1++)
         for (int sq2 = 0; sq2 < N_SQUARES; sq2++)
-            DistanceBetween[sq1][sq2] = Max(abs(fileOf(sq1) - fileOf(sq2)), abs(rankOf(sq1) - rankOf(sq2)));
+            DistanceBetween[sq1][sq2] = Max(abs(FileOf(sq1) - FileOf(sq2)), abs(rankOf(sq1) - rankOf(sq2)));
 
     // Init a table to compute the distance between Pawns and Kings file-wise
     for (uint64_t mask = 0ull; mask <= 0xFF; mask++) 
@@ -850,8 +793,8 @@ void initMasks() {
             uint64_t right = (mask >> file) << file;
 
             // Find closest Pawn on each side. If no pawn, use "max" distance
-            int ldist = left ? file - getmsb(left) : N_FILES - 1;
-            int rdist = right ? getlsb(right) - file : N_FILES - 1;
+            int ldist = left ? file - msb(left) : N_FILES - 1;
+            int rdist = right ? lsb(right) - file : N_FILES - 1;
 
             // Take the min distance, unless there are no pawns, then use 0
             int dist = (left | right) ? Min(ldist, rdist) : 0;
@@ -881,48 +824,48 @@ void initMasks() {
         KingAreaMasks[WHITE][sq] = kingAttacks(sq) | (1ull << sq) | (kingAttacks(sq) << 8);
         KingAreaMasks[BLACK][sq] = kingAttacks(sq) | (1ull << sq) | (kingAttacks(sq) >> 8);
 
-        KingAreaMasks[WHITE][sq] |= fileOf(sq) != 0 ? 0ull : KingAreaMasks[WHITE][sq] << 1;
-        KingAreaMasks[BLACK][sq] |= fileOf(sq) != 0 ? 0ull : KingAreaMasks[BLACK][sq] << 1;
+        KingAreaMasks[WHITE][sq] |= FileOf(sq) != 0 ? 0ull : KingAreaMasks[WHITE][sq] << 1;
+        KingAreaMasks[BLACK][sq] |= FileOf(sq) != 0 ? 0ull : KingAreaMasks[BLACK][sq] << 1;
 
-        KingAreaMasks[WHITE][sq] |= fileOf(sq) != 7 ? 0ull : KingAreaMasks[WHITE][sq] >> 1;
-        KingAreaMasks[BLACK][sq] |= fileOf(sq) != 7 ? 0ull : KingAreaMasks[BLACK][sq] >> 1;
+        KingAreaMasks[WHITE][sq] |= FileOf(sq) != 7 ? 0ull : KingAreaMasks[WHITE][sq] >> 1;
+        KingAreaMasks[BLACK][sq] |= FileOf(sq) != 7 ? 0ull : KingAreaMasks[BLACK][sq] >> 1;
     }
 
     // Init a table of bitmasks for the ranks at or above a given rank, by colour
     for (int rank = 0; rank < N_RANKS; rank++) {
         for (int i = rank; i < N_RANKS; i++)
-            ForwardRanksMasks[WHITE][rank] |= Ranks[i];
-        ForwardRanksMasks[BLACK][rank] = ~ForwardRanksMasks[WHITE][rank] | Ranks[rank];
+            ForwardRanksMasks[WHITE][rank] |= Line[i];
+        ForwardRanksMasks[BLACK][rank] = ~ForwardRanksMasks[WHITE][rank] | Line[rank];
     }
 
     // Init a table of bitmasks for the squares on a file above a given square, by colour
     for (int sq = 0; sq < N_SQUARES; sq++) {
-        ForwardFileMasks[WHITE][sq] = Files[fileOf(sq)] & ForwardRanksMasks[WHITE][rankOf(sq)];
-        ForwardFileMasks[BLACK][sq] = Files[fileOf(sq)] & ForwardRanksMasks[BLACK][rankOf(sq)];
+        ForwardFileMasks[WHITE][sq] = File[FileOf(sq)] & ForwardRanksMasks[WHITE][rankOf(sq)];
+        ForwardFileMasks[BLACK][sq] = File[FileOf(sq)] & ForwardRanksMasks[BLACK][rankOf(sq)];
     }
 
     // Init a table of bitmasks containing the files next to a given file
     for (int file = 0; file < N_FILES; file++) {
-        AdjacentFilesMasks[file] = Files[Max(0, file - 1)];
-        AdjacentFilesMasks[file] |= Files[Min(N_FILES - 1, file + 1)];
-        AdjacentFilesMasks[file] &= ~Files[file];
+        AdjacentFilesMasks[file] = File[Max(0, file - 1)];
+        AdjacentFilesMasks[file] |= File[Min(N_FILES - 1, file + 1)];
+        AdjacentFilesMasks[file] &= ~File[file];
     }
 
     // Init a table of bitmasks to check if a given pawn has any opposition
     for (int colour = WHITE; colour <= BLACK; colour++)
         for (int sq = 0; sq < N_SQUARES; sq++)
             PassedPawnMasks[colour][sq] = ~forwardRanksMasks(!colour, rankOf(sq))
-            & (adjacentFilesMasks(fileOf(sq)) | Files[fileOf(sq)]);
+            & (adjacentFilesMasks(FileOf(sq)) | File[FileOf(sq)]);
 
     // Init a table of bitmasks to check if a square is an outpost relative
     // to opposing pawns, such that no enemy pawn may attack the square with ease
     for (int colour = WHITE; colour <= BLACK; colour++)
         for (int sq = 0; sq < N_SQUARES; sq++)
-            OutpostSquareMasks[colour][sq] = PassedPawnMasks[colour][sq] & ~Files[fileOf(sq)];
+            OutpostSquareMasks[colour][sq] = PassedPawnMasks[colour][sq] & ~File[FileOf(sq)];
 
     // Init a pair of bitmasks to check if a square may be an outpost, by colour
-    OutpostRanksMasks[WHITE] = RANK_4 | RANK_5 | RANK_6;
-    OutpostRanksMasks[BLACK] = RANK_3 | RANK_4 | RANK_5;
+    OutpostRanksMasks[WHITE] = Line[3] | Line[4] | Line[5];
+    OutpostRanksMasks[BLACK] = Line[2] | Line[3] | Line[4];
 
     // Init a table of bitmasks to check for supports for a given pawn
     for (int sq = 8; sq < 56; sq++) {
@@ -939,9 +882,9 @@ int distanceBetween(int s1, int s2) {
 
 int kingPawnFileDistance(uint64_t pawns, int ksq) {
     pawns |= pawns >> 8; pawns |= pawns >> 16; pawns |= pawns >> 32;
-    assert(0 <= fileOf(ksq) && fileOf(ksq) < N_FILES);
+    assert(0 <= FileOf(ksq) && FileOf(ksq) < N_FILES);
     assert((pawns & 0xFF) < (1ull << N_FILES));
-    return KingPawnFileDistance[fileOf(ksq)][pawns & 0xFF];
+    return KingPawnFileDistance[FileOf(ksq)][pawns & 0xFF];
 }
 
 int openFileCount(uint64_t pawns) {
@@ -1501,7 +1444,7 @@ void nnue_update_accumulator(NNUEAccumulator* accum, Board* board, int colour, i
 void nnue_refresh_accumulator(NNUEEvaluator* nnue, NNUEAccumulator* accum, Board* board, int colour, int relsq) 
 {
     vepi16* outputs, * weights, registers[NUM_REGS];
-    const int ksq = getlsb(board->pieces[KING] & board->colours[colour]);
+    const int ksq = lsb(board->pieces[KING] & board->colours[colour]);
     NNUEAccumulatorTableEntry* entry = &nnue->table[ksq];
 
     int set_indexes[32], set_count = 0;
@@ -1627,11 +1570,11 @@ void applyNormalMove(Board* board, uint16_t move, Undo* undo)
 
         uint64_t enemyPawns = board->pieces[PAWN]
             & board->colours[!board->turn]
-            & adjacentFilesMasks(fileOf(from))
-            & (board->turn == WHITE ? RANK_4 : RANK_5);
+            & adjacentFilesMasks(FileOf(from))
+            & (board->turn == WHITE ? Line[3] : Line[4]);
         if (enemyPawns) {
             board->epSquare = board->turn == WHITE ? from + 8 : from - 8;
-            board->hash ^= ZobristEnpassKeys[fileOf(from)];
+            board->hash ^= ZobristEnpassKeys[FileOf(from)];
         }
     }
 
@@ -1800,7 +1743,7 @@ void applyNullMove(Board* board, Undo* undo) {
     // Update the hash for turn and changes to enpass square
     board->hash ^= ZobristTurnKey;
     if (board->epSquare != -1) {
-        board->hash ^= ZobristEnpassKeys[fileOf(board->epSquare)];
+        board->hash ^= ZobristEnpassKeys[FileOf(board->epSquare)];
         board->epSquare = -1;
     }
 
@@ -1830,7 +1773,7 @@ void applyMove(Board* board, uint16_t move, Undo* undo)
 
     // Update the hash for before changing the enpass square
     if (board->epSquare != -1)
-        board->hash ^= ZobristEnpassKeys[fileOf(board->epSquare)];
+        board->hash ^= ZobristEnpassKeys[FileOf(board->epSquare)];
 
     // Run the correct move application function
     table[MoveType(move) >> 12](board, move, undo);
@@ -2056,7 +1999,7 @@ int moveBestCaseValue(Board* board) {
     // Check for a potential pawn promotion
     if (board->pieces[PAWN]
         & board->colours[board->turn]
-        & (board->turn == WHITE ? RANK_7 : RANK_2))
+        & (board->turn == WHITE ? Line[6] : Line[1]))
         value += SEEPieceValues[QUEEN] - SEEPieceValues[PAWN];
 
     return value;
@@ -2125,7 +2068,7 @@ int moveIsPseudoLegal(Board* board, uint16_t move)
             return testBit(PROMOTION_RANKS & ((attacks & enemy) | forward), MoveTo(move));
 
         // Add the double advance to forward
-        forward |= pawnAdvance(forward & (!board->turn ? RANK_3 : RANK_6), occupied, board->turn);
+        forward |= pawnAdvance(forward & (!board->turn ? Line[2] : Line[5]), occupied, board->turn);
 
         // Normal moves are legal if we can move there
         return testBit(~PROMOTION_RANKS & ((attacks & enemy) | forward), MoveTo(move));
@@ -2179,7 +2122,7 @@ int moveIsPseudoLegal(Board* board, uint16_t move)
 int moveWasLegal(Board* board) 
 {
     // Grab the last player's King's square and verify safety
-    int sq = getlsb(board->colours[!board->turn] & board->pieces[KING]);
+    int sq = lsb(board->colours[!board->turn] & board->pieces[KING]);
     assert(board->squares[sq] == makePiece(KING, !board->turn));
     return !squareIsAttacked(board, !board->turn, sq);
 }
@@ -2490,7 +2433,7 @@ int staticExchangeEvaluation(Board* board, uint16_t move, int threshold)
                 break;
 
         // Remove this attacker from the occupied
-        occupied ^= (1ull << getlsb(myAttackers & board->pieces[nextVictim]));
+        occupied ^= (1ull << lsb(myAttackers & board->pieces[nextVictim]));
 
         // A diagonal move may reveal bishop or queen attackers
         if (nextVictim == PAWN || nextVictim == BISHOP || nextVictim == QUEEN)
@@ -2813,18 +2756,18 @@ void boardToFEN(Board* board, char* fen)
     uint64_t castles = board->colours[WHITE] & board->castleRooks;
     while (castles) {
         int sq = popmsb(&castles);
-        if (board->chess960) *fen++ = 'A' + fileOf(sq);
-        else if (testBit(FILE_H, sq)) *fen++ = 'K';
-        else if (testBit(FILE_A, sq)) *fen++ = 'Q';
+        if (board->chess960) *fen++ = 'A' + FileOf(sq);
+        else if (testBit(File[7], sq)) *fen++ = 'K';
+        else if (testBit(File[0], sq)) *fen++ = 'Q';
     }
 
     // Castle rights for Black
     castles = board->colours[BLACK] & board->castleRooks;
     while (castles) {
         int sq = popmsb(&castles);
-        if (board->chess960) *fen++ = 'a' + fileOf(sq);
-        else if (testBit(FILE_H, sq)) *fen++ = 'k';
-        else if (testBit(FILE_A, sq)) *fen++ = 'q';
+        if (board->chess960) *fen++ = 'a' + FileOf(sq);
+        else if (testBit(File[7], sq)) *fen++ = 'k';
+        else if (testBit(File[0], sq)) *fen++ = 'q';
     }
 
     // Check for empty Castle rights
@@ -3743,8 +3686,8 @@ void nnue_incbin_init() {
 #endif
 }
 
-int nnue_evaluate(Thread* thread, Board* board) {
-
+int nnue_evaluate(Thread* thread, Board* board) 
+{
     int mg_eval, eg_eval;
     const uint64_t white = board->colours[WHITE];
     const uint64_t black = board->colours[BLACK];
@@ -3757,8 +3700,8 @@ int nnue_evaluate(Thread* thread, Board* board) {
     if (kings == (white | black)) return 0;
 
     // Optimized computation of various input indices
-    int wrelksq = relativeSquare(WHITE, getlsb(white & kings));
-    int brelksq = relativeSquare(BLACK, getlsb(black & kings));
+    int wrelksq = relativeSquare(WHITE, lsb(white & kings));
+    int brelksq = relativeSquare(BLACK, lsb(black & kings));
 
     NNUEAccumulator* accum = thread->nnue->current;
 
@@ -3809,7 +3752,7 @@ int nnue_evaluate(Thread* thread, Board* board) {
 /// evaluate.c
 
 
-EvalTrace T, EmptyTrace;
+EvalTrace TheTrace, EmptyTrace;
 
 #define S(mg, eg) (MakeScore((mg), (eg)))
 
@@ -4092,7 +4035,7 @@ int evaluateBoard(Thread* thread, Board* board)
 
         // Scale evaluation based on remaining material
         factor = evaluateScaleFactor(board, eval);
-        if (TRACE) T.factor = factor;
+        if (TRACE) TheTrace.factor = factor;
     }
 
     // Calculate the game phase based on remaining material (Fruit Method)
@@ -4158,10 +4101,10 @@ template<int US> int evaluatePawns(EvalInfo* ei, Board* board)
 
         // Pop off the next pawn
         sq = poplsb(&tempPawns);
-        if (TRACE) T.PawnValue[US]++;
-        if (TRACE) T.PawnPSQT[relativeSquare(US, sq)][US]++;
+        if (TRACE) TheTrace.PawnValue[US]++;
+        if (TRACE) TheTrace.PawnPSQT[relativeSquare(US, sq)][US]++;
 
-        uint64_t neighbors = myPawns & adjacentFilesMasks(fileOf(sq));
+        uint64_t neighbors = myPawns & adjacentFilesMasks(FileOf(sq));
         uint64_t backup = myPawns & passedPawnMasks(THEM, sq);
         uint64_t stoppers = enemyPawns & passedPawnMasks(US, sq);
         uint64_t threats = enemyPawns & pawnAttacks(US, sq);
@@ -4177,43 +4120,43 @@ template<int US> int evaluatePawns(EvalInfo* ei, Board* board)
         // square then exchanging our supporters with the remaining stoppers
         else if (!leftovers && popcount(pushSupport) >= popcount(pushThreats)) {
             flag = popcount(support) >= popcount(threats);
-            pkeval += PawnCandidatePasser[flag][relativeRankOf(US, sq)];
-            if (TRACE) T.PawnCandidatePasser[flag][relativeRankOf(US, sq)][US]++;
+            pkeval += PawnCandidatePasser[flag][OwnRankOf<US>(sq)];
+            if (TRACE) TheTrace.PawnCandidatePasser[flag][OwnRankOf<US>(sq)][US]++;
         }
 
         // Apply a penalty if the pawn is isolated. We consider pawns that
         // are able to capture another pawn to not be isolated, as they may
         // have the potential to deisolate by capturing, or be traded away
         if (!threats && !neighbors) {
-            pkeval += PawnIsolated[fileOf(sq)];
-            if (TRACE) T.PawnIsolated[fileOf(sq)][US]++;
+            pkeval += PawnIsolated[FileOf(sq)];
+            if (TRACE) TheTrace.PawnIsolated[FileOf(sq)][US]++;
         }
 
         // Apply a penalty if the pawn is stacked. We adjust the bonus for when
         // the pawn appears to be a candidate to unstack. This occurs when the
         // pawn is not passed but may capture or be recaptured by our own pawns,
         // and when the pawn may freely advance on a file and then be traded away
-        if (several(Files[fileOf(sq)] & myPawns)) {
+        if (several(File[FileOf(sq)] & myPawns)) {
             flag = (stoppers && (threats || neighbors))
                 || (stoppers & ~forwardFileMasks(US, sq));
-            pkeval += PawnStacked[flag][fileOf(sq)];
-            if (TRACE) T.PawnStacked[flag][fileOf(sq)][US]++;
+            pkeval += PawnStacked[flag][FileOf(sq)];
+            if (TRACE) TheTrace.PawnStacked[flag][FileOf(sq)][US]++;
         }
 
         // Apply a penalty if the pawn is backward. We follow the usual definition
         // of backwards, but also specify that the pawn is not both isolated and
         // backwards at the same time. We don't give backward pawns a connected bonus
         if (neighbors && pushThreats && !backup) {
-            flag = !(Files[fileOf(sq)] & enemyPawns);
-            pkeval += PawnBackwards[flag][relativeRankOf(US, sq)];
-            if (TRACE) T.PawnBackwards[flag][relativeRankOf(US, sq)][US]++;
+            flag = !(File[FileOf(sq)] & enemyPawns);
+            pkeval += PawnBackwards[flag][OwnRankOf<US>(sq)];
+            if (TRACE) TheTrace.PawnBackwards[flag][OwnRankOf<US>(sq)][US]++;
         }
 
         // Apply a bonus if the pawn is connected and not backwards. We consider a
         // pawn to be connected when there is a pawn lever or the pawn is supported
         else if (pawnConnectedMasks(US, sq) & myPawns) {
-            pkeval += PawnConnected32[relativeSquare32(US, sq)];
-            if (TRACE) T.PawnConnected32[relativeSquare32(US, sq)][US]++;
+            pkeval += PawnConnected32[RelativeSquare32<US>(sq)];
+            if (TRACE) TheTrace.PawnConnected32[RelativeSquare32<US>(sq)][US]++;
         }
     }
 
@@ -4239,8 +4182,8 @@ template<int US> int evaluateKnights(EvalInfo* ei, Board* board)
     {
         // Pop off the next knight
         sq = poplsb(&tempKnights);
-        if (TRACE) T.KnightValue[US]++;
-        if (TRACE) T.KnightPSQT[relativeSquare(US, sq)][US]++;
+        if (TRACE) TheTrace.KnightValue[US]++;
+        if (TRACE) TheTrace.KnightPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
         attacks = knightAttacks(sq);
@@ -4252,36 +4195,36 @@ template<int US> int evaluateKnights(EvalInfo* ei, Board* board)
         // by an enemy pawn. Increase the bonus if one of our pawns supports the knight
         if (testBit(outpostRanksMasks(US), sq)
             && !(outpostSquareMasks(US, sq) & enemyPawns)) {
-            outside = testBit(FILE_A | FILE_H, sq);
+            outside = testBit(File[0] | File[7], sq);
             defended = testBit(ei->pawnAttacks[US], sq);
             eval += KnightOutpost[outside][defended];
-            if (TRACE) T.KnightOutpost[outside][defended][US]++;
+            if (TRACE) TheTrace.KnightOutpost[outside][defended][US]++;
         }
 
         // Apply a bonus if the knight is behind a pawn
         if (testBit(pawnAdvance(board->pieces[PAWN], 0ull, THEM), sq)) {
             eval += KnightBehindPawn;
-            if (TRACE) T.KnightBehindPawn[US]++;
+            if (TRACE) TheTrace.KnightBehindPawn[US]++;
         }
 
         // Apply a penalty if the knight is far from both kings
         kingDistance = Min(distanceBetween(sq, ei->kingSquare[THEM]), distanceBetween(sq, ei->kingSquare[US]));
         if (kingDistance >= 4) {
             eval += KnightInSiberia[kingDistance - 4];
-            if (TRACE) T.KnightInSiberia[kingDistance - 4][US]++;
+            if (TRACE) TheTrace.KnightInSiberia[kingDistance - 4][US]++;
         }
 
         // Apply a bonus (or penalty) based on the mobility of the knight
         count = popcount(ei->mobilityAreas[US] & attacks);
         eval += KnightMobility[count];
-        if (TRACE) T.KnightMobility[count][US]++;
+        if (TRACE) TheTrace.KnightMobility[count][US]++;
 
         // Update King Safety calculations
         if ((attacks &= ei->kingAreas[THEM] & ~ei->pawnAttacksBy2[THEM])) {
             ei->kingAttacksCount[THEM] += popcount(attacks);
             ei->kingAttackersCount[THEM] += 1;
             ei->kingAttackersWeight[THEM] += SafetyKnightWeight;
-            if (TRACE) T.SafetyKnightWeight[THEM]++;
+            if (TRACE) TheTrace.SafetyKnightWeight[THEM]++;
         }
     }
 
@@ -4301,9 +4244,9 @@ template<int US> int evaluateBishops(EvalInfo* ei, Board* board)
     ei->attackedBy[US][BISHOP] = 0ull;
 
     // Apply a bonus for having a pair of bishops
-    if ((tempBishops & WHITE_SQUARES) && (tempBishops & BLACK_SQUARES)) {
+    if ((tempBishops & LightArea) && (tempBishops & DarkArea)) {
         eval += BishopPair;
-        if (TRACE) T.BishopPair[US]++;
+        if (TRACE) TheTrace.BishopPair[US]++;
     }
 
     // Evaluate each bishop
@@ -4311,8 +4254,8 @@ template<int US> int evaluateBishops(EvalInfo* ei, Board* board)
 
         // Pop off the next Bishop
         sq = poplsb(&tempBishops);
-        if (TRACE) T.BishopValue[US]++;
-        if (TRACE) T.BishopPSQT[relativeSquare(US, sq)][US]++;
+        if (TRACE) TheTrace.BishopValue[US]++;
+        if (TRACE) TheTrace.BishopPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
         attacks = bishopAttacks(sq, ei->occupiedMinusBishops[US]);
@@ -4324,42 +4267,42 @@ template<int US> int evaluateBishops(EvalInfo* ei, Board* board)
         // of our own colour, which reside on the same shade of square as the bishop
         count = popcount(ei->rammedPawns[US] & squaresOfMatchingColour(sq));
         eval += count * BishopRammedPawns;
-        if (TRACE) T.BishopRammedPawns[US] += count;
+        if (TRACE) TheTrace.BishopRammedPawns[US] += count;
 
         // Apply a bonus if the bishop is on an outpost square, and cannot be attacked
         // by an enemy pawn. Increase the bonus if one of our pawns supports the bishop.
         if (testBit(outpostRanksMasks(US), sq)
             && !(outpostSquareMasks(US, sq) & enemyPawns)) {
-            outside = testBit(FILE_A | FILE_H, sq);
+            outside = testBit(File[0] | File[7], sq);
             defended = testBit(ei->pawnAttacks[US], sq);
             eval += BishopOutpost[outside][defended];
-            if (TRACE) T.BishopOutpost[outside][defended][US]++;
+            if (TRACE) TheTrace.BishopOutpost[outside][defended][US]++;
         }
 
         // Apply a bonus if the bishop is behind a pawn
         if (testBit(pawnAdvance(board->pieces[PAWN], 0ull, THEM), sq)) {
             eval += BishopBehindPawn;
-            if (TRACE) T.BishopBehindPawn[US]++;
+            if (TRACE) TheTrace.BishopBehindPawn[US]++;
         }
 
         // Apply a bonus when controlling both central squares on a long diagonal
         if (testBit(LONG_DIAGONALS & ~CENTER_SQUARES, sq)
             && several(bishopAttacks(sq, board->pieces[PAWN]) & CENTER_SQUARES)) {
             eval += BishopLongDiagonal;
-            if (TRACE) T.BishopLongDiagonal[US]++;
+            if (TRACE) TheTrace.BishopLongDiagonal[US]++;
         }
 
         // Apply a bonus (or penalty) based on the mobility of the bishop
         count = popcount(ei->mobilityAreas[US] & attacks);
         eval += BishopMobility[count];
-        if (TRACE) T.BishopMobility[count][US]++;
+        if (TRACE) TheTrace.BishopMobility[count][US]++;
 
         // Update King Safety calculations
         if ((attacks &= ei->kingAreas[THEM] & ~ei->pawnAttacksBy2[THEM])) {
             ei->kingAttacksCount[THEM] += popcount(attacks);
             ei->kingAttackersCount[THEM] += 1;
             ei->kingAttackersWeight[THEM] += SafetyBishopWeight;
-            if (TRACE) T.SafetyBishopWeight[THEM]++;
+            if (TRACE) TheTrace.SafetyBishopWeight[THEM]++;
         }
     }
 
@@ -4384,8 +4327,8 @@ template<int US> int evaluateRooks(EvalInfo* ei, Board* board)
 
         // Pop off the next rook
         sq = poplsb(&tempRooks);
-        if (TRACE) T.RookValue[US]++;
-        if (TRACE) T.RookPSQT[relativeSquare(US, sq)][US]++;
+        if (TRACE) TheTrace.RookValue[US]++;
+        if (TRACE) TheTrace.RookPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
         attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]);
@@ -4395,31 +4338,31 @@ template<int US> int evaluateRooks(EvalInfo* ei, Board* board)
 
         // Rook is on a semi-open file if there are no pawns of the rook's
         // colour on the file. If there are no pawns at all, it is an open file
-        if (!(myPawns & Files[fileOf(sq)])) {
-            open = !(enemyPawns & Files[fileOf(sq)]);
+        if (!(myPawns & File[FileOf(sq)])) {
+            open = !(enemyPawns & File[FileOf(sq)]);
             eval += RookFile[open];
-            if (TRACE) T.RookFile[open][US]++;
+            if (TRACE) TheTrace.RookFile[open][US]++;
         }
 
         // Rook gains a bonus for being located on seventh rank relative to its
         // colour so long as the enemy king is on the last two ranks of the board
-        if (relativeRankOf(US, sq) == 6
-            && relativeRankOf(US, ei->kingSquare[THEM]) >= 6) {
+        if (OwnRankOf<US>(sq) == 6
+            && OwnRankOf<US>(ei->kingSquare[THEM]) >= 6) {
             eval += RookOnSeventh;
-            if (TRACE) T.RookOnSeventh[US]++;
+            if (TRACE) TheTrace.RookOnSeventh[US]++;
         }
 
         // Apply a bonus (or penalty) based on the mobility of the rook
         count = popcount(ei->mobilityAreas[US] & attacks);
         eval += RookMobility[count];
-        if (TRACE) T.RookMobility[count][US]++;
+        if (TRACE) TheTrace.RookMobility[count][US]++;
 
         // Update King Safety calculations
         if ((attacks &= ei->kingAreas[THEM] & ~ei->pawnAttacksBy2[THEM])) {
             ei->kingAttacksCount[THEM] += popcount(attacks);
             ei->kingAttackersCount[THEM] += 1;
             ei->kingAttackersWeight[THEM] += SafetyRookWeight;
-            if (TRACE) T.SafetyRookWeight[THEM]++;
+            if (TRACE) TheTrace.SafetyRookWeight[THEM]++;
         }
     }
 
@@ -4442,8 +4385,8 @@ template<int US> int evaluateQueens(EvalInfo* ei, Board* board)
     {
         // Pop off the next queen
         int sq = poplsb(&tempQueens);
-        if (TRACE) T.QueenValue[US]++;
-        if (TRACE) T.QueenPSQT[relativeSquare(US, sq)][US]++;
+        if (TRACE) TheTrace.QueenValue[US]++;
+        if (TRACE) TheTrace.QueenPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
         uint64_t attacks = queenAttacks(sq, occupied);
@@ -4454,20 +4397,20 @@ template<int US> int evaluateQueens(EvalInfo* ei, Board* board)
         // Apply a penalty if the Queen is at risk for a discovered attack
         if (discoveredAttacks(board, sq, US)) {
             eval += QueenRelativePin;
-            if (TRACE) T.QueenRelativePin[US]++;
+            if (TRACE) TheTrace.QueenRelativePin[US]++;
         }
 
         // Apply a bonus (or penalty) based on the mobility of the queen
         int count = popcount(ei->mobilityAreas[US] & attacks);
         eval += QueenMobility[count];
-        if (TRACE) T.QueenMobility[count][US]++;
+        if (TRACE) TheTrace.QueenMobility[count][US]++;
 
         // Update King Safety calculations
         if ((attacks &= ei->kingAreas[THEM] & ~ei->pawnAttacksBy2[THEM])) {
             ei->kingAttacksCount[THEM] += popcount(attacks);
             ei->kingAttackersCount[THEM] += 1;
             ei->kingAttackersWeight[THEM] += SafetyQueenWeight;
-            if (TRACE) T.SafetyQueenWeight[THEM]++;
+            if (TRACE) TheTrace.SafetyQueenWeight[THEM]++;
         }
     }
 
@@ -4494,39 +4437,39 @@ template<int US> void evaluateKingsPawns(EvalInfo* ei, Board* board)
     // same distance for both sides causing this evaluation term to be neutral
     dist = kingPawnFileDistance(board->pieces[PAWN], kingSq);
     ei->pkeval[US] += KingPawnFileProximity[dist];
-    if (TRACE) T.KingPawnFileProximity[dist][US]++;
+    if (TRACE) TheTrace.KingPawnFileProximity[dist][US]++;
 
     // Evaluate King Shelter & King Storm threat by looking at the file of our King,
     // as well as the adjacent files. When looking at pawn distances, we will use a
     // distance of 7 to denote a missing pawn, since distance 7 is not possible otherwise.
-    for (int file = Max(0, fileOf(kingSq) - 1); file <= Min(N_FILES - 1, fileOf(kingSq) + 1); file++) {
+    for (int file = Max(0, FileOf(kingSq) - 1); file <= Min(N_FILES - 1, FileOf(kingSq) + 1); file++) {
 
         // Find closest friendly pawn at or above our King on a given file
-        uint64_t ours = myPawns & Files[file] & forwardRanksMasks(US, rankOf(kingSq));
+        uint64_t ours = myPawns & File[file] & forwardRanksMasks(US, rankOf(kingSq));
         int ourDist = !ours ? 7 : abs(rankOf(kingSq) - rankOf(backmost(US, ours)));
 
         // Find closest enemy pawn at or above our King on a given file
-        uint64_t theirs = enemyPawns & Files[file] & forwardRanksMasks(US, rankOf(kingSq));
+        uint64_t theirs = enemyPawns & File[file] & forwardRanksMasks(US, rankOf(kingSq));
         int theirDist = !theirs ? 7 : abs(rankOf(kingSq) - rankOf(backmost(US, theirs)));
 
         // Evaluate King Shelter using pawn distance. Use separate evaluation
         // depending on the file, and if we are looking at the King's file
-        ei->pkeval[US] += KingShelter[file == fileOf(kingSq)][file][ourDist];
-        if (TRACE) T.KingShelter[file == fileOf(kingSq)][file][ourDist][US]++;
+        ei->pkeval[US] += KingShelter[file == FileOf(kingSq)][file][ourDist];
+        if (TRACE) TheTrace.KingShelter[file == FileOf(kingSq)][file][ourDist][US]++;
 
         // Update the Shelter Safety
-        ei->pksafety[US] += SafetyShelter[file == fileOf(kingSq)][ourDist];
-        if (TRACE) T.SafetyShelter[file == fileOf(kingSq)][ourDist][US]++;
+        ei->pksafety[US] += SafetyShelter[file == FileOf(kingSq)][ourDist];
+        if (TRACE) TheTrace.SafetyShelter[file == FileOf(kingSq)][ourDist][US]++;
 
         // Evaluate King Storm using enemy pawn distance. Use a separate evaluation
         // depending on the file, and if the opponent's pawn is blocked by our own
         blocked = (ourDist != 7 && (ourDist == theirDist - 1));
         ei->pkeval[US] += KingStorm[blocked][mirrorFile(file)][theirDist];
-        if (TRACE) T.KingStorm[blocked][mirrorFile(file)][theirDist][US]++;
+        if (TRACE) TheTrace.KingStorm[blocked][mirrorFile(file)][theirDist][US]++;
 
         // Update the Storm Safety
         ei->pksafety[US] += SafetyStorm[blocked][theirDist];
-        if (TRACE) T.SafetyStorm[blocked][theirDist][US]++;
+        if (TRACE) TheTrace.SafetyStorm[blocked][theirDist][US]++;
     }
 
     return;
@@ -4544,13 +4487,13 @@ template<int US> int evaluateKings(EvalInfo* ei, Board* board)
         | (board->pieces[BISHOP] & board->colours[US]);
 
     int kingSq = ei->kingSquare[US];
-    if (TRACE) T.KingValue[US]++;
-    if (TRACE) T.KingPSQT[relativeSquare(US, kingSq)][US]++;
+    if (TRACE) TheTrace.KingValue[US]++;
+    if (TRACE) TheTrace.KingPSQT[relativeSquare(US, kingSq)][US]++;
 
     // Bonus for our pawns and minors sitting within our king area
     count = popcount(defenders & ei->kingAreas[US]);
     eval += KingDefenders[count];
-    if (TRACE) T.KingDefenders[count][US]++;
+    if (TRACE) TheTrace.KingDefenders[count][US]++;
 
     // Perform King Safety when we have two attackers, or
     // one attacker with a potential for a Queen attacker
@@ -4597,32 +4540,32 @@ template<int US> int evaluateKings(EvalInfo* ei, Board* board)
             + ei->pksafety[US]
             + SafetyAdjustment;
 
-        if (TRACE) T.SafetyAttackValue[US] = scaledAttackCounts;
-        if (TRACE) T.SafetyWeakSquares[US] = popcount(weak & ei->kingAreas[US]);
-        if (TRACE) T.SafetyNoEnemyQueens[US] = !enemyQueens;
-        if (TRACE) T.SafetySafeQueenCheck[US] = popcount(queenChecks);
-        if (TRACE) T.SafetySafeRookCheck[US] = popcount(rookChecks);
-        if (TRACE) T.SafetySafeBishopCheck[US] = popcount(bishopChecks);
-        if (TRACE) T.SafetySafeKnightCheck[US] = popcount(knightChecks);
-        if (TRACE) T.SafetyAdjustment[US] = 1;
+        if (TRACE) TheTrace.SafetyAttackValue[US] = scaledAttackCounts;
+        if (TRACE) TheTrace.SafetyWeakSquares[US] = popcount(weak & ei->kingAreas[US]);
+        if (TRACE) TheTrace.SafetyNoEnemyQueens[US] = !enemyQueens;
+        if (TRACE) TheTrace.SafetySafeQueenCheck[US] = popcount(queenChecks);
+        if (TRACE) TheTrace.SafetySafeRookCheck[US] = popcount(rookChecks);
+        if (TRACE) TheTrace.SafetySafeBishopCheck[US] = popcount(bishopChecks);
+        if (TRACE) TheTrace.SafetySafeKnightCheck[US] = popcount(knightChecks);
+        if (TRACE) TheTrace.SafetyAdjustment[US] = 1;
 
         // Convert safety to an MG and EG score
         mg = ScoreMG(safety), eg = ScoreEG(safety);
         eval += MakeScore(-mg * Max(0, mg) / 720, -Max(0, eg) / 20);
-        if (TRACE) T.safety[US] = safety;
+        if (TRACE) TheTrace.safety[US] = safety;
     }
 
     else if (TRACE) {
-        T.SafetyKnightWeight[US] = 0;
-        T.SafetyBishopWeight[US] = 0;
-        T.SafetyRookWeight[US] = 0;
-        T.SafetyQueenWeight[US] = 0;
+        TheTrace.SafetyKnightWeight[US] = 0;
+        TheTrace.SafetyBishopWeight[US] = 0;
+        TheTrace.SafetyRookWeight[US] = 0;
+        TheTrace.SafetyQueenWeight[US] = 0;
 
         for (int i = 0; i < 8; i++) {
-            T.SafetyShelter[0][i][US] = 0;
-            T.SafetyShelter[1][i][US] = 0;
-            T.SafetyStorm[0][i][US] = 0;
-            T.SafetyStorm[1][i][US] = 0;
+            TheTrace.SafetyShelter[0][i][US] = 0;
+            TheTrace.SafetyShelter[1][i][US] = 0;
+            TheTrace.SafetyStorm[0][i][US] = 0;
+            TheTrace.SafetyStorm[1][i][US] = 0;
         }
     }
 
@@ -4645,14 +4588,14 @@ template<int US> int evaluatePassed(EvalInfo* ei, Board* board)
 
         // Pop off the next passed Pawn
         sq = poplsb(&tempPawns);
-        rank = relativeRankOf(US, sq);
+        rank = OwnRankOf<US>(sq);
         bitboard = pawnAdvance(1ull << sq, 0ull, US);
 
         // Evaluate based on rank, ability to advance, and safety
         canAdvance = !(bitboard & occupied);
         safeAdvance = !(bitboard & ei->attacked[THEM]);
         eval += PassedPawn[canAdvance][safeAdvance][rank];
-        if (TRACE) T.PassedPawn[canAdvance][safeAdvance][rank][US]++;
+        if (TRACE) TheTrace.PassedPawn[canAdvance][safeAdvance][rank][US]++;
 
         // Short-circuit evaluation for additional passers on a file
         if (several(forwardFileMasks(US, sq) & myPassers)) continue;
@@ -4660,18 +4603,18 @@ template<int US> int evaluatePassed(EvalInfo* ei, Board* board)
         // Evaluate based on distance from our king
         dist = distanceBetween(sq, ei->kingSquare[US]);
         eval += dist * PassedFriendlyDistance[rank];
-        if (TRACE) T.PassedFriendlyDistance[rank][US] += dist;
+        if (TRACE) TheTrace.PassedFriendlyDistance[rank][US] += dist;
 
         // Evaluate based on distance from their king
         dist = distanceBetween(sq, ei->kingSquare[THEM]);
         eval += dist * PassedEnemyDistance[rank];
-        if (TRACE) T.PassedEnemyDistance[rank][US] += dist;
+        if (TRACE) TheTrace.PassedEnemyDistance[rank][US] += dist;
 
         // Apply a bonus when the path to promoting is uncontested
-        bitboard = forwardRanksMasks(US, rankOf(sq)) & Files[fileOf(sq)];
+        bitboard = forwardRanksMasks(US, rankOf(sq)) & File[FileOf(sq)];
         flag = !(bitboard & (board->colours[THEM] | ei->attacked[THEM]));
         eval += flag * PassedSafePromotionPath;
-        if (TRACE) T.PassedSafePromotionPath[US] += flag;
+        if (TRACE) TheTrace.PassedSafePromotionPath[US] += flag;
     }
 
     return eval;
@@ -4680,7 +4623,7 @@ template<int US> int evaluatePassed(EvalInfo* ei, Board* board)
 template<int US> int evaluateThreats(EvalInfo* ei, Board* board) 
 {
     const int THEM = !US;
-    const uint64_t Rank3Rel = US == WHITE ? RANK_3 : RANK_6;
+    const uint64_t Rank3Rel = US == WHITE ? Line[2] : Line[5];
 
     int count, eval = 0;
 
@@ -4720,52 +4663,52 @@ template<int US> int evaluateThreats(EvalInfo* ei, Board* board)
     // Penalty for each of our poorly supported pawns
     count = popcount(pawns & ~attacksByPawns & poorlyDefended);
     eval += count * ThreatWeakPawn;
-    if (TRACE) T.ThreatWeakPawn[US] += count;
+    if (TRACE) TheTrace.ThreatWeakPawn[US] += count;
 
     // Penalty for pawn threats against our minors
     count = popcount((knights | bishops) & attacksByPawns);
     eval += count * ThreatMinorAttackedByPawn;
-    if (TRACE) T.ThreatMinorAttackedByPawn[US] += count;
+    if (TRACE) TheTrace.ThreatMinorAttackedByPawn[US] += count;
 
     // Penalty for any minor threat against minor pieces
     count = popcount((knights | bishops) & attacksByMinors);
     eval += count * ThreatMinorAttackedByMinor;
-    if (TRACE) T.ThreatMinorAttackedByMinor[US] += count;
+    if (TRACE) TheTrace.ThreatMinorAttackedByMinor[US] += count;
 
     // Penalty for all major threats against poorly supported minors
     count = popcount(weakMinors & attacksByMajors);
     eval += count * ThreatMinorAttackedByMajor;
-    if (TRACE) T.ThreatMinorAttackedByMajor[US] += count;
+    if (TRACE) TheTrace.ThreatMinorAttackedByMajor[US] += count;
 
     // Penalty for pawn and minor threats against our rooks
     count = popcount(rooks & (attacksByPawns | attacksByMinors));
     eval += count * ThreatRookAttackedByLesser;
-    if (TRACE) T.ThreatRookAttackedByLesser[US] += count;
+    if (TRACE) TheTrace.ThreatRookAttackedByLesser[US] += count;
 
     // Penalty for king threats against our poorly defended minors
     count = popcount(weakMinors & ei->attackedBy[THEM][KING]);
     eval += count * ThreatMinorAttackedByKing;
-    if (TRACE) T.ThreatMinorAttackedByKing[US] += count;
+    if (TRACE) TheTrace.ThreatMinorAttackedByKing[US] += count;
 
     // Penalty for king threats against our poorly defended rooks
     count = popcount(rooks & poorlyDefended & ei->attackedBy[THEM][KING]);
     eval += count * ThreatRookAttackedByKing;
-    if (TRACE) T.ThreatRookAttackedByKing[US] += count;
+    if (TRACE) TheTrace.ThreatRookAttackedByKing[US] += count;
 
     // Penalty for any threat against our queens
     count = popcount(queens & ei->attacked[THEM]);
     eval += count * ThreatQueenAttackedByOne;
-    if (TRACE) T.ThreatQueenAttackedByOne[US] += count;
+    if (TRACE) TheTrace.ThreatQueenAttackedByOne[US] += count;
 
     // Penalty for any overloaded minors or majors
     count = popcount(overloaded);
     eval += count * ThreatOverloadedPieces;
-    if (TRACE) T.ThreatOverloadedPieces[US] += count;
+    if (TRACE) TheTrace.ThreatOverloadedPieces[US] += count;
 
     // Bonus for giving threats by safe pawn pushes
     count = popcount(pushThreat);
     eval += count * ThreatByPawnPush;
-    if (TRACE) T.ThreatByPawnPush[colour] += count;
+    if (TRACE) TheTrace.ThreatByPawnPush[US] += count;
 
     return eval;
 }
@@ -4786,11 +4729,11 @@ template<int US> int evaluateSpace(EvalInfo* ei, Board* board)
     // Penalty for restricted piece moves
     count = popcount(uncontrolled & (friendly | enemy));
     eval += count * SpaceRestrictPiece;
-    if (TRACE) T.SpaceRestrictPiece[US] += count;
+    if (TRACE) TheTrace.SpaceRestrictPiece[US] += count;
 
     count = popcount(uncontrolled & ~friendly & ~enemy);
     eval += count * SpaceRestrictEmpty;
-    if (TRACE) T.SpaceRestrictEmpty[US] += count;
+    if (TRACE) TheTrace.SpaceRestrictEmpty[US] += count;
 
     // Bonus for uncontested central squares
     // This is mostly relevant in the opening and the early middlegame, while rarely correct
@@ -4800,7 +4743,7 @@ template<int US> int evaluateSpace(EvalInfo* ei, Board* board)
         + 2 * popcount(board->pieces[ROOK] | board->pieces[QUEEN]) > 12) {
         count = popcount(~ei->attacked[THEM] & (ei->attacked[US] | friendly) & CENTER_BIG);
         eval += count * SpaceCenterControl;
-        if (TRACE) T.SpaceCenterControl[US] += count;
+        if (TRACE) TheTrace.SpaceCenterControl[US] += count;
     }
 
     return eval;
@@ -4825,12 +4768,12 @@ int evaluateClosedness(EvalInfo* ei, Board* board) {
     // Evaluate Knights based on how Closed the position is
     count = popcount(white & knights) - popcount(black & knights);
     eval += count * ClosednessKnightAdjustment[closedness];
-    if (TRACE) T.ClosednessKnightAdjustment[closedness][WHITE] += count;
+    if (TRACE) TheTrace.ClosednessKnightAdjustment[closedness][WHITE] += count;
 
     // Evaluate Rooks based on how Closed the position is
     count = popcount(white & rooks) - popcount(black & rooks);
     eval += count * ClosednessRookAdjustment[closedness];
-    if (TRACE) T.ClosednessRookAdjustment[closedness][WHITE] += count;
+    if (TRACE) TheTrace.ClosednessRookAdjustment[closedness][WHITE] += count;
 
     return eval;
 }
@@ -4861,16 +4804,16 @@ int evaluateComplexity(EvalInfo* ei, Board* board, int eval) {
         + ComplexityPawnEndgame * !(knights | bishops | rooks | queens)
         + ComplexityAdjustment;
 
-    if (TRACE) T.ComplexityTotalPawns[WHITE] += popcount(board->pieces[PAWN]);
-    if (TRACE) T.ComplexityPawnFlanks[WHITE] += pawnsOnBothFlanks;
-    if (TRACE) T.ComplexityPawnEndgame[WHITE] += !(knights | bishops | rooks | queens);
-    if (TRACE) T.ComplexityAdjustment[WHITE] += 1;
+    if (TRACE) TheTrace.ComplexityTotalPawns[WHITE] += popcount(board->pieces[PAWN]);
+    if (TRACE) TheTrace.ComplexityPawnFlanks[WHITE] += pawnsOnBothFlanks;
+    if (TRACE) TheTrace.ComplexityPawnEndgame[WHITE] += !(knights | bishops | rooks | queens);
+    if (TRACE) TheTrace.ComplexityAdjustment[WHITE] += 1;
 
     // Avoid changing which side has the advantage
     int v = sign * Max<int>(ScoreEG(complexity), -abs(eg));
 
-    if (TRACE) T.eval = eval;
-    if (TRACE) T.complexity = complexity;
+    if (TRACE) TheTrace.eval = eval;
+    if (TRACE) TheTrace.complexity = complexity;
     return MakeScore(0, v);
 }
 
@@ -4900,7 +4843,7 @@ int evaluateScaleFactor(Board* board, int eval)
     // Check for opposite coloured bishops
     if (onlyOne(white & bishops)
         && onlyOne(black & bishops)
-        && onlyOne(bishops & WHITE_SQUARES)) {
+        && onlyOne(bishops & LightArea)) {
 
         // Scale factor for OCB + knights
         if (!(rooks | queens)
@@ -4949,10 +4892,10 @@ void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei)
     uint64_t kings = board->pieces[KING];
 
     // Save some general information about the pawn structure for later
-    ei->pawnAttacks[WHITE] = pawnAttackSpan(white & pawns, ~0ull, WHITE);
-    ei->pawnAttacks[BLACK] = pawnAttackSpan(black & pawns, ~0ull, BLACK);
-    ei->pawnAttacksBy2[WHITE] = pawnAttackDouble(white & pawns, ~0ull, WHITE);
-    ei->pawnAttacksBy2[BLACK] = pawnAttackDouble(black & pawns, ~0ull, BLACK);
+    ei->pawnAttacks[WHITE] = pawnAttackSpan(white & pawns, Filled, WHITE);
+    ei->pawnAttacks[BLACK] = pawnAttackSpan(black & pawns, Filled, BLACK);
+    ei->pawnAttacksBy2[WHITE] = pawnAttackDouble(white & pawns, Filled, WHITE);
+    ei->pawnAttacksBy2[BLACK] = pawnAttackDouble(black & pawns, Filled, BLACK);
     ei->rammedPawns[WHITE] = pawnAdvance(black & pawns, ~(white & pawns), BLACK);
     ei->rammedPawns[BLACK] = pawnAdvance(white & pawns, ~(black & pawns), WHITE);
     ei->blockedPawns[WHITE] = pawnAdvance(white | black, ~(white & pawns), BLACK);
@@ -4960,8 +4903,8 @@ void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei)
 
     // Compute an area for evaluating our King's safety.
     // The definition of the King Area can be found in masks.c
-    ei->kingSquare[WHITE] = getlsb(white & kings);
-    ei->kingSquare[BLACK] = getlsb(black & kings);
+    ei->kingSquare[WHITE] = lsb(white & kings);
+    ei->kingSquare[BLACK] = lsb(black & kings);
     ei->kingAreas[WHITE] = kingAreaMasks(WHITE, ei->kingSquare[WHITE]);
     ei->kingAreas[BLACK] = kingAreaMasks(BLACK, ei->kingSquare[BLACK]);
 
@@ -6193,7 +6136,7 @@ uint64_t sliderAttacks(int sq, uint64_t occupied, const int delta[4][2])
 
         dr = delta[i][0], df = delta[i][1];
 
-        for (rank = rankOf(sq) + dr, file = fileOf(sq) + df; validCoordinate(rank, file); rank += dr, file += df) {
+        for (rank = rankOf(sq) + dr, file = FileOf(sq) + df; validCoordinate(rank, file); rank += dr, file += df) {
             setBit(&result, square(rank, file));
             if (testBit(occupied, square(rank, file)))
                 break;
@@ -6205,8 +6148,8 @@ uint64_t sliderAttacks(int sq, uint64_t occupied, const int delta[4][2])
 
 void initSliderAttacks(int sq, Magic* table, uint64_t magic, const int delta[4][2]) 
 {
-    uint64_t edges = ((RANK_1 | RANK_8) & ~Ranks[rankOf(sq)])
-        | ((FILE_A | FILE_H) & ~Files[fileOf(sq)]);
+    uint64_t edges = ((Line[0] | Line[7]) & ~Line[rankOf(sq)])
+        | ((File[0] | File[7]) & ~File[FileOf(sq)]);
 
     uint64_t occupied = 0ull;
 
@@ -6242,16 +6185,16 @@ void initAttacks() {
     // Init attack tables for Pawns
     for (int sq = 0; sq < 64; sq++) {
         for (int dir = 0; dir < 2; dir++) {
-            setSquare(&PawnAttacks[WHITE][sq], rankOf(sq) + PawnDelta[dir][0], fileOf(sq) + PawnDelta[dir][1]);
-            setSquare(&PawnAttacks[BLACK][sq], rankOf(sq) - PawnDelta[dir][0], fileOf(sq) - PawnDelta[dir][1]);
+            setSquare(&PawnAttacks[WHITE][sq], rankOf(sq) + PawnDelta[dir][0], FileOf(sq) + PawnDelta[dir][1]);
+            setSquare(&PawnAttacks[BLACK][sq], rankOf(sq) - PawnDelta[dir][0], FileOf(sq) - PawnDelta[dir][1]);
         }
     }
 
     // Init attack tables for Knights & Kings
     for (int sq = 0; sq < 64; sq++) {
         for (int dir = 0; dir < 8; dir++) {
-            setSquare(&KnightAttacks[sq], rankOf(sq) + KnightDelta[dir][0], fileOf(sq) + KnightDelta[dir][1]);
-            setSquare(&KingAttacks[sq], rankOf(sq) + KingDelta[dir][0], fileOf(sq) + KingDelta[dir][1]);
+            setSquare(&KnightAttacks[sq], rankOf(sq) + KnightDelta[dir][0], FileOf(sq) + KnightDelta[dir][1]);
+            setSquare(&KingAttacks[sq], rankOf(sq) + KingDelta[dir][0], FileOf(sq) + KingDelta[dir][1]);
         }
     }
 
@@ -6262,6 +6205,11 @@ void initAttacks() {
     }
 }
 
+template<int US> uint64_t pawnAttacks(int sq) {
+    static_assert(0 <= US && US < N_COLORS);
+    assert(0 <= sq && sq < N_SQUARES);
+    return PawnAttacks[US][sq];
+}
 uint64_t pawnAttacks(int colour, int sq) {
     assert(0 <= colour && colour < N_COLORS);
     assert(0 <= sq && sq < N_SQUARES);
@@ -6295,13 +6243,13 @@ uint64_t kingAttacks(int sq) {
 
 
 uint64_t pawnLeftAttacks(uint64_t pawns, uint64_t targets, int colour) {
-    return targets & (colour == WHITE ? (pawns << 7) & ~FILE_H
-        : (pawns >> 7) & ~FILE_A);
+    return targets & (colour == WHITE ? (pawns << 7) & ~File[7]
+        : (pawns >> 7) & ~File[0]);
 }
 
 uint64_t pawnRightAttacks(uint64_t pawns, uint64_t targets, int colour) {
-    return targets & (colour == WHITE ? (pawns << 9) & ~FILE_A
-        : (pawns >> 9) & ~FILE_H);
+    return targets & (colour == WHITE ? (pawns << 9) & ~File[0]
+        : (pawns >> 9) & ~File[7]);
 }
 
 uint64_t pawnAttackSpan(uint64_t pawns, uint64_t targets, int colour) {
@@ -6384,7 +6332,7 @@ uint64_t allAttackedSquares(Board* board, int colour) {
 uint64_t attackersToKingSquare(Board* board) {
 
     // Wrapper for allAttackersToSquare() for use in check detection
-    int kingsq = getlsb(board->colours[board->turn] & board->pieces[KING]);
+    int kingsq = lsb(board->colours[board->turn] & board->pieces[KING]);
     uint64_t occupied = board->colours[WHITE] | board->colours[BLACK];
     return allAttackersToSquare(board, occupied, kingsq) & board->colours[!board->turn];
 }
@@ -6553,7 +6501,7 @@ ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves)
     const uint16_t* start = moves;
 
     const int Forward = board->turn == WHITE ? -8 : 8;
-    const uint64_t Rank3Relative = board->turn == WHITE ? RANK_3 : RANK_6;
+    const uint64_t Rank3Relative = board->turn == WHITE ? Line[2] : Line[5];
 
     int rook, king, rookTo, kingTo, attacked;
     uint64_t destinations, pawnForwardOne, pawnForwardTwo, mask;
@@ -6578,7 +6526,7 @@ ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves)
 
     // When checked, we must block the checker with non-King pieces
     destinations = !board->kingAttackers ? ~occupied
-        : bitsBetweenMasks(getlsb(kings), getlsb(board->kingAttackers));
+        : bitsBetweenMasks(lsb(kings), lsb(board->kingAttackers));
 
     // Compute bitboards for each type of Pawn movement
     pawnForwardOne = pawnAdvance(pawns, occupied, board->turn) & ~PROMOTION_RANKS;
@@ -6598,7 +6546,7 @@ ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves)
     while (castles && !board->kingAttackers) {
 
         // Figure out which pieces are moving to which squares
-        rook = poplsb(&castles), king = getlsb(kings);
+        rook = poplsb(&castles), king = lsb(kings);
         rookTo = castleRookTo(king, rook);
         kingTo = castleKingTo(king, rook);
         attacked = 0;
@@ -6686,8 +6634,8 @@ void build_halfkp_sample(Board* board, HalfKPSample* sample, unsigned result, in
     sample->eval = board->turn == BLACK ? -eval : eval;
     sample->result = board->turn == BLACK ? 2u - result : result;
     sample->turn = board->turn;
-    sample->wking = getlsb(white & board->pieces[KING]);
-    sample->bking = getlsb(black & board->pieces[KING]);
+    sample->wking = lsb(white & board->pieces[KING]);
+    sample->bking = lsb(black & board->pieces[KING]);
     pack_bitboard(sample->packed, board, sample->occupied);
 }
 
@@ -6779,12 +6727,12 @@ uint16_t san_pawn_capture(Board* board, const char* SAN)
         : san_promotion_type(SAN[(SAN[1] != 'x') + 5]);
 
     // Narrow down the position of the capturing Pawn
-    pawns = Files[file]
+    pawns = File[file]
         & board->pieces[PAWN]
         & board->colours[board->turn]
         & pawnAttacks(!board->turn, tosq);
 
-    return MoveMake(getlsb(pawns), tosq, type);
+    return MoveMake(lsb(pawns), tosq, type);
 }
 
 uint16_t san_castle_move(Board* board, const char* SAN) 
@@ -6792,16 +6740,16 @@ uint16_t san_castle_move(Board* board, const char* SAN)
     // Trivially check and build Queen Side Castles
     if (!strncmp(SAN, "O-O-O", 5)) {
         uint64_t friendly = board->colours[board->turn];
-        int king = getlsb(friendly & board->pieces[KING]);
-        int rook = getlsb(friendly & board->castleRooks);
+        int king = lsb(friendly & board->pieces[KING]);
+        int rook = lsb(friendly & board->castleRooks);
         return MoveMake(king, rook, CASTLE_MOVE);
     }
 
     // Trivially check and build King Side Castles
     if (!strncmp(SAN, "O-O", 3)) {
         uint64_t friendly = board->colours[board->turn];
-        int king = getlsb(friendly & board->pieces[KING]);
-        int rook = getmsb(friendly & board->castleRooks);
+        int king = lsb(friendly & board->pieces[KING]);
+        int rook = msb(friendly & board->castleRooks);
         return MoveMake(king, rook, CASTLE_MOVE);
     }
 
@@ -6855,15 +6803,15 @@ uint16_t san_piece_move(Board* board, const char* SAN)
 
     // Narrow down our options using the file disambiguation
     if (has_file)
-        options &= Files[SAN[1] - 'a'];
+        options &= File[SAN[1] - 'a'];
 
     // Narrow down our options using the rank disambiguation
     if (has_rank)
-        options &= Ranks[SAN[1 + has_file] - '1'];
+        options &= Line[SAN[1 + has_file] - '1'];
 
     // If we only have one option, we can delay the legality check
     if (onlyOne(options))
-        return MoveMake(getlsb(options), tosq, NORMAL_MOVE);
+        return MoveMake(lsb(options), tosq, NORMAL_MOVE);
 
     // If we have multiple options due to pins, we must verify now
     while (options) {
@@ -7068,16 +7016,16 @@ void boardFromFEN(Board* board, const char* fen, int chess960)
     black = board->colours[BLACK];
 
     while ((ch = *token++)) {
-        if (ch == 'K') setBit(&board->castleRooks, getmsb(white & rooks & RANK_1));
-        if (ch == 'Q') setBit(&board->castleRooks, getlsb(white & rooks & RANK_1));
-        if (ch == 'k') setBit(&board->castleRooks, getmsb(black & rooks & RANK_8));
-        if (ch == 'q') setBit(&board->castleRooks, getlsb(black & rooks & RANK_8));
+        if (ch == 'K') setBit(&board->castleRooks, msb(white & rooks & Line[0]));
+        if (ch == 'Q') setBit(&board->castleRooks, lsb(white & rooks & Line[0]));
+        if (ch == 'k') setBit(&board->castleRooks, msb(black & rooks & Line[7]));
+        if (ch == 'q') setBit(&board->castleRooks, lsb(black & rooks & Line[7]));
         if ('A' <= ch && ch <= 'H') setBit(&board->castleRooks, square(0, ch - 'A'));
         if ('a' <= ch && ch <= 'h') setBit(&board->castleRooks, square(7, ch - 'a'));
     }
 
     for (sq = 0; sq < N_SQUARES; sq++) {
-        board->castleMasks[sq] = ~0ull;
+        board->castleMasks[sq] = Filled;
         if (testBit(board->castleRooks, sq)) clearBit(&board->castleMasks[sq], sq);
         if (testBit(white & kings, sq)) board->castleMasks[sq] &= ~white;
         if (testBit(black & kings, sq)) board->castleMasks[sq] &= ~black;
@@ -7089,7 +7037,7 @@ void boardFromFEN(Board* board, const char* fen, int chess960)
     // En passant square
     board->epSquare = stringToSquare(strtok_r(NULL, " ", &strPos));
     if (board->epSquare != -1)
-        board->hash ^= ZobristEnpassKeys[fileOf(board->epSquare)];
+        board->hash ^= ZobristEnpassKeys[FileOf(board->epSquare)];
 
     // Half & Full Move Counters
     board->halfMoveCounter = atoi(strtok_r(NULL, " ", &strPos));
