@@ -6,17 +6,17 @@
 #include "Chess/Bit.h"
 #include "Chess/Pack.h"
 #include "Chess/Array.h"
-
-INLINE constexpr sint64 EPack(sint16 mid, sint16 eg)
-{
-    return Pack(mid, mid, eg, 0);
-}
-
 #include "Chess/Board.h"
 #include "Chess/Score.h"
 #include "Chess/Killer.h"
 #include "Chess/Material.h"
 #include "Chess/Eval.h"
+
+INLINE constexpr packed_t EPack(sint16 mid, sint16 eg)
+{
+    return Pack(mid, mid, eg, 0);
+}
+
 
 
 using std::array;
@@ -107,9 +107,9 @@ using HistoryTable = array<array<array<array<array<score_t, N_SQUARES>, N_SQUARE
 using CaptureHistoryTable = array<array<array<array<array<score_t, N_PIECES - 1>, N_SQUARES>, 2>, 2>, N_PIECES>;
 using ContinuationTable = array<array<array<array<array<array<score_t, N_SQUARES>, N_PIECES>, N_CONTINUATION>, N_SQUARES>, N_PIECES>, 2>;
 
-constexpr inline int MakeScore(score_t mg, score_t eg) { return (int)((unsigned int)eg << 16) + mg; }
-constexpr inline score_t ScoreMG(int s) { return (score_t)((uint16_t)((unsigned)s)); }
-constexpr inline score_t ScoreEG(int s) { return (score_t)((uint16_t)((unsigned)(s + 0x8000) >> 16)); }
+constexpr inline packed_t MakeScore(score_t mg, score_t eg) { return EPack(mg, eg); }
+constexpr inline score_t ScoreMG(packed_t s) { return Pick16<2>(s); }
+constexpr inline score_t ScoreEG(packed_t s) { return Pick16<3>(s); }
 
 
 // Trivial alignment macros
@@ -249,7 +249,7 @@ void printBitboard(uint64 bb)
 
 #define S MakeScore
 
-using PSQVals = array<int, N_SQUARES>;
+using PSQVals = array<packed_t, N_SQUARES>;
 
 constexpr PSQVals PawnPSQT = {
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
@@ -368,16 +368,16 @@ constexpr PSQVals KingPSQT = {
 
 /* Material Value Evaluation Terms */
 
-constexpr int PawnValue = S(82, 144);
-constexpr int KnightValue = S(426, 475);
-constexpr int BishopValue = S(441, 510);
-constexpr int RookValue = S(627, 803);
-constexpr int QueenValue = S(1292, 1623);
-constexpr int KingValue = S(0, 0);
+constexpr packed_t PawnValue = S(82, 144);
+constexpr packed_t KnightValue = S(426, 475);
+constexpr packed_t BishopValue = S(441, 510);
+constexpr packed_t RookValue = S(627, 803);
+constexpr packed_t QueenValue = S(1292, 1623);
+constexpr packed_t KingValue = S(0, 0);
 
 #undef S
 
-constexpr PSQVals NullPSQT = make_array<64>([](int) { return 0; });
+constexpr PSQVals NullPSQT = make_array<64>([](int) { return packed_t(0); });
 
 constexpr array<PSQVals, 32> PSQT =
 {
@@ -634,15 +634,17 @@ struct Board {
     uint64 pieces[8], colours[3];
     uint64 hash, pkhash, kingAttackers, threats;
     uint64 castleRooks;
+    packed_t psqtmat;
     int turn, epSquare, halfMoveCounter, fullMoveCounter;
-    int psqtmat, numMoves, chess960, matIndex;
+    int numMoves, chess960, matIndex;
     uint64 history[MAX_MOVES];    // should be MAX_PLY + 100?
     Thread* thread;
 };
 
 struct Undo {
     uint64 hash, pkhash, kingAttackers, threats, castleRooks;
-    int epSquare, halfMoveCounter, psqtmat, capturePiece, matIndex;
+    packed_t psqtmat;
+    int epSquare, halfMoveCounter, capturePiece, matIndex;
 };
 
 
@@ -908,7 +910,7 @@ inline int computePKNetworkIndex(int colour, int piece, int sq) {
 }
 
 
-int computePKNetwork(Board* board) 
+packed_t computePKNetwork(Board* board) 
 {
     uint64 pawns = board->pieces[PAWN];
     uint64 kings = board->pieces[KING];
@@ -1105,6 +1107,17 @@ struct TTable {
 
 void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound);
 
+
+struct MovePicker {
+    int split, noisy_size, quiet_size, i_killer;
+    int stage, type, threshold;
+    int values[MAX_MOVES];
+    uint16_t moves[MAX_MOVES];
+    KillerMoves killers;
+    uint16_t tt_move, counter;
+};
+
+
 /// The Pawn King table contains saved evaluations, and additional Pawn information
 /// that is expensive to compute during evaluation. This includes the location of all
 /// passed pawns, and Pawn-Shelter / Pawn-Storm scores for use in King Safety evaluation.
@@ -1118,21 +1131,12 @@ enum {
     PK_CACHE_SIZE = 1 << PK_CACHE_KEY_SIZE,
 };
 
-struct PKEntry { uint64 pkhash, passed; int eval, safetyw, safetyb; };
-typedef PKEntry PKTable[PK_CACHE_SIZE];
-
-PKEntry* getCachedPawnKingEval(Thread* thread, const Board* board);
-void storeCachedPawnKingEval(Thread* thread, const Board* board, uint64 passed, int eval, int safety[2]);
-
-struct MovePicker {
-    int split, noisy_size, quiet_size, i_killer;
-    int stage, type, threshold;
-    int values[MAX_MOVES];
-    uint16_t moves[MAX_MOVES];
-    KillerMoves killers;
-    uint16_t tt_move, counter;
+struct PKEntry
+{
+    uint64 pkhash, passed;
+    packed_t eval, safetyw, safetyb;
 };
-
+typedef PKEntry PKTable[PK_CACHE_SIZE];
 
 /// thread.h
 
@@ -1196,6 +1200,20 @@ void newSearchThreadPool(Thread* threads, Board* board, Limits* limits, TimeMana
 uint64 nodesSearchedThreadPool(Thread* threads);
 uint64 tbhitsThreadPool(Thread* threads);
 
+
+
+/// Simple Pawn+King Evaluation Hash Table, which also stores some additional
+/// safety information for use in King Safety, when not using NNUE evaluations
+
+PKEntry* getCachedPawnKingEval(Thread* thread, const Board* board) {
+    PKEntry* pke = &thread->pktable[board->pkhash & PK_CACHE_MASK];
+    return pke->pkhash == board->pkhash ? pke : NULL;
+}
+
+void storeCachedPawnKingEval(Thread* thread, const Board* board, uint64 passed, packed_t eval, packed_t safety[2]) {
+    PKEntry& pke = thread->pktable[board->pkhash & PK_CACHE_MASK];
+    pke = { board->pkhash, passed, eval, safety[WHITE], safety[BLACK] };
+}
 
 
 
@@ -3532,7 +3550,9 @@ struct EvalTrace {
     int ComplexityPawnFlanks[N_COLORS];
     int ComplexityPawnEndgame[N_COLORS];
     int ComplexityAdjustment[N_COLORS];
-    int eval, complexity, factor, safety[N_COLORS];
+    packed_t eval, complexity;
+    int factor;
+    packed_t safety[N_COLORS];
 };
 
 struct EvalInfo {
@@ -3551,9 +3571,9 @@ struct EvalInfo {
     int kingSquare[N_COLORS];
     int kingAttacksCount[N_COLORS];
     int kingAttackersCount[N_COLORS];
-    int kingAttackersWeight[N_COLORS];
-    int pkeval[N_COLORS];
-    int pksafety[N_COLORS];
+    packed_t kingAttackersWeight[N_COLORS];
+    packed_t pkeval[N_COLORS];
+    packed_t pksafety[N_COLORS];
     PKEntry* pkentry;
 };
 
@@ -4066,29 +4086,29 @@ EvalTrace TheTrace, EmptyTrace;
 
 /* Pawn Evaluation Terms */
 
-constexpr array<array<int, N_RANKS>, 2> PawnCandidatePasser = 
+constexpr array<array<packed_t, N_RANKS>, 2> PawnCandidatePasser = 
 {
-   array<int, N_RANKS>{S(0,   0), S(-11, -18), S(-16,  18), S(-18,  29), S(-22,  61), S(21,  59), S(0,   0), S(0,   0)},
-   array<int, N_RANKS>{S(0,   0), S(-12,  21), S(-7,  27), S(2,  53), S(22, 116), S(49,  78), S(0,   0), S(0,   0)},
+   array<packed_t, N_RANKS>{S(0,   0), S(-11, -18), S(-16,  18), S(-18,  29), S(-22,  61), S(21,  59), S(0,   0), S(0,   0)},
+   array<packed_t, N_RANKS>{S(0,   0), S(-12,  21), S(-7,  27), S(2,  53), S(22, 116), S(49,  78), S(0,   0), S(0,   0)},
 };
 
-constexpr array<int, N_FILES> PawnIsolated = {
+constexpr array<packed_t, N_FILES> PawnIsolated = {
     S(-13, -12), S(-1, -16), S(1, -16), S(3, -18),
     S(7, -19), S(3, -15), S(-4, -14), S(-4, -17),
 };
 
-constexpr array<array<int, N_FILES>, 2> PawnStacked = 
+constexpr array<array<packed_t, N_FILES>, 2> PawnStacked = 
 {
-   array<int, N_FILES>{S(10, -29), S(-2, -26), S(0, -23), S(0, -20), S(3, -20), S(5, -26), S(4, -30), S(8, -31)},
-   array<int, N_FILES>{S(3, -14), S(0, -15), S(-6,  -9), S(-7, -10), S(-4,  -9), S(-2, -10), S(0, -13), S(0, -17)},
+   array<packed_t, N_FILES>{S(10, -29), S(-2, -26), S(0, -23), S(0, -20), S(3, -20), S(5, -26), S(4, -30), S(8, -31)},
+   array<packed_t, N_FILES>{S(3, -14), S(0, -15), S(-6,  -9), S(-7, -10), S(-4,  -9), S(-2, -10), S(0, -13), S(0, -17)},
 };
 
-constexpr array<array<int, N_RANKS>, 2> PawnBackwards = {
-   array<int, N_RANKS>{S(0,   0), S(0,  -7), S(7,  -7), S(6, -18), S(-4, -29), S(0,   0), S(0,   0), S(0,   0)},
-   array<int, N_RANKS>{S(0,   0), S(-9, -32), S(-5, -30), S(3, -31), S(29, -41), S(0,   0), S(0,   0), S(0,   0)},
+constexpr array<array<packed_t, N_RANKS>, 2> PawnBackwards = {
+   array<packed_t, N_RANKS>{S(0,   0), S(0,  -7), S(7,  -7), S(6, -18), S(-4, -29), S(0,   0), S(0,   0), S(0,   0)},
+   array<packed_t, N_RANKS>{S(0,   0), S(-9, -32), S(-5, -30), S(3, -31), S(29, -41), S(0,   0), S(0,   0), S(0,   0)},
 };
 
-constexpr array<int, 32> PawnConnected32 = {
+constexpr array<packed_t, 32> PawnConnected32 = {
     S(0,   0), S(0,   0), S(0,   0), S(0,   0),
     S(-1, -11), S(12,  -4), S(0,  -2), S(6,   8),
     S(14,   0), S(20,  -6), S(19,   3), S(17,   8),
@@ -4101,18 +4121,18 @@ constexpr array<int, 32> PawnConnected32 = {
 
 /* Knight Evaluation Terms */
 
-constexpr array<array<int, 2>, 2> KnightOutpost = {
-   array<int, 2>{S(12, -32), S(40,   0)},
-   array<int, 2>{S(7, -24), S(21,  -3)},
+constexpr array<array<packed_t, 2>, 2> KnightOutpost = {
+   array<packed_t, 2>{S(12, -32), S(40,   0)},
+   array<packed_t, 2>{S(7, -24), S(21,  -3)},
 };
 
-constexpr int KnightBehindPawn = S(3, 28);
+constexpr packed_t KnightBehindPawn = S(3, 28);
 
-constexpr array<int, 4> KnightInSiberia = {
+constexpr array<packed_t, 4> KnightInSiberia = {
     S(-9,  -6), S(-12, -20), S(-27, -20), S(-47, -19),
 };
 
-constexpr array<int, 9> KnightMobility = {
+constexpr array<packed_t, 9> KnightMobility = {
     S(-104,-139), S(-45,-114), S(-22, -37), S(-8,   3),
     S(6,  15), S(11,  34), S(19,  38), S(30,  37),
     S(43,  17),
@@ -4120,20 +4140,20 @@ constexpr array<int, 9> KnightMobility = {
 
 /* Bishop Evaluation Terms */
 
-constexpr int BishopPair = S(22, 88);
+constexpr packed_t BishopPair = S(22, 88);
 
-constexpr int BishopRammedPawns = S(-8, -17);
+constexpr packed_t BishopRammedPawns = S(-8, -17);
 
-constexpr array<array<int, 2>, 2> BishopOutpost = {
-   array<int, 2>{S(16, -16), S(50,  -3)},
-   array<int, 2>{S(9,  -9), S(-4,  -4)},
+constexpr array<array<packed_t, 2>, 2> BishopOutpost = {
+   array<packed_t, 2>{S(16, -16), S(50,  -3)},
+   array<packed_t, 2>{S(9,  -9), S(-4,  -4)},
 };
 
-constexpr int BishopBehindPawn = S(4, 24);
+constexpr packed_t BishopBehindPawn = S(4, 24);
 
-constexpr int BishopLongDiagonal = S(26, 20);
+constexpr packed_t BishopLongDiagonal = S(26, 20);
 
-constexpr array<int, 14> BishopMobility = {
+constexpr array<packed_t, 14> BishopMobility = {
     S(-99,-186), S(-46,-124), S(-16, -54), S(-4, -14),
     S(6,   1), S(14,  20), S(17,  35), S(19,  39),
     S(19,  49), S(27,  48), S(26,  48), S(52,  32),
@@ -4142,11 +4162,11 @@ constexpr array<int, 14> BishopMobility = {
 
 /* Rook Evaluation Terms */
 
-constexpr array<int, 2> RookFile = { S(10,   9), S(34,   8) };
+constexpr array<packed_t, 2> RookFile = { S(10,   9), S(34,   8) };
 
-constexpr int RookOnSeventh = S(-1, 42);
+constexpr packed_t RookOnSeventh = S(-1, 42);
 
-constexpr array<int, 15> RookMobility = {
+constexpr array<packed_t, 15> RookMobility = {
     S(-127,-148), S(-56,-127), S(-25, -85), S(-12, -28),
     S(-10,   2), S(-12,  27), S(-11,  42), S(-4,  46),
     S(4,  52), S(9,  55), S(11,  64), S(19,  68),
@@ -4155,9 +4175,9 @@ constexpr array<int, 15> RookMobility = {
 
 /* Queen Evaluation Terms */
 
-constexpr int QueenRelativePin = S(-22, -13);
+constexpr packed_t QueenRelativePin = S(-22, -13);
 
-constexpr array<int, 28> QueenMobility = {
+constexpr array<packed_t, 28> QueenMobility = {
     S(-111,-273), S(-253,-401), S(-127,-228), S(-46,-236),
     S(-20,-173), S(-9, -86), S(-1, -35), S(2,  -1),
     S(8,   8), S(10,  31), S(15,  37), S(17,  55),
@@ -4169,119 +4189,119 @@ constexpr array<int, 28> QueenMobility = {
 
 /* King Evaluation Terms */
 
-constexpr array<int, 12> KingDefenders = {
+constexpr array<packed_t, 12> KingDefenders = {
     S(-37,  -3), S(-17,   2), S(0,   6), S(11,   8),
     S(21,   8), S(32,   0), S(38, -14), S(10,  -5),
     S(12,   6), S(12,   6), S(12,   6), S(12,   6),
 };
 
-constexpr array<int, N_FILES> KingPawnFileProximity = {
+constexpr array<packed_t, N_FILES> KingPawnFileProximity = {
     S(36,  46), S(22,  31), S(13,  15), S(-8, -22),
     S(-5, -62), S(-3, -75), S(-15, -81), S(-12, -75),
 };
 
-constexpr array<array<array<int, N_RANKS>, N_FILES>, 2> KingShelter = 
+constexpr array<array<array<packed_t, N_RANKS>, N_FILES>, 2> KingShelter = 
 {
-  array<array<int, N_RANKS>, N_FILES>{
-        array<int, N_RANKS>{S(-5,  -5), S(17, -31), S(26,  -3), S(24,   8), S(4,   1), S(-12,   4), S(-16, -33), S(-59,  24)},
-        array<int, N_RANKS>{S(11,  -6), S(3, -15), S(-5,  -2), S(5,  -4), S(-11,   7), S(-53,  70), S(81,  82), S(-19,   1)},
-        array<int, N_RANKS>{S(38,  -3), S(5,  -6), S(-34,   5), S(-17, -15), S(-9,  -5), S(-26,  12), S(11,  73), S(-16,  -1)},
-        array<int, N_RANKS>{S(18,  11), S(25, -18), S(0, -14), S(10, -21), S(22, -34), S(-48,   9), S(-140,  49), S(-5,  -5)},
-        array<int, N_RANKS>{S(-11,  15), S(1,  -3), S(-44,   6), S(-28,  10), S(-24,  -2), S(-35,  -5), S(40, -24), S(-13,   3)},
-        array<int, N_RANKS>{S(51, -14), S(15, -14), S(-24,   5), S(-10, -20), S(10, -34), S(34, -20), S(48, -38), S(-21,   1)},
-        array<int, N_RANKS>{S(40, -17), S(2, -24), S(-31,  -1), S(-24,  -8), S(-31,   2), S(-20,  29), S(4,  49), S(-16,   3)},
-        array<int, N_RANKS>{S(10, -20), S(4, -24), S(10,   2), S(2,  16), S(-10,  24), S(-10,  44), S(-184,  81), S(-17,  17)}},
-  array<array<int, N_RANKS>, N_FILES>{
-        array<int, N_RANKS>{S(0,   0), S(-15, -39), S(9, -29), S(-49,  14), S(-36,   6), S(-8,  50), S(-168,  -3), S(-59,  19)},
-        array<int, N_RANKS>{S(0,   0), S(17, -18), S(9, -11), S(-11,  -5), S(-1, -24), S(26,  73), S(-186,   4), S(-32,  11)},
-        array<int, N_RANKS>{S(0,   0), S(19,  -9), S(1, -11), S(9, -26), S(28,  -5), S(-92,  56), S(-88, -74), S(-8,   1)},
-        array<int, N_RANKS>{S(0,   0), S(0,   3), S(-6,  -6), S(-35,  10), S(-46,  13), S(-98,  33), S(-7, -45), S(-35,  -5)},
-        array<int, N_RANKS>{S(0,   0), S(12,  -3), S(17, -15), S(17, -15), S(-5, -14), S(-36,   5), S(-101, -52), S(-18,  -1)},
-        array<int, N_RANKS>{S(0,   0), S(-8,  -5), S(-22,   1), S(-16,  -6), S(25, -22), S(-27,  10), S(52,  39), S(-14,  -2)},
-        array<int, N_RANKS>{S(0,   0), S(32, -22), S(19, -15), S(-9,  -6), S(-29,  13), S(-7,  23), S(-50, -39), S(-27,  18)},
-        array<int, N_RANKS>{S(0,   0), S(16, -57), S(17, -32), S(-18,  -7), S(-31,  24), S(-11,  24), S(-225, -49), S(-30,   5)}},
+  array<array<packed_t, N_RANKS>, N_FILES>{
+        array<packed_t, N_RANKS>{S(-5,  -5), S(17, -31), S(26,  -3), S(24,   8), S(4,   1), S(-12,   4), S(-16, -33), S(-59,  24)},
+        array<packed_t, N_RANKS>{S(11,  -6), S(3, -15), S(-5,  -2), S(5,  -4), S(-11,   7), S(-53,  70), S(81,  82), S(-19,   1)},
+        array<packed_t, N_RANKS>{S(38,  -3), S(5,  -6), S(-34,   5), S(-17, -15), S(-9,  -5), S(-26,  12), S(11,  73), S(-16,  -1)},
+        array<packed_t, N_RANKS>{S(18,  11), S(25, -18), S(0, -14), S(10, -21), S(22, -34), S(-48,   9), S(-140,  49), S(-5,  -5)},
+        array<packed_t, N_RANKS>{S(-11,  15), S(1,  -3), S(-44,   6), S(-28,  10), S(-24,  -2), S(-35,  -5), S(40, -24), S(-13,   3)},
+        array<packed_t, N_RANKS>{S(51, -14), S(15, -14), S(-24,   5), S(-10, -20), S(10, -34), S(34, -20), S(48, -38), S(-21,   1)},
+        array<packed_t, N_RANKS>{S(40, -17), S(2, -24), S(-31,  -1), S(-24,  -8), S(-31,   2), S(-20,  29), S(4,  49), S(-16,   3)},
+        array<packed_t, N_RANKS>{S(10, -20), S(4, -24), S(10,   2), S(2,  16), S(-10,  24), S(-10,  44), S(-184,  81), S(-17,  17)}},
+  array<array<packed_t, N_RANKS>, N_FILES>{
+        array<packed_t, N_RANKS>{S(0,   0), S(-15, -39), S(9, -29), S(-49,  14), S(-36,   6), S(-8,  50), S(-168,  -3), S(-59,  19)},
+        array<packed_t, N_RANKS>{S(0,   0), S(17, -18), S(9, -11), S(-11,  -5), S(-1, -24), S(26,  73), S(-186,   4), S(-32,  11)},
+        array<packed_t, N_RANKS>{S(0,   0), S(19,  -9), S(1, -11), S(9, -26), S(28,  -5), S(-92,  56), S(-88, -74), S(-8,   1)},
+        array<packed_t, N_RANKS>{S(0,   0), S(0,   3), S(-6,  -6), S(-35,  10), S(-46,  13), S(-98,  33), S(-7, -45), S(-35,  -5)},
+        array<packed_t, N_RANKS>{S(0,   0), S(12,  -3), S(17, -15), S(17, -15), S(-5, -14), S(-36,   5), S(-101, -52), S(-18,  -1)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-8,  -5), S(-22,   1), S(-16,  -6), S(25, -22), S(-27,  10), S(52,  39), S(-14,  -2)},
+        array<packed_t, N_RANKS>{S(0,   0), S(32, -22), S(19, -15), S(-9,  -6), S(-29,  13), S(-7,  23), S(-50, -39), S(-27,  18)},
+        array<packed_t, N_RANKS>{S(0,   0), S(16, -57), S(17, -32), S(-18,  -7), S(-31,  24), S(-11,  24), S(-225, -49), S(-30,   5)}},
 };
 
-constexpr array<array<array<int, N_RANKS>, N_FILES / 2>, 2> KingStorm = {
-  array<array<int, N_RANKS>, N_FILES / 2>{
-        array<int, N_RANKS>{S(-6,  36), S(144,  -4), S(-13,  26), S(-7,   1), S(-12,  -3), S(-8,  -7), S(-19,   8), S(-28,  -2)},
-        array<int, N_RANKS>{S(-17,  60), S(64,  17), S(-9,  21), S(8,  12), S(3,   9), S(6,  -2), S(-5,   2), S(-16,   8)},
-        array<int, N_RANKS>{S(2,  48), S(15,  30), S(-17,  20), S(-13,  10), S(-1,   6), S(7,   3), S(8,  -7), S(7,   8)},
-        array<int, N_RANKS>{S(-1,  25), S(15,  22), S(-31,  10), S(-22,   1), S(-15,   4), S(13, -10), S(3,  -5), S(-20,   8)}},
-  array<array<int, N_RANKS>, N_FILES / 2>{
-        array<int, N_RANKS>{S(0,   0), S(-18, -16), S(-18,  -2), S(27, -24), S(10,  -6), S(15, -24), S(-6,   9), S(9,  30)},
-        array<int, N_RANKS>{S(0,   0), S(-15, -42), S(-3, -15), S(53, -17), S(15,  -5), S(20, -28), S(-12, -17), S(-34,   5)},
-        array<int, N_RANKS>{S(0,   0), S(-34, -62), S(-15, -13), S(9,  -6), S(6,  -2), S(-2, -17), S(-5, -21), S(-3,   3)},
-        array<int, N_RANKS>{S(0,   0), S(-1, -26), S(-27, -19), S(-21,   4), S(-10,  -6), S(7, -35), S(66, -29), S(11,  25)}},
+constexpr array<array<array<packed_t, N_RANKS>, N_FILES / 2>, 2> KingStorm = {
+  array<array<packed_t, N_RANKS>, N_FILES / 2>{
+        array<packed_t, N_RANKS>{S(-6,  36), S(144,  -4), S(-13,  26), S(-7,   1), S(-12,  -3), S(-8,  -7), S(-19,   8), S(-28,  -2)},
+        array<packed_t, N_RANKS>{S(-17,  60), S(64,  17), S(-9,  21), S(8,  12), S(3,   9), S(6,  -2), S(-5,   2), S(-16,   8)},
+        array<packed_t, N_RANKS>{S(2,  48), S(15,  30), S(-17,  20), S(-13,  10), S(-1,   6), S(7,   3), S(8,  -7), S(7,   8)},
+        array<packed_t, N_RANKS>{S(-1,  25), S(15,  22), S(-31,  10), S(-22,   1), S(-15,   4), S(13, -10), S(3,  -5), S(-20,   8)}},
+  array<array<packed_t, N_RANKS>, N_FILES / 2>{
+        array<packed_t, N_RANKS>{S(0,   0), S(-18, -16), S(-18,  -2), S(27, -24), S(10,  -6), S(15, -24), S(-6,   9), S(9,  30)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-15, -42), S(-3, -15), S(53, -17), S(15,  -5), S(20, -28), S(-12, -17), S(-34,   5)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-34, -62), S(-15, -13), S(9,  -6), S(6,  -2), S(-2, -17), S(-5, -21), S(-3,   3)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-1, -26), S(-27, -19), S(-21,   4), S(-10,  -6), S(7, -35), S(66, -29), S(11,  25)}},
 };
 
 /* Safety Evaluation Terms */
 
-constexpr int SafetyKnightWeight = S(48, 41);
-constexpr int SafetyBishopWeight = S(24, 35);
-constexpr int SafetyRookWeight = S(36, 8);
-constexpr int SafetyQueenWeight = S(30, 6);
+constexpr packed_t SafetyKnightWeight = S(48, 41);
+constexpr packed_t SafetyBishopWeight = S(24, 35);
+constexpr packed_t SafetyRookWeight = S(36, 8);
+constexpr packed_t SafetyQueenWeight = S(30, 6);
 
-constexpr int SafetyAttackValue = S(45, 34);
-constexpr int SafetyWeakSquares = S(42, 41);
-constexpr int SafetyNoEnemyQueens = S(-237, -259);
-constexpr int SafetySafeQueenCheck = S(93, 83);
-constexpr int SafetySafeRookCheck = S(90, 98);
-constexpr int SafetySafeBishopCheck = S(59, 59);
-constexpr int SafetySafeKnightCheck = S(112, 117);
-constexpr int SafetyAdjustment = S(-74, -26);
+constexpr packed_t SafetyAttackValue = S(45, 34);
+constexpr packed_t SafetyWeakSquares = S(42, 41);
+constexpr packed_t SafetyNoEnemyQueens = S(-237, -259);
+constexpr packed_t SafetySafeQueenCheck = S(93, 83);
+constexpr packed_t SafetySafeRookCheck = S(90, 98);
+constexpr packed_t SafetySafeBishopCheck = S(59, 59);
+constexpr packed_t SafetySafeKnightCheck = S(112, 117);
+constexpr packed_t SafetyAdjustment = S(-74, -26);
 
-constexpr array<array<int, N_RANKS>, 2> SafetyShelter = {
-   array<int, N_RANKS>{S(-2,   7), S(-1,  13), S(0,   8), S(4,   7), S(6,   2), S(-1,   0), S(2,   0), S(0, -13)},
-   array<int, N_RANKS>{S(0,   0), S(-2,  13), S(-2,   9), S(4,   5), S(3,   1), S(-3,   0), S(-2,   0), S(-1,  -9)},
+constexpr array<array<packed_t, N_RANKS>, 2> SafetyShelter = {
+   array<packed_t, N_RANKS>{S(-2,   7), S(-1,  13), S(0,   8), S(4,   7), S(6,   2), S(-1,   0), S(2,   0), S(0, -13)},
+   array<packed_t, N_RANKS>{S(0,   0), S(-2,  13), S(-2,   9), S(4,   5), S(3,   1), S(-3,   0), S(-2,   0), S(-1,  -9)},
 }, 
 SafetyStorm = {
-   array<int, N_RANKS>{S(-4,  -1), S(-8,   3), S(0,   5), S(1,  -1), S(3,   6), S(-2,  20), S(-2,  18), S(2, -12)},
-   array<int, N_RANKS>{S(0,   0), S(1,   0), S(-1,   4), S(0,   0), S(0,   5), S(-1,   1), S(1,   0), S(1,   0)},
+   array<packed_t, N_RANKS>{S(-4,  -1), S(-8,   3), S(0,   5), S(1,  -1), S(3,   6), S(-2,  20), S(-2,  18), S(2, -12)},
+   array<packed_t, N_RANKS>{S(0,   0), S(1,   0), S(-1,   4), S(0,   0), S(0,   5), S(-1,   1), S(1,   0), S(1,   0)},
 };
 
 /* Passed Pawn Evaluation Terms */
 
-constexpr array<array<array<int, N_RANKS>, 2>, 2> PassedPawn = {
-  array<array<int, N_RANKS>, 2>{
-        array<int, N_RANKS>{S(0,   0), S(-39,  -4), S(-43,  25), S(-62,  28), S(8,  19), S(97,  -4), S(162,  46), S(0,   0)},
-        array<int, N_RANKS>{S(0,   0), S(-28,  13), S(-40,  42), S(-56,  44), S(-2,  56), S(114,  54), S(193,  94), S(0,   0)}},
-  array<array<int, N_RANKS>, 2>{
-        array<int, N_RANKS>{S(0,   0), S(-28,  29), S(-47,  36), S(-60,  54), S(8,  65), S(106,  76), S(258, 124), S(0,   0)},
-        array<int, N_RANKS>{S(0,   0), S(-28,  23), S(-40,  35), S(-55,  60), S(8,  89), S(95, 166), S(124, 293), S(0,   0)}},
+constexpr array<array<array<packed_t, N_RANKS>, 2>, 2> PassedPawn = {
+  array<array<packed_t, N_RANKS>, 2>{
+        array<packed_t, N_RANKS>{S(0,   0), S(-39,  -4), S(-43,  25), S(-62,  28), S(8,  19), S(97,  -4), S(162,  46), S(0,   0)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-28,  13), S(-40,  42), S(-56,  44), S(-2,  56), S(114,  54), S(193,  94), S(0,   0)}},
+  array<array<packed_t, N_RANKS>, 2>{
+        array<packed_t, N_RANKS>{S(0,   0), S(-28,  29), S(-47,  36), S(-60,  54), S(8,  65), S(106,  76), S(258, 124), S(0,   0)},
+        array<packed_t, N_RANKS>{S(0,   0), S(-28,  23), S(-40,  35), S(-55,  60), S(8,  89), S(95, 166), S(124, 293), S(0,   0)}},
 };
 
-constexpr array<int, N_FILES> PassedFriendlyDistance = {
+constexpr array<packed_t, N_FILES> PassedFriendlyDistance = {
     S(0,   0), S(-3,   1), S(0,  -4), S(5, -13), S(6, -19), S(-9, -19), S(-9,  -7), S(0,   0),
 }, 
 PassedEnemyDistance = {
     S(0,   0), S(5,  -1), S(7,   0), S(9,  11), S(0,  25), S(1,  37), S(16,  37), S(0,   0),
 };
 
-constexpr int PassedSafePromotionPath = S(-49, 57);
+constexpr packed_t PassedSafePromotionPath = S(-49, 57);
 
 /* Threat Evaluation Terms */
 
-constexpr int ThreatWeakPawn = S(-11, -38);
-constexpr int ThreatMinorAttackedByPawn = S(-55, -83);
-constexpr int ThreatMinorAttackedByMinor = S(-25, -45);
-constexpr int ThreatMinorAttackedByMajor = S(-30, -55);
-constexpr int ThreatRookAttackedByLesser = S(-48, -28);
-constexpr int ThreatMinorAttackedByKing = S(-43, -21);
-constexpr int ThreatRookAttackedByKing = S(-33, -18);
-constexpr int ThreatQueenAttackedByOne = S(-50, -7);
-constexpr int ThreatOverloadedPieces = S(-7, -16);
-constexpr int ThreatByPawnPush = S(15, 32);
+constexpr packed_t ThreatWeakPawn = S(-11, -38);
+constexpr packed_t ThreatMinorAttackedByPawn = S(-55, -83);
+constexpr packed_t ThreatMinorAttackedByMinor = S(-25, -45);
+constexpr packed_t ThreatMinorAttackedByMajor = S(-30, -55);
+constexpr packed_t ThreatRookAttackedByLesser = S(-48, -28);
+constexpr packed_t ThreatMinorAttackedByKing = S(-43, -21);
+constexpr packed_t ThreatRookAttackedByKing = S(-33, -18);
+constexpr packed_t ThreatQueenAttackedByOne = S(-50, -7);
+constexpr packed_t ThreatOverloadedPieces = S(-7, -16);
+constexpr packed_t ThreatByPawnPush = S(15, 32);
 
 /* Space Evaluation Terms */
 
-constexpr int SpaceRestrictPiece = S(-4, -1);
-constexpr int SpaceRestrictEmpty = S(-4, -2);
-constexpr int SpaceCenterControl = S(3, 0);
+constexpr packed_t SpaceRestrictPiece = S(-4, -1);
+constexpr packed_t SpaceRestrictEmpty = S(-4, -2);
+constexpr packed_t SpaceCenterControl = S(3, 0);
 
 /* Closedness Evaluation Terms */
 
-constexpr array<int, 9> ClosednessKnightAdjustment = {
+constexpr array<packed_t, 9> ClosednessKnightAdjustment = {
     S(-7,  10), S(-7,  29), S(-9,  37), S(-5,  37),
     S(-3,  44), S(-1,  36), S(1,  33), S(-10,  51),
     S(-7,  30),
@@ -4294,10 +4314,10 @@ ClosednessRookAdjustment = {
 
 /* Complexity Evaluation Terms */
 
-constexpr int ComplexityTotalPawns = S(0, 8);
-constexpr int ComplexityPawnFlanks = S(0, 82);
-constexpr int ComplexityPawnEndgame = S(0, 76);
-constexpr int ComplexityAdjustment = S(0, -157);
+constexpr packed_t ComplexityTotalPawns = S(0, 8);
+constexpr packed_t ComplexityPawnFlanks = S(0, 82);
+constexpr packed_t ComplexityPawnEndgame = S(0, 76);
+constexpr packed_t ComplexityAdjustment = S(0, -157);
 
 /* General Evaluation Terms */
 
@@ -4361,12 +4381,13 @@ void initPSQTInfo(Thread* thread, Board* board, EvalInfo* ei)
     ei->pksafety[BLACK] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyb;
 }
 
-template<int US> int evaluatePawns(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
     const int Forward = (US == WHITE) ? 8 : -8;
 
-    int sq, flag, eval = 0, pkeval = 0;
+    int sq, flag;
+    packed_t eval = 0, pkeval = 0;
     uint64 pawns, myPawns, tempPawns, enemyPawns, attacks;
 
     // Store off pawn attacks for king safety and threat computations
@@ -4454,11 +4475,12 @@ template<int US> int evaluatePawns(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateKnights(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateKnights(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, outside, kingDistance, defended, count, eval = 0;
+    int sq, outside, kingDistance, defended, count;
+    packed_t eval = 0;
     uint64 attacks;
 
     uint64 enemyPawns = board->pieces[PAWN] & board->colours[THEM];
@@ -4520,11 +4542,12 @@ template<int US> int evaluateKnights(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateBishops(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateBishops(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, outside, defended, count, eval = 0;
+    int sq, outside, defended, count;
+    packed_t eval = 0;
     uint64 attacks;
 
     uint64 enemyPawns = board->pieces[PAWN] & board->colours[THEM];
@@ -4598,11 +4621,12 @@ template<int US> int evaluateBishops(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateRooks(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateRooks(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, open, count, eval = 0;
+    int sq, open, count;
+    packed_t eval = 0;
     uint64 attacks;
 
     uint64 myPawns = board->pieces[PAWN] & board->colours[US];
@@ -4658,11 +4682,11 @@ template<int US> int evaluateRooks(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateQueens(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateQueens(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int eval = 0;
+    packed_t eval = 0;
 
     uint64 tempQueens = board->pieces[QUEEN] & board->colours[US];
     uint64 occupied = board->colours[WHITE] | board->colours[BLACK];
@@ -4764,10 +4788,11 @@ template<int US> void evaluateKingsPawns(EvalInfo* ei, Board* board)
     return;
 }
 
-template<int US> int evaluateKings(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateKings(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
-    int count, safety, mg, eg, eval = 0;
+    int count, mg, eg;
+    packed_t eval = 0;
 
     uint64 enemyQueens = board->pieces[QUEEN] & board->colours[THEM];
 
@@ -4817,7 +4842,7 @@ template<int US> int evaluateKings(EvalInfo* ei, Board* board)
         uint64 rookChecks = rookThreats & safe & ei->attackedBy[THEM][ROOK];
         uint64 queenChecks = queenThreats & safe & ei->attackedBy[THEM][QUEEN];
 
-        safety = ei->kingAttackersWeight[US];
+        packed_t safety = ei->kingAttackersWeight[US];
 
         safety += SafetyAttackValue * scaledAttackCounts
             + SafetyWeakSquares * popcount(weak & ei->kingAreas[US])
@@ -4861,11 +4886,12 @@ template<int US> int evaluateKings(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluatePassed(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluatePassed(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, rank, dist, flag, canAdvance, safeAdvance, eval = 0;
+    int sq, rank, dist, flag, canAdvance, safeAdvance;
+    packed_t eval = 0;
 
     uint64 bitboard;
     uint64 myPassers = board->colours[US] & ei->passedPawns;
@@ -4909,12 +4935,13 @@ template<int US> int evaluatePassed(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateThreats(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateThreats(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
     const uint64 Rank3Rel = US == WHITE ? Line[2] : Line[5];
 
-    int count, eval = 0;
+    int count;
+    packed_t eval = 0;
 
     uint64 friendly = board->colours[US];
     uint64 enemy = board->colours[THEM];
@@ -5002,11 +5029,12 @@ template<int US> int evaluateThreats(EvalInfo* ei, Board* board)
     return eval;
 }
 
-template<int US> int evaluateSpace(EvalInfo* ei, Board* board)
+template<int US> packed_t evaluateSpace(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int count, eval = 0;
+    int count;
+    packed_t eval = 0;
 
     uint64 friendly = board->colours[US];
     uint64 enemy = board->colours[THEM];
@@ -5038,9 +5066,10 @@ template<int US> int evaluateSpace(EvalInfo* ei, Board* board)
     return eval;
 }
 
-int evaluateClosedness(EvalInfo* ei, Board* board) 
+packed_t evaluateClosedness(EvalInfo* ei, Board* board)
 {
-    int closedness, count, eval = 0;
+    int closedness, count;
+    packed_t eval = 0;
 
     uint64 white = board->colours[WHITE];
     uint64 black = board->colours[BLACK];
@@ -5067,16 +5096,14 @@ int evaluateClosedness(EvalInfo* ei, Board* board)
     return eval;
 }
 
-int evaluateComplexity(EvalInfo* ei, Board* board, int eval) 
+packed_t evaluateComplexity(EvalInfo* ei, Board* board, packed_t eval)
 {
     // Adjust endgame evaluation based on features related to how
     // likely the stronger side is to convert the position.
     // More often than not, this is a penalty for drawish positions.
 
     (void)ei; // Silence compiler warning
-
-    int complexity;
-    int eg = ScoreEG(eval);
+    score_t eg = ScoreEG(eval);
     int sign = (eg > 0) - (eg < 0);
 
     int pawnsOnBothFlanks = (board->pieces[PAWN] & LEFT_FLANK)
@@ -5088,10 +5115,10 @@ int evaluateComplexity(EvalInfo* ei, Board* board, int eval)
     uint64 queens = board->pieces[QUEEN];
 
     // Compute the initiative bonus or malus for the attacking side
-    complexity = ComplexityTotalPawns * popcount(board->pieces[PAWN])
-        + ComplexityPawnFlanks * pawnsOnBothFlanks
-        + ComplexityPawnEndgame * !(knights | bishops | rooks | queens)
-        + ComplexityAdjustment;
+    packed_t complexity = ComplexityTotalPawns * popcount(board->pieces[PAWN])
+            + ComplexityPawnFlanks * pawnsOnBothFlanks
+            + ComplexityPawnEndgame * !(knights | bishops | rooks | queens)
+            + ComplexityAdjustment;
 
     if (TRACE) TheTrace.ComplexityTotalPawns[WHITE] += popcount(board->pieces[PAWN]);
     if (TRACE) TheTrace.ComplexityPawnFlanks[WHITE] += pawnsOnBothFlanks;
@@ -5106,7 +5133,7 @@ int evaluateComplexity(EvalInfo* ei, Board* board, int eval)
     return MakeScore(0, v);
 }
 
-int evaluateScaleFactor(Board* board, int eval)
+int evaluateScaleFactor(Board* board, packed_t eval)
 {
     // Scale endgames based upon the remaining material. We check
     // for various Opposite Coloured Bishop cases, positions with
@@ -5123,9 +5150,9 @@ int evaluateScaleFactor(Board* board, int eval)
     return MaterialInfo[board->matIndex].scale[strongSide];
 }
 
-int evaluatePieces(EvalInfo* ei, Board* board)
+packed_t evaluatePieces(EvalInfo* ei, Board* board)
 {
-    int eval = evaluatePawns<WHITE>(ei, board) - evaluatePawns<BLACK>(ei, board);
+    packed_t eval = evaluatePawns<WHITE>(ei, board) - evaluatePawns<BLACK>(ei, board);
 
     // This needs to be done after pawn evaluation but before king safety evaluation
     evaluateKingsPawns<WHITE>(ei, board);
@@ -5147,7 +5174,7 @@ int evaluatePieces(EvalInfo* ei, Board* board)
 
 constexpr int Tempo = 20;
 
-int evaluateBoard(Thread* thread, Board* board) 
+score_t evaluateBoard(Thread* thread, Board* board) 
 {
     int factor = SCALE_NORMAL;
 
@@ -5156,30 +5183,30 @@ int evaluateBoard(Thread* thread, Board* board)
         return -thread->states[thread->height - 1].eval + 2 * Tempo;
 
     // Use the NNUE unless we are in an extremely unbalanced position
-    int eval;
+    packed_t packed;  // not, in itself, an eval
     if (USE_NNUE && abs(ScoreEG(board->psqtmat)) <= 2000) {
-        eval = nnue_evaluate(thread, board);
-        eval = board->turn == WHITE ? eval : -eval;
+        packed = nnue_evaluate(thread, board);
+        packed = board->turn == WHITE ? packed : -packed;
     }
     else 
     {
         EvalInfo ei;
         initPSQTInfo(thread, board, &ei);
-        eval = evaluatePieces(&ei, board);
+        packed = evaluatePieces(&ei, board);
 
-        int pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
+        packed_t pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
         if (ei.pkentry == NULL) pkeval += computePKNetwork(board);
 
-        eval += pkeval + board->psqtmat;
-        eval += evaluateClosedness(&ei, board);
-        eval += evaluateComplexity(&ei, board, eval);
+        packed += pkeval + board->psqtmat;
+        packed += evaluateClosedness(&ei, board);
+        packed += evaluateComplexity(&ei, board, packed);
 
         // Store a new Pawn King Entry if we did not have one
         if (!TRACE && ei.pkentry == NULL)
             storeCachedPawnKingEval(thread, board, ei.passedPawns, pkeval, ei.pksafety);
 
         // Scale evaluation based on remaining material
-        factor = evaluateScaleFactor(board, eval);
+        factor = evaluateScaleFactor(board, packed);
         if (TRACE) TheTrace.factor = factor;
     }
 
@@ -5189,8 +5216,8 @@ int evaluateBoard(Thread* thread, Board* board)
             : MaterialInfo[board->matIndex].phase;
 
     // Compute and store an interpolated evaluation from white's POV
-    eval = (ScoreMG(eval) * phase
-        + ScoreEG(eval) * (24 - phase) * factor / SCALE_NORMAL) / 24;
+    score_t eval = (ScoreMG(packed) * phase
+        + ScoreEG(packed) * (24 - phase) * factor / SCALE_NORMAL) / 24;
 
     // Factor in the Tempo after interpolation and scaling, so that
     // if a null move is made, then we know eval = last_eval + 2 * Tempo
@@ -6333,19 +6360,6 @@ void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int d
     replace->value = (score_t)tt_value_to(value, height);
     replace->eval = (score_t)eval;
     replace->hash16 = (uint16_t)hash16;
-}
-
-/// Simple Pawn+King Evaluation Hash Table, which also stores some additional
-/// safety information for use in King Safety, when not using NNUE evaluations
-
-PKEntry* getCachedPawnKingEval(Thread* thread, const Board* board) {
-    PKEntry* pke = &thread->pktable[board->pkhash & PK_CACHE_MASK];
-    return pke->pkhash == board->pkhash ? pke : NULL;
-}
-
-void storeCachedPawnKingEval(Thread* thread, const Board* board, uint64 passed, int eval, int safety[2]) {
-    PKEntry& pke = thread->pktable[board->pkhash & PK_CACHE_MASK];
-    pke = { board->pkhash, passed, eval, safety[WHITE], safety[BLACK] };
 }
 
 
