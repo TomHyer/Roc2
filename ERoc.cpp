@@ -1750,6 +1750,7 @@ struct PerMaterial
 {
     array<uint16, 2> scale;
     int phase;
+    score_t matQuad;
 };
 array<PerMaterial, TotalMat> MaterialInfo;
 
@@ -3376,6 +3377,30 @@ unsigned tablebasesProbeWDL(Board* board, int depth, int height) {
     );
 }
 
+/// Roc material
+
+// T(pawn), pawn, knight, bishop, rook, queen
+namespace MatQuad
+{
+    namespace Me
+    { 
+        constexpr int PP = -33, PN = 17, PB = -23, PR = -155, PQ = -247,
+                NN = 15, NB = 296, NR = -105, NQ = -83,
+                BB = -162, BR = 327, BQ = 315,
+                RR = -861, RQ = -1013,
+                QQ = -4096;
+    }
+    namespace Opp
+    {
+        constexpr int PN = -14, PB = -96, PR = -20, PQ = -278,
+                NB = 35, NR = 39, NQ = 49, 
+                BR = 9, BQ = -2, RQ = 75;
+    }
+}
+const int BishopPairQuad[9] = { // tuner: type=array, var=1000, active=0
+    -38, 164, 99, 246, -84, -57, -184, 88, -186
+};
+constexpr array<int, 6> MatClosed = { -20, 22, -33, 18, -2, 26 };
 
 
 
@@ -3403,6 +3428,7 @@ void initMaterial()
 
     PerMaterial defaultMat;
     defaultMat.scale = { SCALE_NORMAL, SCALE_NORMAL };
+    defaultMat.matQuad = 0;
 
     for (int ii = 0; ii < TotalMat; ++ii)
     {
@@ -3419,6 +3445,21 @@ void initMaterial()
         array<int, 2> minors = { bishops[0] + knights[0], bishops[1] + knights[1] };
 
         mat.phase = 4 * (queens[0] + queens[1]) + 2 * (rooks[0] + rooks[1]) + minors[0] + minors[1];
+        for (int me = 0; me < 2; ++me)
+        {
+            using namespace MatQuad;
+            mat.matQuad += pawns[me] * (Me::PP * pawns[me] + Me::PN * knights[me] + Me::PB * bishops[me] + Me::PR * rooks[me] + Me::PQ * queens[me]);
+            mat.matQuad += knights[me] * (Me::NN * knights[me] + Me::NB * bishops[me] + Me::NR * rooks[me] + Me::NQ * queens[me]);
+            mat.matQuad += bishops[me] * (Me::BB * bishops[me] + Me::BR * rooks[me] + Me::BQ * queens[me]);
+            mat.matQuad += rooks[me] * (Me::RR * rooks[me] + Me::RQ * queens[me]);
+            mat.matQuad += queens[me] * (Me::QQ * queens[me]);
+            mat.matQuad += pawns[me] * (Opp::PN * knights[opp] + Opp::PB * bishops[opp] + Opp::PR * rooks[opp] + Opp::PQ * queens[opp]);
+            mat.matQuad += knights[me] * (Opp::NB * bishops[opp] + Opp::NR * rooks[opp] + Opp::NQ * queens[opp]);
+            mat.matQuad += bishops[me] * (Opp::BR * rooks[opp] + Opp::BQ * queens[opp]);
+            mat.matQuad += rooks[me] * (Opp::RQ * queens[opp]);
+            mat.matQuad *= -1;  // so black will be subtracted
+        }
+        mat.matQuad = (mat.matQuad) / 100;
 
         if (bishops[0] * bishops[1] == 1 && lights[0] != lights[1])
         {
@@ -5211,13 +5252,15 @@ score_t evaluateBoard(Thread* thread, Board* board)
     }
 
     // Calculate the game phase based on remaining material (Fruit Method)
-    int phase = board->matIndex & FlagUnusualMaterial
-            ? 4 * popcount(board->pieces[QUEEN]) + 2 * popcount(board->pieces[ROOK]) + 1 * popcount(board->pieces[KNIGHT] | board->pieces[BISHOP])
-            : MaterialInfo[board->matIndex].phase;
+    auto mat = board->matIndex & FlagUnusualMaterial ? nullptr : &MaterialInfo[board->matIndex];
+    int phase = mat 
+            ? mat->phase 
+            : 4 * popcount(board->pieces[QUEEN]) + 2 * popcount(board->pieces[ROOK]) + 1 * popcount(board->pieces[KNIGHT] | board->pieces[BISHOP]);
 
     // Compute and store an interpolated evaluation from white's POV
-    score_t eval = (ScoreMG(packed) * phase
-        + ScoreEG(packed) * (24 - phase) * factor / SCALE_NORMAL) / 24;
+    score_t eval = (ScoreMG(packed) * phase + ScoreEG(packed) * (24 - phase) * factor / SCALE_NORMAL) / 24;
+    if (mat)
+        eval += mat->matQuad;
 
     // Factor in the Tempo after interpolation and scaling, so that
     // if a null move is made, then we know eval = last_eval + 2 * Tempo
