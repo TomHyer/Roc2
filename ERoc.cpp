@@ -12,9 +12,9 @@
 #include "Chess/Material.h"
 #include "Chess/Eval.h"
 
-INLINE constexpr packed_t EPack(sint16 mid, sint16 eg)
+INLINE constexpr packed_t EPack(sint16 op, sint16 eg)
 {
-    return Pack(mid, mid, eg, 0);
+    return Pack((11 * op + eg) / 12, (op + eg) / 2, (op + 11 * eg) / 12, 0);
 }
 
 
@@ -44,6 +44,7 @@ using std::array;
 
 constexpr int FALSE = 0, TRUE = 1;
 enum { MG, EG, N_PHASES };
+constexpr int OP_PHASE = 22, MG_PHASE = 12, EG_PHASE = 2;
 enum { WHITE, BLACK, N_COLORS };
 enum { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, N_PIECES };
 constexpr int MAX_PLY = 128, MAX_MOVES = 256;
@@ -108,6 +109,7 @@ using CaptureHistoryTable = array<array<array<array<array<score_t, N_PIECES - 1>
 using ContinuationTable = array<array<array<array<array<array<score_t, N_SQUARES>, N_PIECES>, N_CONTINUATION>, N_SQUARES>, N_PIECES>, 2>;
 
 constexpr inline packed_t MakeScore(score_t mg, score_t eg) { return EPack(mg, eg); }
+constexpr inline score_t ScoreOP(packed_t s) { return Pick16<1>(s); }
 constexpr inline score_t ScoreMG(packed_t s) { return Pick16<2>(s); }
 constexpr inline score_t ScoreEG(packed_t s) { return Pick16<3>(s); }
 
@@ -139,15 +141,14 @@ template<int N> void Prefetch(const void* q)
 /// bitboards.h
 
 constexpr uint64
-LONG_DIAGONALS = 0x8142241818244281ull,
-CENTER_SQUARES = 0x0000001818000000ull,
-CENTER_BIG = 0x00003C3C3C3C0000ull,
+    LONG_DIAGONALS = 0x8142241818244281ull,
+    CENTER_SQUARES = 0x0000001818000000ull,
+    CENTER_BIG = 0x00003C3C3C3C0000ull,
 
-LEFT_FLANK = File[0] | File[1] | File[2] | File[3],
-RIGHT_FLANK = File[4] | File[5] | File[6] | File[7],
+    LEFT_FLANK = File[0] | File[1] | File[2] | File[3],
+    RIGHT_FLANK = File[4] | File[5] | File[6] | File[7],
 
     PROMOTION_RANKS = Line[0] | Line[7];
-
 
 constexpr array<int, 8> MIRROR_FILE = { 0, 1, 2, 3, 3, 2, 1, 0 };
 
@@ -252,117 +253,69 @@ void printBitboard(uint64 bb)
 using PSQVals = array<packed_t, N_SQUARES>;
 
 constexpr PSQVals PawnPSQT = {
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(-13,   7), S(-4,   0), S(1,   4), S(6,   1),
-    S(3,  10), S(-9,   4), S(-9,   3), S(-16,   7),
-    S(-21,   5), S(-17,   6), S(-1,  -6), S(12, -14),
-    S(8, -10), S(-4,  -5), S(-15,   7), S(-24,  11),
-    S(-14,  16), S(-21,  17), S(9, -10), S(10, -24),
-    S(4, -22), S(4, -10), S(-20,  17), S(-17,  18),
-    S(-15,  18), S(-18,  11), S(-16,  -8), S(4, -30),
-    S(-2, -24), S(-18,  -9), S(-23,  13), S(-17,  21),
-    S(-20,  48), S(-9,  44), S(1,  31), S(17,  -9),
-    S(36,  -6), S(-9,  31), S(-6,  45), S(-23,  49),
-    S(-33, -70), S(-66,  -9), S(-16, -22), S(65, -23),
-    S(41, -18), S(39, -14), S(-47,   4), S(-62, -51),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
-    S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0),
+    S(-13,   7), S(-4,   0), S(1,   4), S(6,   1), S(3,  10), S(-9,   4), S(-9,   3), S(-16,   7),
+    S(-21,   5), S(-17,   6), S(-1,  -6), S(12, -14), S(8, -10), S(-4,  -5), S(-15,   7), S(-24,  11),
+    S(-14,  16), S(-21,  17), S(9, -10), S(10, -24), S(4, -22), S(4, -10), S(-20,  17), S(-17,  18),
+    S(-15,  18), S(-18,  11), S(-16,  -8), S(4, -30), S(-2, -24), S(-18,  -9), S(-23,  13), S(-17,  21),
+    S(-20,  48), S(-9,  44), S(1,  31), S(17,  -9), S(36,  -6), S(-9,  31), S(-6,  45), S(-23,  49),
+    S(-33, -70), S(-66,  -9), S(-16, -22), S(65, -23), S(41, -18), S(39, -14), S(-47,   4), S(-62, -51),
+    S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0), S(0,   0),
 };
 
 constexpr PSQVals KnightPSQT = {
-    S(-31, -38), S(-6, -24), S(-20, -22), S(-16,  -1),
-    S(-11,  -1), S(-22, -19), S(-8, -20), S(-41, -30),
-    S(1,  -5), S(-11,   3), S(-6, -19), S(-1,  -2),
-    S(0,   0), S(-9, -16), S(-8,  -3), S(-6,   1),
-    S(7, -21), S(8,  -5), S(7,   2), S(10,  19),
-    S(10,  19), S(4,   2), S(8,  -4), S(3, -19),
-    S(16,  21), S(17,  30), S(23,  41), S(27,  50),
-    S(24,  53), S(23,  41), S(19,  28), S(13,  26),
-    S(13,  30), S(23,  30), S(37,  51), S(30,  70),
-    S(26,  67), S(38,  50), S(22,  33), S(14,  28),
-    S(-24,  25), S(-5,  37), S(25,  56), S(22,  60),
-    S(27,  55), S(29,  55), S(-1,  32), S(-19,  25),
-    S(13,  -2), S(-11,  18), S(27,  -2), S(37,  24),
-    S(41,  24), S(40,  -7), S(-13,  16), S(2,  -2),
-    S(-167,  -5), S(-91,  12), S(-117,  41), S(-38,  17),
-    S(-18,  19), S(-105,  48), S(-119,  24), S(-165, -17),
+    S(-31, -38), S(-6, -24), S(-20, -22), S(-16,  -1), S(-11,  -1), S(-22, -19), S(-8, -20), S(-41, -30),
+    S(1,  -5), S(-11,   3), S(-6, -19), S(-1,  -2), S(0,   0), S(-9, -16), S(-8,  -3), S(-6,   1),
+    S(7, -21), S(8,  -5), S(7,   2), S(10,  19), S(10,  19), S(4,   2), S(8,  -4), S(3, -19),
+    S(16,  21), S(17,  30), S(23,  41), S(27,  50), S(24,  53), S(23,  41), S(19,  28), S(13,  26),
+    S(13,  30), S(23,  30), S(37,  51), S(30,  70), S(26,  67), S(38,  50), S(22,  33), S(14,  28),
+    S(-24,  25), S(-5,  37), S(25,  56), S(22,  60), S(27,  55), S(29,  55), S(-1,  32), S(-19,  25),
+    S(13,  -2), S(-11,  18), S(27,  -2), S(37,  24), S(41,  24), S(40,  -7), S(-13,  16), S(2,  -2),
+    S(-167,  -5), S(-91,  12), S(-117,  41), S(-38,  17), S(-18,  19), S(-105,  48), S(-119,  24), S(-165, -17),
 };
 
 constexpr PSQVals BishopPSQT = {
-    S(5, -21), S(1,   1), S(-1,   5), S(1,   5),
-    S(2,   8), S(-6,  -2), S(0,   1), S(4, -25),
-    S(26, -17), S(2, -31), S(15,  -2), S(8,   8),
-    S(8,   8), S(13,  -3), S(9, -31), S(26, -29),
-    S(9,   3), S(22,   9), S(-5,  -3), S(18,  19),
-    S(17,  20), S(-5,  -6), S(20,   4), S(15,   8),
-    S(0,  12), S(10,  17), S(17,  32), S(20,  32),
-    S(24,  34), S(12,  30), S(15,  17), S(0,  14),
-    S(-20,  34), S(13,  31), S(1,  38), S(21,  45),
-    S(12,  46), S(6,  38), S(13,  33), S(-14,  37),
-    S(-13,  31), S(-11,  45), S(-7,  23), S(2,  40),
-    S(8,  38), S(-21,  34), S(-5,  46), S(-9,  35),
-    S(-59,  38), S(-49,  22), S(-13,  30), S(-35,  36),
-    S(-33,  36), S(-13,  33), S(-68,  21), S(-55,  35),
-    S(-66,  18), S(-65,  36), S(-123,  48), S(-107,  56),
-    S(-112,  53), S(-97,  43), S(-33,  22), S(-74,  15),
+    S(5, -21), S(1,   1), S(-1,   5), S(1,   5), S(2,   8), S(-6,  -2), S(0,   1), S(4, -25),
+    S(26, -17), S(2, -31), S(15,  -2), S(8,   8), S(8,   8), S(13,  -3), S(9, -31), S(26, -29),
+    S(9,   3), S(22,   9), S(-5,  -3), S(18,  19), S(17,  20), S(-5,  -6), S(20,   4), S(15,   8),
+    S(0,  12), S(10,  17), S(17,  32), S(20,  32), S(24,  34), S(12,  30), S(15,  17), S(0,  14),
+    S(-20,  34), S(13,  31), S(1,  38), S(21,  45), S(12,  46), S(6,  38), S(13,  33), S(-14,  37),
+    S(-13,  31), S(-11,  45), S(-7,  23), S(2,  40), S(8,  38), S(-21,  34), S(-5,  46), S(-9,  35),
+    S(-59,  38), S(-49,  22), S(-13,  30), S(-35,  36), S(-33,  36), S(-13,  33), S(-68,  21), S(-55,  35),
+    S(-66,  18), S(-65,  36), S(-123,  48), S(-107,  56), S(-112,  53), S(-97,  43), S(-33,  22), S(-74,  15),
 };
 
 constexpr PSQVals RookPSQT = {
-    S(-26,  -1), S(-21,   3), S(-14,   4), S(-6,  -4),
-    S(-5,  -4), S(-10,   3), S(-13,  -2), S(-22, -14),
-    S(-70,   5), S(-25, -10), S(-18,  -7), S(-11, -11),
-    S(-9, -13), S(-15, -15), S(-15, -17), S(-77,   3),
-    S(-39,   3), S(-16,  14), S(-25,   9), S(-14,   2),
-    S(-12,   3), S(-25,   8), S(-4,   9), S(-39,   1),
-    S(-32,  24), S(-21,  36), S(-21,  36), S(-5,  26),
-    S(-8,  27), S(-19,  34), S(-13,  33), S(-30,  24),
-    S(-22,  46), S(4,  38), S(16,  38), S(35,  30),
-    S(33,  32), S(10,  36), S(17,  31), S(-14,  43),
-    S(-33,  60), S(17,  41), S(0,  54), S(33,  36),
-    S(29,  35), S(3,  52), S(33,  32), S(-26,  56),
-    S(-18,  41), S(-24,  47), S(-1,  38), S(15,  38),
-    S(14,  37), S(-2,  36), S(-24,  49), S(-12,  38),
-    S(33,  55), S(24,  63), S(-1,  73), S(9,  66),
-    S(10,  67), S(0,  69), S(34,  59), S(37,  56),
+    S(-26,  -1), S(-21,   3), S(-14,   4), S(-6,  -4), S(-5,  -4), S(-10,   3), S(-13,  -2), S(-22, -14),
+    S(-70,   5), S(-25, -10), S(-18,  -7), S(-11, -11), S(-9, -13), S(-15, -15), S(-15, -17), S(-77,   3),
+    S(-39,   3), S(-16,  14), S(-25,   9), S(-14,   2), S(-12,   3), S(-25,   8), S(-4,   9), S(-39,   1),
+    S(-32,  24), S(-21,  36), S(-21,  36), S(-5,  26), S(-8,  27), S(-19,  34), S(-13,  33), S(-30,  24),
+    S(-22,  46), S(4,  38), S(16,  38), S(35,  30), S(33,  32), S(10,  36), S(17,  31), S(-14,  43),
+    S(-33,  60), S(17,  41), S(0,  54), S(33,  36), S(29,  35), S(3,  52), S(33,  32), S(-26,  56),
+    S(-18,  41), S(-24,  47), S(-1,  38), S(15,  38), S(14,  37), S(-2,  36), S(-24,  49), S(-12,  38),
+    S(33,  55), S(24,  63), S(-1,  73), S(9,  66), S(10,  67), S(0,  69), S(34,  59), S(37,  56),
 };
 
 constexpr PSQVals QueenPSQT = {
-    S(20, -34), S(4, -26), S(9, -34), S(17, -16),
-    S(18, -18), S(14, -46), S(9, -28), S(22, -44),
-    S(6, -15), S(15, -22), S(22, -42), S(13,   2),
-    S(17,   0), S(22, -49), S(18, -29), S(3, -18),
-    S(6,  -1), S(21,   7), S(5,  35), S(0,  34),
-    S(2,  34), S(5,  37), S(24,   9), S(13, -15),
-    S(9,  17), S(12,  46), S(-6,  59), S(-19, 109),
-    S(-17, 106), S(-4,  57), S(18,  48), S(8,  33),
-    S(-10,  42), S(-8,  79), S(-19,  66), S(-32, 121),
-    S(-32, 127), S(-23,  80), S(-8,  95), S(-10,  68),
-    S(-28,  56), S(-23,  50), S(-33,  66), S(-18,  70),
-    S(-17,  71), S(-19,  63), S(-18,  65), S(-28,  76),
-    S(-16,  61), S(-72, 108), S(-19,  65), S(-52, 114),
-    S(-54, 120), S(-14,  59), S(-69, 116), S(-11,  73),
-    S(8,  43), S(19,  47), S(0,  79), S(3,  78),
-    S(-3,  89), S(13,  65), S(18,  79), S(21,  56),
+    S(20, -34), S(4, -26), S(9, -34), S(17, -16), S(18, -18), S(14, -46), S(9, -28), S(22, -44),
+    S(6, -15), S(15, -22), S(22, -42), S(13,   2), S(17,   0), S(22, -49), S(18, -29), S(3, -18),
+    S(6,  -1), S(21,   7), S(5,  35), S(0,  34), S(2,  34), S(5,  37), S(24,   9), S(13, -15),
+    S(9,  17), S(12,  46), S(-6,  59), S(-19, 109), S(-17, 106), S(-4,  57), S(18,  48), S(8,  33),
+    S(-10,  42), S(-8,  79), S(-19,  66), S(-32, 121), S(-32, 127), S(-23,  80), S(-8,  95), S(-10,  68),
+    S(-28,  56), S(-23,  50), S(-33,  66), S(-18,  70), S(-17,  71), S(-19,  63), S(-18,  65), S(-28,  76),
+    S(-16,  61), S(-72, 108), S(-19,  65), S(-52, 114), S(-54, 120), S(-14,  59), S(-69, 116), S(-11,  73),
+    S(8,  43), S(19,  47), S(0,  79), S(3,  78), S(-3,  89), S(13,  65), S(18,  79), S(21,  56),
 };
 
 constexpr PSQVals KingPSQT = {
-    S(87, -77), S(67, -49), S(4,  -7), S(-9, -26),
-    S(-10, -27), S(-8,  -1), S(57, -50), S(79, -82),
-    S(35,   3), S(-27,  -3), S(-41,  16), S(-89,  29),
-    S(-64,  26), S(-64,  28), S(-25,  -3), S(30,  -4),
-    S(-44, -19), S(-16, -19), S(28,   7), S(0,  35),
-    S(18,  32), S(31,   9), S(-13, -18), S(-36, -13),
-    S(-48, -44), S(98, -39), S(71,  12), S(-22,  45),
-    S(12,  41), S(79,  10), S(115, -34), S(-59, -38),
-    S(-6, -10), S(95, -39), S(39,  14), S(-49,  18),
-    S(-27,  19), S(35,  14), S(81, -34), S(-50, -13),
-    S(24, -39), S(123, -22), S(105,  -1), S(-22, -21),
-    S(-39, -20), S(74, -15), S(100, -23), S(-17, -49),
-    S(0, -98), S(28, -21), S(7, -18), S(-3, -41),
-    S(-57, -39), S(12, -26), S(22, -24), S(-15,-119),
-    S(-16,-153), S(49, -94), S(-21, -73), S(-19, -32),
-    S(-51, -55), S(-42, -62), S(53, -93), S(-58,-133),
+    S(87, -77), S(67, -49), S(4,  -7), S(-9, -26), S(-10, -27), S(-8,  -1), S(57, -50), S(79, -82),
+    S(35,   3), S(-27,  -3), S(-41,  16), S(-89,  29), S(-64,  26), S(-64,  28), S(-25,  -3), S(30,  -4),
+    S(-44, -19), S(-16, -19), S(28,   7), S(0,  35), S(18,  32), S(31,   9), S(-13, -18), S(-36, -13),
+    S(-48, -44), S(98, -39), S(71,  12), S(-22,  45), S(12,  41), S(79,  10), S(115, -34), S(-59, -38),
+    S(-6, -10), S(95, -39), S(39,  14), S(-49,  18), S(-27,  19), S(35,  14), S(81, -34), S(-50, -13),
+    S(24, -39), S(123, -22), S(105,  -1), S(-22, -21), S(-39, -20), S(74, -15), S(100, -23), S(-17, -49),
+    S(0, -98), S(28, -21), S(7, -18), S(-3, -41), S(-57, -39), S(12, -26), S(22, -24), S(-15,-119),
+    S(-16,-153), S(49, -94), S(-21, -73), S(-19, -32), S(-51, -55), S(-42, -62), S(53, -93), S(-58,-133),
 };
 
 
@@ -658,12 +611,12 @@ struct Magic {
 };
 
 // needed for Pyrrhic
-uint64 pawnAttacks(int colour, int sq);
-uint64 knightAttacks(int sq);
+inline uint64 pawnAttacks(int colour, int sq) { return PAtt[colour][sq]; }
+inline uint64 knightAttacks(int sq) { return NAtt[sq]; }
 uint64 bishopAttacks(int sq, uint64 occupied);
 uint64 rookAttacks(int sq, uint64 occupied);
 uint64 queenAttacks(int sq, uint64 occupied);
-uint64 kingAttacks(int sq);
+inline uint64 kingAttacks(int sq) { return KAtt[sq]; }
 
 constexpr array<uint64, N_SQUARES> RookMagics = {
     0xA180022080400230ull, 0x0040100040022000ull, 0x0080088020001002ull, 0x0080080280841000ull,
@@ -817,10 +770,10 @@ void initMasks()
     // Init a table for the King Areas. Use the King's square, the King's target
     // squares, and the squares within the pawn shield. When on the A/H files, extend
     // the King Area to include an additional file, namely the C and F file respectively
-    for (int sq = 0; sq < N_SQUARES; sq++) {
-
-        KingAreaMasks[WHITE][sq] = kingAttacks(sq) | (1ull << sq) | (kingAttacks(sq) << 8);
-        KingAreaMasks[BLACK][sq] = kingAttacks(sq) | (1ull << sq) | (kingAttacks(sq) >> 8);
+    for (int sq = 0; sq < N_SQUARES; sq++) 
+    {
+        KingAreaMasks[WHITE][sq] = kingAttacks(sq) | Bit(sq) | (kingAttacks(sq) << 8);
+        KingAreaMasks[BLACK][sq] = kingAttacks(sq) | Bit(sq) | (kingAttacks(sq) >> 8);
 
         KingAreaMasks[WHITE][sq] |= FileOf(sq) != 0 ? 0ull : KingAreaMasks[WHITE][sq] << 1;
         KingAreaMasks[BLACK][sq] |= FileOf(sq) != 0 ? 0ull : KingAreaMasks[BLACK][sq] << 1;
@@ -837,7 +790,8 @@ void initMasks()
     }
 
     // Init a table of bitmasks containing the files next to a given file
-    for (int file = 0; file < N_FILES; file++) {
+    for (int file = 0; file < N_FILES; file++) 
+    {
         AdjacentFilesMasks[file] = File[Max(0, file - 1)];
         AdjacentFilesMasks[file] |= File[Min(N_FILES - 1, file + 1)];
         AdjacentFilesMasks[file] &= ~File[file];
@@ -1560,16 +1514,6 @@ template<int US> uint64 pawnAttacks(int sq) {
     assert(0 <= sq && sq < N_SQUARES);
     return PAtt[US][sq];
 }
-uint64 pawnAttacks(int colour, int sq) {
-    assert(0 <= colour && colour < N_COLORS);
-    assert(0 <= sq && sq < N_SQUARES);
-    return PAtt[colour][sq];
-}
-
-uint64 knightAttacks(int sq) {
-    assert(0 <= sq && sq < N_SQUARES);
-    return NAtt[sq];
-}
 
 uint64 bishopAttacks(int sq, uint64 occupied) {
     assert(0 <= sq && sq < N_SQUARES);
@@ -1584,11 +1528,6 @@ uint64 rookAttacks(int sq, uint64 occupied) {
 uint64 queenAttacks(int sq, uint64 occupied) {
     assert(0 <= sq && sq < N_SQUARES);
     return bishopAttacks(sq, occupied) | rookAttacks(sq, occupied);
-}
-
-uint64 kingAttacks(int sq) {
-    assert(0 <= sq && sq < N_SQUARES);
-    return KAtt[sq];
 }
 
 
@@ -3511,9 +3450,9 @@ void initMaterial()
                     else if (pawns[me] > pawns[opp])
                         mat.scale[me] = SCALE_NORMAL + 4 * (pawns[me] - pawns[opp]);
                 }
-                // rook+minus vs rook is not winnable unless we have a pawn
-                if (pawns[me] == 0 && rooks[me] == rooks[opp] && minors[me] == 1 && minors[opp] == 0)
-                    mat.scale[me] = rooks[me];
+                // rook+minor vs rook, or two minors vs piece, is not winnable unless we have a pawn
+                if (pawns[me] == 0 && rooks[me] == rooks[opp] && minors[me] == 1 + minors[opp])
+                    mat.scale[me] = Max(1, 5 * rooks[me] + 4 * minors[me] - 7);
             }
         }
 
@@ -4338,7 +4277,7 @@ constexpr packed_t ThreatByPawnPush = S(15, 32);
 
 constexpr packed_t SpaceRestrictPiece = S(-4, -1);
 constexpr packed_t SpaceRestrictEmpty = S(-4, -2);
-constexpr packed_t SpaceCenterControl = S(3, 0);
+constexpr packed_t SpaceCenterControl = Pack(4, 0, 0, 0);   // Opening only
 
 /* Closedness Evaluation Terms */
 
@@ -4427,9 +4366,7 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
     const int THEM = !US;
     const int Forward = (US == WHITE) ? 8 : -8;
 
-    int sq, flag;
     packed_t eval = 0, pkeval = 0;
-    uint64 pawns, myPawns, tempPawns, enemyPawns, attacks;
 
     // Store off pawn attacks for king safety and threat computations
     ei->attackedBy2[US] = ei->pawnAttacks[US] & ei->attacked[US];
@@ -4437,21 +4374,21 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
     ei->attackedBy[US][PAWN] = ei->pawnAttacks[US];
 
     // Update King Safety calculations
-    attacks = ei->pawnAttacks[US] & ei->kingAreas[THEM];
+    uint64 attacks = ei->pawnAttacks[US] & ei->kingAreas[THEM];
     ei->kingAttacksCount[THEM] += popcount(attacks);
 
     // Pawn hash holds the rest of the pawn evaluation
     if (ei->pkentry != NULL) return eval;
 
-    pawns = board->pieces[PAWN];
-    myPawns = tempPawns = pawns & board->colours[US];
-    enemyPawns = pawns & board->colours[THEM];
+    uint64 pawns = board->pieces[PAWN];
+    uint64 myPawns = pawns & board->colours[US], enemyPawns = pawns & board->colours[THEM];
+    uint64 tempPawns = myPawns;
 
     // Evaluate each pawn (but not for being passed)
     while (tempPawns) 
     {
         // Pop off the next pawn
-        sq = poplsb(&tempPawns);
+        int sq = poplsb(&tempPawns);
         if (TRACE) TheTrace.PawnValue[US]++;
         if (TRACE) TheTrace.PawnPSQT[relativeSquare(US, sq)][US]++;
 
@@ -4470,7 +4407,7 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
         // Apply a bonus for pawns which will become passers by advancing a
         // square then exchanging our supporters with the remaining stoppers
         else if (!leftovers && popcount(pushSupport) >= popcount(pushThreats)) {
-            flag = popcount(support) >= popcount(threats);
+            int flag = popcount(support) >= popcount(threats);
             pkeval += PawnCandidatePasser[flag][OwnRankOf<US>(sq)];
             if (TRACE) TheTrace.PawnCandidatePasser[flag][OwnRankOf<US>(sq)][US]++;
         }
@@ -4489,7 +4426,7 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
         // and when the pawn may freely advance on a file and then be traded away
         if (Multiple(File[FileOf(sq)] & myPawns)) 
         {
-            flag = (stoppers && (threats || neighbors)) || (stoppers & ~forwardFileMasks(US, sq));
+            int flag = (stoppers && (threats || neighbors)) || (stoppers & ~forwardFileMasks(US, sq));
             pkeval += PawnStacked[flag][FileOf(sq)];
             if (TRACE) TheTrace.PawnStacked[flag][FileOf(sq)][US]++;
         }
@@ -4498,7 +4435,7 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, Board* board)
         // of backwards, but also specify that the pawn is not both isolated and
         // backwards at the same time. We don't give backward pawns a connected bonus
         if (neighbors && pushThreats && !backup) {
-            flag = !(File[FileOf(sq)] & enemyPawns);
+            int flag = !(File[FileOf(sq)] & enemyPawns);
             pkeval += PawnBackwards[flag][OwnRankOf<US>(sq)];
             if (TRACE) TheTrace.PawnBackwards[flag][OwnRankOf<US>(sq)][US]++;
         }
@@ -4520,9 +4457,7 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, outside, kingDistance, defended, count;
     packed_t eval = 0;
-    uint64 attacks;
 
     uint64 enemyPawns = board->pieces[PAWN] & board->colours[THEM];
     uint64 tempKnights = board->pieces[KNIGHT] & board->colours[US];
@@ -4533,12 +4468,12 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, Board* board)
     while (tempKnights)
     {
         // Pop off the next knight
-        sq = poplsb(&tempKnights);
+        int sq = poplsb(&tempKnights);
         if (TRACE) TheTrace.KnightValue[US]++;
         if (TRACE) TheTrace.KnightPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
-        attacks = knightAttacks(sq);
+        uint64 attacks = knightAttacks(sq);
         ei->attackedBy2[US] |= attacks & ei->attacked[US];
         ei->attacked[US] |= attacks;
         ei->attackedBy[US][KNIGHT] |= attacks;
@@ -4547,8 +4482,8 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, Board* board)
         // by an enemy pawn. Increase the bonus if one of our pawns supports the knight
         if (HasBit(outpostRanksMasks(US), sq) && !(outpostSquareMasks(US, sq) & enemyPawns)) 
         {
-            outside = HasBit(File[0] | File[7], sq);
-            defended = HasBit(ei->pawnAttacks[US], sq);
+            bool outside = HasBit(File[0] | File[7], sq);
+            bool defended = HasBit(ei->pawnAttacks[US], sq);
             eval += KnightOutpost[outside][defended];
             if (TRACE) TheTrace.KnightOutpost[outside][defended][US]++;
         }
@@ -4560,14 +4495,14 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, Board* board)
         }
 
         // Apply a penalty if the knight is far from both kings
-        kingDistance = Min(distanceBetween(sq, ei->kingSquare[THEM]), distanceBetween(sq, ei->kingSquare[US]));
+        int kingDistance = Min(distanceBetween(sq, ei->kingSquare[THEM]), distanceBetween(sq, ei->kingSquare[US]));
         if (kingDistance >= 4) {
             eval += KnightInSiberia[kingDistance - 4];
             if (TRACE) TheTrace.KnightInSiberia[kingDistance - 4][US]++;
         }
 
         // Apply a bonus (or penalty) based on the mobility of the knight
-        count = popcount(ei->mobilityAreas[US] & attacks);
+        int count = popcount(ei->mobilityAreas[US] & attacks);
         eval += KnightMobility[count];
         if (TRACE) TheTrace.KnightMobility[count][US]++;
 
@@ -4587,9 +4522,7 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, outside, defended, count;
     packed_t eval = 0;
-    uint64 attacks;
 
     uint64 enemyPawns = board->pieces[PAWN] & board->colours[THEM];
     uint64 tempBishops = board->pieces[BISHOP] & board->colours[US];
@@ -4597,28 +4530,29 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, Board* board)
     ei->attackedBy[US][BISHOP] = 0ull;
 
     // Apply a bonus for having a pair of bishops
-    if ((tempBishops & LightArea) && (tempBishops & DarkArea)) {
+    if ((tempBishops & LightArea) && (tempBishops & DarkArea)) 
+    {
         eval += BishopPair;
         if (TRACE) TheTrace.BishopPair[US]++;
     }
 
     // Evaluate each bishop
-    while (tempBishops) {
-
+    while (tempBishops) 
+    {
         // Pop off the next Bishop
-        sq = poplsb(&tempBishops);
+        int sq = poplsb(&tempBishops);
         if (TRACE) TheTrace.BishopValue[US]++;
         if (TRACE) TheTrace.BishopPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
-        attacks = bishopAttacks(sq, ei->occupiedMinusBishops[US]);
+        uint64 attacks = bishopAttacks(sq, ei->occupiedMinusBishops[US]);
         ei->attackedBy2[US] |= attacks & ei->attacked[US];
         ei->attacked[US] |= attacks;
         ei->attackedBy[US][BISHOP] |= attacks;
 
         // Apply a penalty for the bishop based on number of rammed pawns
         // of our own colour, which reside on the same shade of square as the bishop
-        count = popcount(ei->rammedPawns[US] & squaresOfMatchingColour(sq));
+        int count = popcount(ei->rammedPawns[US] & squaresOfMatchingColour(sq));
         eval += count * BishopRammedPawns;
         if (TRACE) TheTrace.BishopRammedPawns[US] += count;
 
@@ -4626,8 +4560,8 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, Board* board)
         // by an enemy pawn. Increase the bonus if one of our pawns supports the bishop.
         if (HasBit(outpostRanksMasks(US), sq) && !(outpostSquareMasks(US, sq) & enemyPawns)) 
         {
-            outside = HasBit(File[0] | File[7], sq);
-            defended = HasBit(ei->pawnAttacks[US], sq);
+            bool outside = HasBit(File[0] | File[7], sq);
+            bool defended = HasBit(ei->pawnAttacks[US], sq);
             eval += BishopOutpost[outside][defended];
             if (TRACE) TheTrace.BishopOutpost[outside][defended][US]++;
         }
@@ -4666,9 +4600,7 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int sq, open, count;
     packed_t eval = 0;
-    uint64 attacks;
 
     uint64 myPawns = board->pieces[PAWN] & board->colours[US];
     uint64 enemyPawns = board->pieces[PAWN] & board->colours[THEM];
@@ -4677,15 +4609,15 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, Board* board)
     ei->attackedBy[US][ROOK] = 0ull;
 
     // Evaluate each rook
-    while (tempRooks) {
-
+    while (tempRooks) 
+    {
         // Pop off the next rook
-        sq = poplsb(&tempRooks);
+        int sq = poplsb(&tempRooks);
         if (TRACE) TheTrace.RookValue[US]++;
         if (TRACE) TheTrace.RookPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
-        attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]);
+        uint64 attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]);
         ei->attackedBy2[US] |= attacks & ei->attacked[US];
         ei->attacked[US] |= attacks;
         ei->attackedBy[US][ROOK] |= attacks;
@@ -4693,7 +4625,7 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, Board* board)
         // Rook is on a semi-open file if there are no pawns of the rook's
         // colour on the file. If there are no pawns at all, it is an open file
         if (!(myPawns & File[FileOf(sq)])) {
-            open = !(enemyPawns & File[FileOf(sq)]);
+            bool open = !(enemyPawns & File[FileOf(sq)]);
             eval += RookFile[open];
             if (TRACE) TheTrace.RookFile[open][US]++;
         }
@@ -4707,7 +4639,7 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, Board* board)
         }
 
         // Apply a bonus (or penalty) based on the mobility of the rook
-        count = popcount(ei->mobilityAreas[US] & attacks);
+        int count = popcount(ei->mobilityAreas[US] & attacks);
         eval += RookMobility[count];
         if (TRACE) TheTrace.RookMobility[count][US]++;
 
@@ -4729,12 +4661,12 @@ template<int US> packed_t evaluateQueens(EvalInfo* ei, Board* board)
 
     packed_t eval = 0;
 
-    uint64 tempQueens = board->pieces[QUEEN] & board->colours[US];
     uint64 occupied = board->colours[WHITE] | board->colours[BLACK];
 
     ei->attackedBy[US][QUEEN] = 0ull;
 
     // Evaluate each queen
+    uint64 tempQueens = board->pieces[QUEEN] & board->colours[US];
     while (tempQueens)
     {
         // Pop off the next queen
@@ -4832,7 +4764,6 @@ template<int US> void evaluateKingsPawns(EvalInfo* ei, Board* board)
 template<int US> packed_t evaluateKings(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
-    int count, mg, eg;
     packed_t eval = 0;
 
     uint64 enemyQueens = board->pieces[QUEEN] & board->colours[THEM];
@@ -4846,7 +4777,7 @@ template<int US> packed_t evaluateKings(EvalInfo* ei, Board* board)
     if (TRACE) TheTrace.KingPSQT[relativeSquare(US, kingSq)][US]++;
 
     // Bonus for our pawns and minors sitting within our king area
-    count = popcount(defenders & ei->kingAreas[US]);
+    int count = popcount(defenders & ei->kingAreas[US]);
     eval += KingDefenders[count];
     if (TRACE) TheTrace.KingDefenders[count][US]++;
 
@@ -4905,12 +4836,13 @@ template<int US> packed_t evaluateKings(EvalInfo* ei, Board* board)
         if (TRACE) TheTrace.SafetyAdjustment[US] = 1;
 
         // Convert safety to an MG and EG score
-        mg = ScoreMG(safety), eg = ScoreEG(safety);
-        eval += MakeScore(-mg * Max(0, mg) / 720, -Max(0, eg) / 20);
+        score_t mg = ScoreMG(safety), eg = ScoreEG(safety);
+        eval += MakeScore(-mg * Max<score_t>(0, mg) / 720, -Max<score_t>(0, eg) / 20);
         if (TRACE) TheTrace.safety[US] = safety;
     }
 
-    else if (TRACE) {
+    else if (TRACE) 
+    {
         TheTrace.SafetyKnightWeight[US] = 0;
         TheTrace.SafetyBishopWeight[US] = 0;
         TheTrace.SafetyRookWeight[US] = 0;
@@ -5074,7 +5006,6 @@ template<int US> packed_t evaluateSpace(EvalInfo* ei, Board* board)
 {
     const int THEM = !US;
 
-    int count;
     packed_t eval = 0;
 
     uint64 friendly = board->colours[US];
@@ -5085,7 +5016,7 @@ template<int US> packed_t evaluateSpace(EvalInfo* ei, Board* board)
         & ~ei->attackedBy2[US] & ~ei->attackedBy[US][PAWN];
 
     // Penalty for restricted piece moves
-    count = popcount(uncontrolled & (friendly | enemy));
+    int count = popcount(uncontrolled & (friendly | enemy));
     eval += count * SpaceRestrictPiece;
     if (TRACE) TheTrace.SpaceRestrictPiece[US] += count;
 
@@ -5097,12 +5028,9 @@ template<int US> packed_t evaluateSpace(EvalInfo* ei, Board* board)
     // This is mostly relevant in the opening and the early middlegame, while rarely correct
     // in the endgame where one rook or queen could control many uncontested squares.
     // Thus we don't apply this term when below a threshold of minors/majors count.
-    if (popcount(board->pieces[KNIGHT] | board->pieces[BISHOP])
-        + 2 * popcount(board->pieces[ROOK] | board->pieces[QUEEN]) > 12) {
-        count = popcount(~ei->attacked[THEM] & (ei->attacked[US] | friendly) & CENTER_BIG);
-        eval += count * SpaceCenterControl;
-        if (TRACE) TheTrace.SpaceCenterControl[US] += count;
-    }
+    count = popcount(~ei->attacked[THEM] & (ei->attacked[US] | friendly) & CENTER_BIG);
+    eval += count * SpaceCenterControl;
+    if (TRACE) TheTrace.SpaceCenterControl[US] += count;
 
     return eval;
 }
@@ -5137,18 +5065,16 @@ packed_t evaluateClosedness(EvalInfo* ei, Board* board)
     return eval;
 }
 
-packed_t evaluateComplexity(EvalInfo* ei, Board* board, packed_t eval)
+packed_t evaluateComplexity(EvalInfo*, Board* board, packed_t eval)
 {
     // Adjust endgame evaluation based on features related to how
     // likely the stronger side is to convert the position.
     // More often than not, this is a penalty for drawish positions.
 
-    (void)ei; // Silence compiler warning
     score_t eg = ScoreEG(eval);
     int sign = (eg > 0) - (eg < 0);
 
-    int pawnsOnBothFlanks = (board->pieces[PAWN] & LEFT_FLANK)
-        && (board->pieces[PAWN] & RIGHT_FLANK);
+    int pawnsOnBothFlanks = (board->pieces[PAWN] & LEFT_FLANK) && (board->pieces[PAWN] & RIGHT_FLANK);
 
     uint64 knights = board->pieces[KNIGHT];
     uint64 bishops = board->pieces[BISHOP];
@@ -5258,7 +5184,15 @@ score_t evaluateBoard(Thread* thread, Board* board)
             : 4 * popcount(board->pieces[QUEEN]) + 2 * popcount(board->pieces[ROOK]) + 1 * popcount(board->pieces[KNIGHT] | board->pieces[BISHOP]);
 
     // Compute and store an interpolated evaluation from white's POV
-    score_t eval = (ScoreMG(packed) * phase + ScoreEG(packed) * (24 - phase) * factor / SCALE_NORMAL) / 24;
+    score_t eval;
+    if (phase >= OP_PHASE)
+        eval = ScoreOP(packed);
+    else if (phase >= MG_PHASE)
+        eval = (ScoreOP(packed) * (phase - MG_PHASE) + ScoreMG(packed) * (OP_PHASE - phase)) / (OP_PHASE - MG_PHASE);
+    else if (phase > EG_PHASE)
+        eval = (ScoreMG(packed) * (phase - EG_PHASE) + (ScoreEG(packed) * (MG_PHASE - phase) * factor) / SCALE_NORMAL) / (MG_PHASE - EG_PHASE);
+    else
+        eval = (ScoreEG(packed) * factor) / SCALE_NORMAL;
     if (mat)
         eval += mat->matQuad;
 
