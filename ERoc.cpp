@@ -1141,19 +1141,7 @@ struct Thread
 
     size_t index, nthreads;
     Thread* threads;
-    jmp_buf jbuffer;
 };
-
-
-void populateThreadPool(vector<Thread>* threads);
-void clearThreadPool(vector<Thread>* threads);
-
-void resetThreadPool(Thread* threads);
-void newSearchThreadPool(Thread* threads, Board* board, Limits* limits, TimeManager* tm);
-
-uint64 nodesSearchedThreadPool(Thread* threads);
-uint64 tbhitsThreadPool(Thread* threads);
-
 
 
 /// Simple Pawn+King Evaluation Hash Table, which also stores some additional
@@ -1358,8 +1346,8 @@ void nnue_refresh_accumulator(NNUEEvaluator* nnue, NNUEAccumulator* accum, Board
         }
     }
 
-    for (int offset = 0; offset < KPSIZE; offset += NUM_REGS * vepi16_cnt) {
-
+    for (int offset = 0; offset < KPSIZE; offset += NUM_REGS * vepi16_cnt) 
+    {
         outputs = (vepi16*)&entry->accumulator.values[colour][offset];
 
         for (int i = 0; i < NUM_REGS; i++)
@@ -1634,9 +1622,6 @@ uint64 attackersToKingSquare(Board* board)
 ptrdiff_t genAllLegalMoves(Board* board, uint16_t* moves);
 ptrdiff_t genAllNoisyMoves(Board* board, uint16_t* moves);
 ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves);
-
-
-
 
 /// move.c
 
@@ -2041,8 +2026,8 @@ void revertMove(Board* board, uint16_t move, Undo* undo)
         board->squares[to] = undo->capturePiece;
     }
 
-    else if (MoveType(move) == CASTLE_MOVE) {
-
+    else if (MoveType(move) == CASTLE_MOVE) 
+    {
         const int rFrom = to;
         const int rTo = castleRookTo(from, rFrom);
         const int _to = castleKingTo(from, rFrom);
@@ -2077,8 +2062,8 @@ void revertMove(Board* board, uint16_t move, Undo* undo)
         board->squares[to] = undo->capturePiece;
     }
 
-    else { // (MoveType(move) == ENPASS_MOVE)
-
+    else  // (MoveType(move) == ENPASS_MOVE)
+    {
         assert(MoveType(move) == ENPASS_MOVE);
 
         const int ep = to - 8 + (board->turn << 4);
@@ -2118,28 +2103,28 @@ void revert(Thread* thread, Board* board, uint16_t move)
 }
 
 
-int legalMoveCount(Board* board) {
-
+int legalMoveCount(Board* board) 
+{
     // Count of the legal number of moves for a given position
 
     uint16_t moves[MAX_MOVES];
     return static_cast<int>(genAllLegalMoves(board, moves));
 }
 
-int moveExaminedByMultiPV(Thread* thread, uint16_t move) {
-
+bool moveExaminedByMultiPV(Thread* thread, uint16_t move) 
+{
     // Check to see if this move was already selected as the
     // best move in a previous iteration of this search depth
 
     for (int i = 0; i < thread->multiPV; i++)
         if (thread->bestMoves[i] == move)
-            return 1;
+            return true;
 
-    return 0;
+    return false;
 }
 
-int moveIsInRootMoves(Thread* thread, uint16_t move) {
-
+bool moveIsInRootMoves(Thread* thread, uint16_t move) 
+{
     // We do two things: 1) Check to make sure we are not using a move which
     // has been flagged as excluded thanks to Syzygy probing. 2) Check to see
     // if we are doing a "go searchmoves <>"  command, in which case we have
@@ -2147,20 +2132,20 @@ int moveIsInRootMoves(Thread* thread, uint16_t move) {
 
     for (int i = 0; i < MAX_MOVES; i++)
         if (move == thread->limits->excludedMoves[i])
-            return 0;
+            return false;
 
     if (!thread->limits->limitedByMoves)
-        return 1;
+        return true;
 
     for (int i = 0; i < MAX_MOVES; i++)
         if (move == thread->limits->searchMoves[i])
-            return 1;
+            return true;
 
-    return 0;
+    return false;
 }
 
-int moveIsTactical(Board* board, uint16_t move) {
-
+bool moveIsTactical(Board* board, uint16_t move) 
+{
     // We can use a simple bit trick since we assert that only
     // the enpass and promotion moves will ever have the 13th bit,
     // (ie 2 << 12) set. We use (2 << 12) in order to match move.h
@@ -2173,8 +2158,8 @@ int moveIsTactical(Board* board, uint16_t move) {
         || (move & ENPASS_MOVE & PROMOTION_MOVE);
 }
 
-int moveEstimatedValue(Board* board, uint16_t move) {
-
+int moveEstimatedValue(Board* board, uint16_t move) 
+{
     // Start with the value of the piece on the target square
     int value = SEEPieceValues[TypeOf(board->squares[MoveTo(move)])];
 
@@ -2528,6 +2513,245 @@ void update_quiet_histories(Thread* thread, uint16_t* moves, int length, int dep
         // Update Butterfly History, which always exists
         update_history(histories[2], depth, i == length - 1);
     }
+}
+
+
+
+uint64 discoveredAttacks(Board* board, int sq, int US)
+{
+    uint64 enemy = board->colours[!US];
+    uint64 occupied = board->colours[US] | enemy;
+
+    uint64 rAttacks = rookAttacks(sq, occupied);
+    uint64 bAttacks = bishopAttacks(sq, occupied);
+
+    uint64 rooks = (enemy & board->pieces[ROOK]) & ~rAttacks;
+    uint64 bishops = (enemy & board->pieces[BISHOP]) & ~bAttacks;
+
+    return (rooks & rookAttacks(sq, occupied & ~rAttacks))
+        | (bishops & bishopAttacks(sq, occupied & ~bAttacks));
+}
+
+
+/// movegen.c
+
+
+typedef uint64(*JumperFunc)(int);
+typedef uint64(*SliderFunc)(int, uint64);
+
+uint16_t* buildEnpassMoves(uint16_t* moves, uint64 attacks, int epsq) {
+
+    while (attacks)
+        *(moves++) = MoveMake(poplsb(&attacks), epsq, ENPASS_MOVE);
+
+    return moves;
+}
+
+uint16_t* buildPawnMoves(uint16_t* moves, uint64 attacks, int delta) {
+
+    while (attacks) {
+        int sq = poplsb(&attacks);
+        *(moves++) = MoveMake(sq + delta, sq, NORMAL_MOVE);
+    }
+
+    return moves;
+}
+
+uint16_t* buildPawnPromotions(uint16_t* moves, uint64 attacks, int delta) {
+
+    while (attacks) {
+        int sq = poplsb(&attacks);
+        *(moves++) = MoveMake(sq + delta, sq, QUEEN_PROMO_MOVE);
+        *(moves++) = MoveMake(sq + delta, sq, ROOK_PROMO_MOVE);
+        *(moves++) = MoveMake(sq + delta, sq, BISHOP_PROMO_MOVE);
+        *(moves++) = MoveMake(sq + delta, sq, KNIGHT_PROMO_MOVE);
+    }
+
+    return moves;
+}
+
+uint16_t* buildNormalMoves(uint16_t* moves, uint64 attacks, int sq) {
+
+    while (attacks)
+        *(moves++) = MoveMake(sq, poplsb(&attacks), NORMAL_MOVE);
+
+    return moves;
+}
+
+uint16_t* buildJumperMoves(JumperFunc F, uint16_t* moves, uint64 pieces, uint64 targets) {
+
+    while (pieces) {
+        int sq = poplsb(&pieces);
+        moves = buildNormalMoves(moves, F(sq) & targets, sq);
+    }
+
+    return moves;
+}
+
+uint16_t* buildSliderMoves(SliderFunc F, uint16_t* moves, uint64 pieces, uint64 targets, uint64 occupied) {
+
+    while (pieces) {
+        int sq = poplsb(&pieces);
+        moves = buildNormalMoves(moves, F(sq, occupied) & targets, sq);
+    }
+
+    return moves;
+}
+
+
+ptrdiff_t genAllLegalMoves(Board* board, uint16_t* moves)
+{
+    Undo undo[1];
+    int size = 0;
+    uint16_t pseudoMoves[MAX_MOVES];
+
+    // Call genAllNoisyMoves() & genAllNoisyMoves()
+    ptrdiff_t pseudo = genAllNoisyMoves(board, pseudoMoves);
+    pseudo += genAllQuietMoves(board, pseudoMoves + pseudo);
+
+    // Check each move for legality before copying
+    for (int i = 0; i < pseudo; i++) {
+        applyMove(board, pseudoMoves[i], undo);
+        if (moveWasLegal(board)) moves[size++] = pseudoMoves[i];
+        revertMove(board, pseudoMoves[i], undo);
+    }
+
+    return size;
+}
+
+ptrdiff_t genAllNoisyMoves(Board* board, uint16_t* moves)
+{
+    const uint16_t* start = moves;
+
+    const int Left = board->turn == WHITE ? -7 : 7;
+    const int Right = board->turn == WHITE ? -9 : 9;
+    const int Forward = board->turn == WHITE ? -8 : 8;
+
+    uint64 destinations, pawnEnpass, pawnLeft, pawnRight;
+    uint64 pawnPromoForward, pawnPromoLeft, pawnPromoRight;
+
+    uint64 us = board->colours[board->turn];
+    uint64 them = board->colours[!board->turn];
+    uint64 occupied = us | them;
+
+    uint64 pawns = us & (board->pieces[PAWN]);
+    uint64 knights = us & (board->pieces[KNIGHT]);
+    uint64 bishops = us & (board->pieces[BISHOP]);
+    uint64 rooks = us & (board->pieces[ROOK]);
+    uint64 kings = us & (board->pieces[KING]);
+
+    // Merge together duplicate piece ideas
+    bishops |= us & board->pieces[QUEEN];
+    rooks |= us & board->pieces[QUEEN];
+
+    // Double checks can only be evaded by moving the King
+    if (Multiple(board->kingAttackers))
+        return buildJumperMoves(&kingAttacks, moves, kings, them) - start;
+
+    // When checked, we may only uncheck by capturing the checker
+    destinations = board->kingAttackers ? board->kingAttackers : them;
+
+    // Compute bitboards for each type of Pawn movement
+    pawnEnpass = pawnEnpassCaptures(pawns, board->epSquare, board->turn);
+    pawnLeft = pawnLeftAttacks(pawns, them, board->turn);
+    pawnRight = pawnRightAttacks(pawns, them, board->turn);
+    pawnPromoForward = pawnAdvance(pawns, occupied, board->turn) & PROMOTION_RANKS;
+    pawnPromoLeft = pawnLeft & PROMOTION_RANKS; pawnLeft &= ~PROMOTION_RANKS;
+    pawnPromoRight = pawnRight & PROMOTION_RANKS; pawnRight &= ~PROMOTION_RANKS;
+
+    // Generate moves for all the Pawns, so long as they are noisy
+    moves = buildEnpassMoves(moves, pawnEnpass, board->epSquare);
+    moves = buildPawnMoves(moves, pawnLeft & destinations, Left);
+    moves = buildPawnMoves(moves, pawnRight & destinations, Right);
+    moves = buildPawnPromotions(moves, pawnPromoForward, Forward);
+    moves = buildPawnPromotions(moves, pawnPromoLeft, Left);
+    moves = buildPawnPromotions(moves, pawnPromoRight, Right);
+
+    // Generate moves for the remainder of the pieces, so long as they are noisy
+    moves = buildJumperMoves(&knightAttacks, moves, knights, destinations);
+    moves = buildSliderMoves(&bishopAttacks, moves, bishops, destinations, occupied);
+    moves = buildSliderMoves(&rookAttacks, moves, rooks, destinations, occupied);
+    moves = buildJumperMoves(&kingAttacks, moves, kings, them);
+
+    return moves - start;
+}
+
+ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves)
+{
+    const uint16_t* start = moves;
+
+    const int Forward = board->turn == WHITE ? -8 : 8;
+    const uint64 Rank3Relative = board->turn == WHITE ? Line[2] : Line[5];
+
+    int rook, king, rookTo, kingTo, attacked;
+    uint64 destinations, pawnForwardOne, pawnForwardTwo, mask;
+
+    uint64 us = board->colours[board->turn];
+    uint64 occupied = us | board->colours[!board->turn];
+    uint64 castles = us & board->castleRooks;
+
+    uint64 pawns = us & (board->pieces[PAWN]);
+    uint64 knights = us & (board->pieces[KNIGHT]);
+    uint64 bishops = us & (board->pieces[BISHOP]);
+    uint64 rooks = us & (board->pieces[ROOK]);
+    uint64 kings = us & (board->pieces[KING]);
+
+    // Merge together duplicate piece ideas
+    bishops |= us & board->pieces[QUEEN];
+    rooks |= us & board->pieces[QUEEN];
+
+    // Double checks can only be evaded by moving the King
+    if (Multiple(board->kingAttackers))
+        return buildJumperMoves(&kingAttacks, moves, kings, ~occupied) - start;
+
+    // When checked, we must block the checker with non-King pieces
+    destinations = !board->kingAttackers
+        ? ~occupied
+        : Between[lsb(kings)][lsb(board->kingAttackers)];
+
+    // Compute bitboards for each type of Pawn movement
+    pawnForwardOne = pawnAdvance(pawns, occupied, board->turn) & ~PROMOTION_RANKS;
+    pawnForwardTwo = pawnAdvance(pawnForwardOne & Rank3Relative, occupied, board->turn);
+
+    // Generate moves for all the pawns, so long as they are quiet
+    moves = buildPawnMoves(moves, pawnForwardOne & destinations, Forward);
+    moves = buildPawnMoves(moves, pawnForwardTwo & destinations, Forward * 2);
+
+    // Generate moves for the remainder of the pieces, so long as they are quiet
+    moves = buildJumperMoves(&knightAttacks, moves, knights, destinations);
+    moves = buildSliderMoves(&bishopAttacks, moves, bishops, destinations, occupied);
+    moves = buildSliderMoves(&rookAttacks, moves, rooks, destinations, occupied);
+    moves = buildJumperMoves(&kingAttacks, moves, kings, ~occupied);
+
+    // Attempt to generate a castle move for each rook
+    while (castles && !board->kingAttackers) {
+
+        // Figure out which pieces are moving to which squares
+        rook = poplsb(&castles), king = lsb(kings);
+        rookTo = castleRookTo(king, rook);
+        kingTo = castleKingTo(king, rook);
+        attacked = 0;
+
+        // Castle is illegal if we would go over a piece
+        mask = Between[king][kingTo] | (1ull << kingTo);
+        mask |= Between[rook][rookTo] | (1ull << rookTo);
+        mask &= ~((1ull << king) | (1ull << rook));
+        if (occupied & mask) continue;
+
+        // Castle is illegal if we move through a checking threat
+        mask = Between[king][kingTo];
+        while (mask)
+            if (squareIsAttacked(board, board->turn, poplsb(&mask)))
+            {
+                attacked = 1; break;
+            }
+        if (attacked) continue;
+
+        // All conditions have been met. Identify which side we are castling to
+        *(moves++) = MoveMake(king, rook, CASTLE_MOVE);
+    }
+
+    return moves - start;
 }
 
 
@@ -3007,14 +3231,14 @@ void printBoard(Board* board) {
     printf("\n%s\n\n", fen);
 }
 
-int boardHasNonPawnMaterial(Board* board, int turn) {
+bool boardHasNonPawnMaterial(Board* board, int turn) {
     uint64 friendly = board->colours[turn];
     uint64 kings = board->pieces[KING];
     uint64 pawns = board->pieces[PAWN];
     return (friendly & (kings | pawns)) != friendly;
 }
 
-int boardDrawnByFiftyMoveRule(Board* board)
+bool boardDrawnByFiftyMoveRule(Board* board)
 {
     // Fifty move rule triggered. BUG: We do not account for the case
     // when the fifty move rule occurs as checkmate is delivered, which
@@ -3022,7 +3246,7 @@ int boardDrawnByFiftyMoveRule(Board* board)
     return board->halfMoveCounter > 99;
 }
 
-int boardDrawnByRepetition(Board* board, int height)
+bool boardDrawnByRepetition(Board* board, int height)
 {
     int reps = 0;
 
@@ -3043,7 +3267,7 @@ int boardDrawnByRepetition(Board* board, int height)
     return 0;
 }
 
-int boardDrawnByInsufficientMaterial(Board* board)
+bool boardDrawnByInsufficientMaterial(Board* board)
 {
     // Check for KvK, KvN, KvB, and KvNN.
 
@@ -3053,7 +3277,7 @@ int boardDrawnByInsufficientMaterial(Board* board)
             || (!board->pieces[BISHOP] && popcount(board->pieces[KNIGHT]) <= 2));
 }
 
-int boardIsDrawn(Board* board, int height) 
+bool boardIsDrawn(Board* board, int height) 
 {
     // Drawn if any of the three possible cases
     return boardDrawnByFiftyMoveRule(board)
@@ -3187,25 +3411,7 @@ bool tm_stop_early(const Thread* thread) {
 #define ETHEREAL_VERSION VERSION_ID
 #endif
 
-struct UCIGoStruct {
-    Thread* threads;
-    Board* board;
-    Limits  limits;
-    uint64 nodesSofar;
-    double elapsedSofar;
-};
 
-thread* uciGo(UCIGoStruct* ucigo, Thread* threads, Board* board, int multiPV, char* str);
-void uciSetOption(char* str, vector<Thread>* threads, int* multiPV, int* chess960);
-void uciPosition(char* str, Board* board, int chess960);
-
-void uciReport(Thread* threads, PVariation* pv, int alpha, int beta);
-void uciReportCurrentMove(Board* board, uint16_t move, int currmove, int depth);
-
-int strEquals(const char* str1, const char* str2);
-int strStartsWith(const char* str, const char* key);
-int strContains(const char* str, const char* key);
-int getInput(char* str);
 
 /// syzygy.h
 
@@ -5248,6 +5454,138 @@ bool tt_probe(uint64 hash, int height, uint16_t* move, int* value, int* eval, in
     return FALSE;
 }
 
+/// transposition.c
+
+
+struct TTClear { size_t index, count; };
+
+void tt_clear_threaded(TTClear* ttclear)
+{
+    const uint64 MB = 1ull << 20;
+
+    // Logic for dividing the Table taken from Weiss and CFish
+    const uint64 size = (Table.hashMask + 1) * sizeof(TTBucket);
+    const uint64 slice = (size + ttclear->count - 1) / ttclear->count;
+    const uint64 blocks = (slice + 2 * MB - 1) / (2 * MB);
+    const uint64 begin = Min(size, ttclear->index * blocks * 2 * MB);
+    const uint64 end = Min(size, begin + blocks * 2 * MB);
+
+    memset(&Table.buckets[0] + begin / sizeof(TTBucket), 0, end - begin);
+}
+
+void tt_clear(size_t nthreads)
+{
+    // Only use 1/4th of the enabled search Threads
+    size_t nworkers = Max<size_t>(1, nthreads / 4);
+    vector<unique_ptr<thread>> pthreads(nworkers);
+    vector<TTClear> ttclears(nworkers);
+
+    // Initalize the data passed via a void* in pthread_create()
+    for (size_t i = 0; i < nworkers; i++)
+        ttclears[i] = { i, nworkers };
+
+    // Launch each of the helper threads to clear their sections
+    for (int i = 1; i < nworkers; i++)
+        pthreads[i].reset(new thread(tt_clear_threaded, &ttclears[i]));
+
+    // Reuse this thread for the 0th sections of the Transposition Table
+    tt_clear_threaded(&ttclears[0]);
+
+    // Join each of the helper threads after they've cleared their sections
+    for (int i = 1; i < nworkers; i++)
+        pthreads[i]->join();
+}
+
+int tt_init(size_t nthreads, int megabytes)
+{
+    const uint64 MB = 1ull << 20;
+    uint64 keySize = 16ull;
+
+    // Cleanup memory when resizing the table
+    if (Table.hashMask)
+        vector<TTBucket>().swap(Table.buckets);
+
+    // Default keysize of 16 bits maps to a 2MB TTable
+    assert((1ull << 16ull) * sizeof(TTBucket) == 2 * MB);
+
+    // Find the largest keysize that is still within our given megabytes
+    while ((1ull << keySize) * sizeof(TTBucket) <= megabytes * MB / 2) keySize++;
+    assert((1ull << keySize) * sizeof(TTBucket) <= megabytes * MB);
+
+#if defined(__linux__) && !defined(__ANDROID__)
+
+    // On Linux systems we align on 2MB boundaries and request Huge Pages
+    Table.buckets = aligned_alloc(2 * MB, (1ull << keySize) * sizeof(TTBucket));
+    madvise(Table.buckets, (1ull << keySize) * sizeof(TTBucket), MADV_HUGEPAGE);
+#else
+
+    // Otherwise, we simply allocate as usual and make no requests
+    Table.buckets.resize(1ull << keySize);
+#endif
+
+    // Save the lookup mask
+    Table.hashMask = (1ull << keySize) - 1u;
+
+    // Clear the table and load everything into the cache
+    tt_clear(nthreads);
+
+    // Return the number of MB actually allocated for the TTable
+    return static_cast<int>(((Table.hashMask + 1) * sizeof(TTBucket)) / MB);
+}
+
+int tt_hashfull()
+{
+    /// Estimate the permill of the table being used, by looking at a thousand
+    /// Buckets and seeing how many Entries contain a recent Transposition.
+
+    int used = 0;
+
+    for (int i = 0; i < 1000; i++)
+        for (int j = 0; j < TT_BUCKET_NB; j++)
+            used += (Table.buckets[i].slots[j].generation & TT_MASK_BOUND) != BOUND_NONE
+            && (Table.buckets[i].slots[j].generation & TT_MASK_AGE) == Table.generation;
+
+    return used / TT_BUCKET_NB;
+}
+
+void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound) {
+
+    int i;
+    const uint16_t hash16 = hash >> 48;
+    TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
+    TTEntry* replace = slots; // &slots[0]
+
+    // Find a matching hash, or replace using Min(x1, x2, x3),
+    // where xN equals the depth minus 4 times the age difference
+    for (i = 0; i < TT_BUCKET_NB && slots[i].hash16 != hash16; i++)
+        if (replace->depth - ((259 + Table.generation - replace->generation) & TT_MASK_AGE)
+            >= slots[i].depth - ((259 + Table.generation - slots[i].generation) & TT_MASK_AGE))
+            replace = &slots[i];
+
+    // Prefer a matching hash, otherwise score a replacement
+    replace = (i != TT_BUCKET_NB) ? &slots[i] : replace;
+
+    // Don't overwrite an entry from the same position, unless we have
+    // an exact bound or depth that is nearly as good as the old one
+    if (bound != BOUND_EXACT
+        && hash16 == replace->hash16
+        && depth < replace->depth - 2)
+        return;
+
+    // Don't overwrite a move if we don't have a new one
+    if (move || hash16 != replace->hash16)
+        replace->move = (uint16_t)move;
+
+    // Finally, copy the new data into the replaced slot
+    replace->depth = (int8_t)depth;
+    replace->generation = (uint8_t)bound | Table.generation;
+    replace->value = (score_t)tt_value_to(value, height);
+    replace->eval = (score_t)eval;
+    replace->hash16 = (uint16_t)hash16;
+}
+
+
+
 
 /// search.c
 
@@ -5258,8 +5596,89 @@ volatile int ABORT_SIGNAL; // Global ABORT flag for threads
 volatile int IS_PONDERING; // Global PONDER flag for threads
 volatile int ANALYSISMODE; // Whether to make some changes for Analysis
 
+uint64 nodesSearchedThreadPool(Thread* threads)
+{
+    // Sum up the node counters across each Thread. Threads have
+    // their own node counters to avoid true sharing the cache
 
-void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponder, int* score) 
+    uint64 nodes = 0ull;
+
+    for (int i = 0; i < threads->nthreads; i++)
+        nodes += threads->threads[i].nodes;
+
+    return nodes;
+}
+
+uint64 tbhitsThreadPool(Thread* threads) 
+{
+    // Sum up the tbhit counters across each Thread. Threads have
+    // their own tbhit counters to avoid true sharing the cache
+
+    uint64 tbhits = 0ull;
+
+    for (int i = 0; i < threads->nthreads; i++)
+        tbhits += threads->threads[i].tbhits;
+
+    return tbhits;
+}
+
+void uciReport(Thread* threads, PVariation* pv, int alpha, int beta)
+{
+    // Gather all of the statistics that the UCI protocol would be
+    // interested in. Also, bound the value passed by alpha and
+    // beta, since Ethereal uses a mix of fail-hard and fail-soft
+
+    int hashfull = tt_hashfull();
+    int depth = threads->depth;
+    int seldepth = threads->seldepth;
+    int multiPV = threads->multiPV + 1;
+    double elapsed = elapsed_time(threads->tm);
+    int bounded = Max(alpha, Min(pv->score, beta));
+    uint64 nodes = nodesSearchedThreadPool(threads);
+    uint64 tbhits = tbhitsThreadPool(threads);
+    //int nps = (int)(1000 * (nodes / (1 + elapsed)));
+
+    // If the score is MATE or MATED in X, convert to X
+    int score = bounded >= MATE_IN_MAX ? (MATE - bounded + 1) / 2
+        : bounded <= -MATE_IN_MAX ? -(bounded + MATE) / 2 : bounded;
+
+    // Two possible score types, mate and cp = centipawns
+    const char* type = abs(bounded) >= MATE_IN_MAX ? "mate" : "cp";
+
+    // Partial results from a windowed search have bounds
+    const char* bound = bounded >= beta ? " lowerbound "
+        : bounded <= alpha ? " upperbound " : " ";
+
+    printf("info depth %d seldepth %d multipv %d score %s %d%stime %d "
+        "knodes %d tbhits %d hashfull %d pv ",
+        depth, seldepth, multiPV, type, score, bound, static_cast<int>(elapsed), static_cast<int>(nodes >> 10), static_cast<int>(tbhits), hashfull);
+
+    // Iterate over the PV and print each move
+    for (int i = 0; i < pv->length; i++) {
+        char moveStr[6];
+        moveToString(pv->line[i], moveStr, threads->board.chess960);
+        printf("%s ", moveStr);
+    }
+
+    // Send out a newline and flush
+    puts(""); fflush(stdout);
+}
+
+void uciReportCurrentMove(Board* board, uint16_t move, int currmove, int depth)
+{
+    char moveStr[6];
+    moveToString(move, moveStr, board->chess960);
+    printf("info depth %d currmove %s currmovenumber %d\n", depth, moveStr, currmove);
+    fflush(stdout);
+}
+
+struct UCIMove_
+{
+    uint16_t best, ponder;
+    int score;
+};
+
+UCIMove_ select_from_threads(Thread* threads) 
 {
     /// A thread is better than another if any are true:
     /// [1] The thread has an equal depth and greater score.
@@ -5286,13 +5705,15 @@ void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponder, int*
     }
 
     // Best and Ponder moves are simply the PV moves
-    *best = best_thread->pvs[best_thread->completed].line[0];
-    *ponder = best_thread->pvs[best_thread->completed].line[1];
-    *score = best_thread->pvs[best_thread->completed].score;
+    UCIMove_ retval = {
+        best_thread->pvs[best_thread->completed].line[0],
+        best_thread->pvs[best_thread->completed].line[1],
+        best_thread->pvs[best_thread->completed].score
+    };
 
     // Incomplete searches or low depth ones may result in a short PV
     if (best_thread->pvs[best_thread->completed].length < 2)
-        *ponder = NONE_MOVE;
+        retval.ponder = NONE_MOVE;
 
     // Report via UCI when our best thread is not the main thread
     if (best_thread != &threads[0]) {
@@ -5300,6 +5721,8 @@ void select_from_threads(Thread* threads, uint16_t* best, uint16_t* ponder, int*
         best_thread->multiPV = 0;
         uciReport(best_thread, &best_thread->pvs[best_depth], -MATE, MATE);
     }
+
+    return retval;
 }
 
 void update_best_line(Thread* thread, PVariation* pv) 
@@ -5366,6 +5789,9 @@ void initSearch() {
     }
 }
 
+struct Abort_ : std::exception 
+{ 
+};
 
 int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
 {
@@ -5386,13 +5812,13 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
 
     // Step 1. Abort Check. Exit the search if signaled by main thread or the
     // UCI thread, or if the search time has expired outside pondering mode
-    if ((ABORT_SIGNAL && thread->depth > 1)
-        || (tm_stop_early(thread) && !IS_PONDERING))
-        longjmp(thread->jbuffer, 1);
+    if ((ABORT_SIGNAL && thread->depth > 1) || (tm_stop_early(thread) && !IS_PONDERING))
+        throw Abort_();
 
     // Step 2. Draw Detection. Check for the fifty move rule, repetition, or insufficient
     // material. Add variance to the draw score, to avoid blindness to 3-fold lines
-    if (boardIsDrawn(board, thread->height)) return 1 - (thread->nodes & 2);
+    if (boardIsDrawn(board, thread->height)) 
+        return 1 - (thread->nodes & 2);
 
     // Step 3. Max Draft Cutoff. If we are at the maximum search draft,
     // then end the search here with a static eval of the current board
@@ -5598,17 +6024,17 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
 
     // Step 2. Abort Check. Exit the search if signaled by main thread or the
     // UCI thread, or if the search time has expired outside pondering mode
-    if ((ABORT_SIGNAL && thread->depth > 1)
-        || (tm_stop_early(thread) && !IS_PONDERING))
-        longjmp(thread->jbuffer, 1);
+    if ((ABORT_SIGNAL && thread->depth > 1) || (tm_stop_early(thread) && !IS_PONDERING))
+        throw Abort_();
 
     // Step 3. Check for early exit conditions. Don't take early exits in
     // the RootNode, since this would prevent us from having a best move
-    if (!RootNode) {
-
+    if (!RootNode) 
+    {
         // Draw Detection. Check for the fifty move rule, repetition, or insufficient
         // material. Add variance to the draw score, to avoid blindness to 3-fold lines
-        if (boardIsDrawn(board, thread->height)) return 1 - (thread->nodes & 2);
+        if (boardIsDrawn(board, thread->height)) 
+            return 1 - (thread->nodes & 2);
 
         // Check to see if we have exceeded the maxiumum search draft
         if (thread->height >= MAX_PLY)
@@ -5845,8 +6271,8 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
 
         // Step 14 (~175 elo). Quiet Move Pruning. Prune any quiet move that meets one
         // of the criteria below, only after proving a non mated line exists
-        if (isQuiet && best > -TBWIN_IN_MAX) {
-
+        if (isQuiet && best > -TBWIN_IN_MAX) 
+        {
             // Base LMR reduced depth value that we expect to use later
             int lmrDepth = Max(0, depth - LMRTable[Min(depth, 63)][Min(played, 63)]);
             int fmpMargin = FutilityMarginBase + lmrDepth * FutilityMarginPerDepth;
@@ -5900,10 +6326,10 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
 
         // Identify moves which are candidate singular moves
         singular = !RootNode
-            && depth >= 8
-            && move == ttMove
-            && ttDepth >= depth - 3
-            && (ttBound & BOUND_LOWER);
+                && depth >= 8
+                && move == ttMove
+                && ttDepth >= depth - 3
+                && (ttBound & BOUND_LOWER);
 
         // Step 16 (~60 elo). Extensions. Search an additional ply when the move comes from the
         // Transposition Table and appears to beat all other moves by a fair margin. Otherwise,
@@ -6087,9 +6513,8 @@ void aspirationWindow(Thread* thread)
     }
 }
 
-void* iterativeDeepening(void* vthread)
+void iterativeDeepening(Thread* thread)
 {
-    Thread* const thread = (Thread*)vthread;
     TimeManager* const tm = thread->tm;
     Limits* const limits = thread->limits;
     const int mainThread = thread->index == 0;
@@ -6099,42 +6524,118 @@ void* iterativeDeepening(void* vthread)
     //    bindThisThread(thread->index);
 
     // Perform iterative deepening until exit conditions
-    for (thread->depth = 1; thread->depth < MAX_PLY; thread->depth++)
+    try
     {
-        // If we abort to here, we stop searching
-#ifdef _MSC_VER
-        if (_setjmp(thread->jbuffer)) break;
-#else
-        if (setjmp(thread->jbuffer)) break;
-#endif
+        for (thread->depth = 1; thread->depth < MAX_PLY; thread->depth++)
+        {
+            // If we abort to here, we stop searching
 
-        // Perform a search for the current depth for each requested line of play
-        for (thread->multiPV = 0; thread->multiPV < limits->multiPV; thread->multiPV++)
-            aspirationWindow(thread);
+            // Perform a search for the current depth for each requested line of play
+            for (thread->multiPV = 0; thread->multiPV < limits->multiPV; thread->multiPV++)
+                aspirationWindow(thread);
 
-        // Helper threads need not worry about time and search info updates
-        if (!mainThread) continue;
+            // Helper threads need not worry about time and search info updates
+            if (!mainThread) continue;
 
-        // We delay reporting during MultiPV searches
-        if (limits->multiPV > 1) report_multipv_lines(thread);
+            // We delay reporting during MultiPV searches
+            if (limits->multiPV > 1) report_multipv_lines(thread);
 
-        // Update clock based on score and pv changes
-        tm_update(thread, limits, tm);
+            // Update clock based on score and pv changes
+            tm_update(thread, limits, tm);
 
-        // Don't want to exit while pondering
-        if (IS_PONDERING) continue;
+            // Don't want to exit while pondering
+            if (IS_PONDERING) continue;
 
-        // Check for termination by any of the possible limits
-        if ((limits->limitedBySelf && tm_finished(thread, tm))
-            || (limits->limitedByDepth && thread->depth >= limits->depthLimit)
-            || (limits->limitedByTime && elapsed_time(tm) >= limits->timeLimit))
-            break;
+            // Check for termination by any of the possible limits
+            if ((limits->limitedBySelf && tm_finished(thread, tm))
+                || (limits->limitedByDepth && thread->depth >= limits->depthLimit)
+                || (limits->limitedByTime && elapsed_time(tm) >= limits->timeLimit))
+                break;
+        }
     }
-
-    return NULL;
+    catch (Abort_)
+    {   }
 }
 
-void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, uint16_t* ponder, int* score)
+/// thread.c
+
+void populateThreadPool(vector<Thread>* threads)
+{
+    for (size_t i = 0; i < threads->size(); i++)
+    {
+        auto& thread = (*threads)[i];
+        // Offset the Node Stack to allow looking backwards
+        thread.states = &(thread.nodeStates[STACK_OFFSET]);
+
+        // NULL out the entire continuation history
+        for (int j = 0; j < STACK_SIZE; j++)
+            thread.nodeStates[j].continuations = NULL;
+
+        // Threads will know of each other
+        thread.index = i;
+        thread.threads = &(*threads)[0];
+        thread.nthreads = threads->size();
+
+        // Accumulator stack and table require alignment
+        thread.nnue = nnue_create_evaluator();
+    }
+}
+
+void clearThreadPool(vector<Thread>* threads)
+{
+    for (auto& thread : *threads)
+        nnue_delete_accumulators(thread.nnue);
+
+    threads->clear();
+}
+
+void resetThreadPool(Thread* threads)
+{
+    // Reset the per-thread tables, used for move ordering
+    // and evaluation caching. This is needed for ucinewgame
+    // calls in order to ensure a deterministic behaviour
+
+    for (int i = 0; i < threads->nthreads; i++)
+    {
+        memset(&threads[i].pktable, 0, sizeof(PKTable));
+
+        memset(&threads[i].killers, 0, sizeof(KillerTable));
+        memset(&threads[i].cmtable, 0, sizeof(CounterMoveTable));
+
+        memset(&threads[i].history, 0, sizeof(HistoryTable));
+        memset(&threads[i].chistory, 0, sizeof(CaptureHistoryTable));
+        memset(&threads[i].continuation, 0, sizeof(ContinuationTable));
+    }
+}
+
+void newSearchThreadPool(Thread* threads, Board* board, Limits* limits, TimeManager* tm)
+{
+    // Initialize each Thread in the Thread Pool. We need a reference
+    // to the UCI seach parameters, access to the timing information,
+    // somewhere to store the results of each iteration by the main, and
+    // our own copy of the board. Also, we reset the seach statistics
+
+    for (int i = 0; i < threads->nthreads; i++)
+    {
+        threads[i].limits = limits;
+        threads[i].tm = tm;
+        threads[i].height = 0;
+        threads[i].nodes = 0ull;
+        threads[i].tbhits = 0ull;
+
+        memcpy(&threads[i].board, board, sizeof(Board));
+        threads[i].board.thread = &threads[i];
+
+        // Reset the accumulator stack. The table can remain
+        threads[i].nnue->current = &threads[i].nnue->stack[0];
+        threads[i].nnue->current->accurate[WHITE] = 0;
+        threads[i].nnue->current->accurate[BLACK] = 0;
+
+        memset(threads[i].nodeStates, 0, sizeof(NodeState) * STACK_SIZE);
+    }
+}
+
+UCIMove_ getBestMove(Thread* threads, Board* board, Limits* limits)
 {
     vector<unique_ptr<thread>> pthreads(threads->nthreads);
     TimeManager tm = { 0 }; tm_init(limits, &tm);
@@ -6153,7 +6654,7 @@ void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, 
     // us from having the current thread eating CPU time while waiting
     for (int i = 1; i < threads->nthreads; i++)
         pthreads[i].reset(new thread(&iterativeDeepening, &threads[i]));
-    iterativeDeepening((void*)&threads[0]);
+    iterativeDeepening(&threads[0]);
 
     // When the main thread exits it should signal for the helpers to
     // shutdown. Wait until all helpers have finished before moving on
@@ -6162,8 +6663,16 @@ void getBestMove(Thread* threads, Board* board, Limits* limits, uint16_t* best, 
         pthreads[i]->join();
 
     // Pick the best of our completed threads
-    select_from_threads(threads, best, ponder, score);
+    return select_from_threads(threads);
 }
+
+struct UCIGoStruct {
+    Thread* threads;
+    Board* board;
+    Limits  limits;
+    uint64 nodesSofar;
+    double elapsedSofar;
+};
 
 void* start_search_threads(void* arguments)
 {
@@ -6173,12 +6682,8 @@ void* start_search_threads(void* arguments)
     Board* board = go->board;
     Limits* limits = &go->limits;
 
-    int score;
-    char str[6];
-    uint16_t best = NONE_MOVE, ponder = NONE_MOVE;
-
     // Execute search, setting best and ponder moves
-    getBestMove(threads, board, limits, &best, &ponder, &score);
+    auto uciMove = getBestMove(threads, board, limits);
 
     // UCI spec does not want reports until out of pondering
     while (IS_PONDERING);
@@ -6189,12 +6694,13 @@ void* start_search_threads(void* arguments)
     printf("info nps %d\n", nps);
 
     // Report best move ( we should always have one )
-    moveToString(best, str, board->chess960);
+    char str[6];
+    moveToString(uciMove.best, str, board->chess960);
     printf("bestmove %s", str);
 
     // Report ponder move ( if we have one )
-    if (ponder != NONE_MOVE) {
-        moveToString(ponder, str, board->chess960);
+    if (uciMove.ponder != NONE_MOVE) {
+        moveToString(uciMove.ponder, str, board->chess960);
         printf(" ponder %s", str);
     }
 
@@ -6204,378 +6710,6 @@ void* start_search_threads(void* arguments)
     return arguments;
 }
 
-
-/// transposition.c
-
-
-
-
-struct TTClear { size_t index, count; };
-
-void* tt_clear_threaded(void* cargo)
-{
-    const uint64 MB = 1ull << 20;
-    struct TTClear* ttclear = (struct TTClear*)cargo;
-
-    // Logic for dividing the Table taken from Weiss and CFish
-    const uint64 size = (Table.hashMask + 1) * sizeof(TTBucket);
-    const uint64 slice = (size + ttclear->count - 1) / ttclear->count;
-    const uint64 blocks = (slice + 2 * MB - 1) / (2 * MB);
-    const uint64 begin = Min(size, ttclear->index * blocks * 2 * MB);
-    const uint64 end = Min(size, begin + blocks * 2 * MB);
-
-    memset(&Table.buckets[0] + begin / sizeof(TTBucket), 0, end - begin);
-    return NULL;
-}
-
-void tt_clear(size_t nthreads)
-{
-    // Only use 1/4th of the enabled search Threads
-    size_t nworkers = Max<size_t>(1, nthreads / 4);
-    vector<unique_ptr<thread>> pthreads(nworkers);
-    vector<TTClear> ttclears(nworkers);
-
-    // Initalize the data passed via a void* in pthread_create()
-    for (size_t i = 0; i < nworkers; i++)
-        ttclears[i] = { i, nworkers };
-
-    // Launch each of the helper threads to clear their sections
-    for (int i = 1; i < nworkers; i++)
-        pthreads[i].reset(new thread(tt_clear_threaded, &ttclears[i]));
-
-    // Reuse this thread for the 0th sections of the Transposition Table
-    tt_clear_threaded(&ttclears[0]);
-
-    // Join each of the helper threads after they've cleared their sections
-    for (int i = 1; i < nworkers; i++)
-        pthreads[i]->join();
-}
-
-int tt_init(size_t nthreads, int megabytes)
-{
-    const uint64 MB = 1ull << 20;
-    uint64 keySize = 16ull;
-
-    // Cleanup memory when resizing the table
-    if (Table.hashMask)
-        vector<TTBucket>().swap(Table.buckets);
-
-    // Default keysize of 16 bits maps to a 2MB TTable
-    assert((1ull << 16ull) * sizeof(TTBucket) == 2 * MB);
-
-    // Find the largest keysize that is still within our given megabytes
-    while ((1ull << keySize) * sizeof(TTBucket) <= megabytes * MB / 2) keySize++;
-    assert((1ull << keySize) * sizeof(TTBucket) <= megabytes * MB);
-
-#if defined(__linux__) && !defined(__ANDROID__)
-
-    // On Linux systems we align on 2MB boundaries and request Huge Pages
-    Table.buckets = aligned_alloc(2 * MB, (1ull << keySize) * sizeof(TTBucket));
-    madvise(Table.buckets, (1ull << keySize) * sizeof(TTBucket), MADV_HUGEPAGE);
-#else
-
-    // Otherwise, we simply allocate as usual and make no requests
-    Table.buckets.resize(1ull << keySize);
-#endif
-
-    // Save the lookup mask
-    Table.hashMask = (1ull << keySize) - 1u;
-
-    // Clear the table and load everything into the cache
-    tt_clear(nthreads);
-
-    // Return the number of MB actually allocated for the TTable
-    return static_cast<int>(((Table.hashMask + 1) * sizeof(TTBucket)) / MB);
-}
-
-int tt_hashfull() {
-
-    /// Estimate the permill of the table being used, by looking at a thousand
-    /// Buckets and seeing how many Entries contain a recent Transposition.
-
-    int used = 0;
-
-    for (int i = 0; i < 1000; i++)
-        for (int j = 0; j < TT_BUCKET_NB; j++)
-            used += (Table.buckets[i].slots[j].generation & TT_MASK_BOUND) != BOUND_NONE
-            && (Table.buckets[i].slots[j].generation & TT_MASK_AGE) == Table.generation;
-
-    return used / TT_BUCKET_NB;
-}
-
-void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound) {
-
-    int i;
-    const uint16_t hash16 = hash >> 48;
-    TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
-    TTEntry* replace = slots; // &slots[0]
-
-    // Find a matching hash, or replace using Min(x1, x2, x3),
-    // where xN equals the depth minus 4 times the age difference
-    for (i = 0; i < TT_BUCKET_NB && slots[i].hash16 != hash16; i++)
-        if (replace->depth - ((259 + Table.generation - replace->generation) & TT_MASK_AGE)
-            >= slots[i].depth - ((259 + Table.generation - slots[i].generation) & TT_MASK_AGE))
-            replace = &slots[i];
-
-    // Prefer a matching hash, otherwise score a replacement
-    replace = (i != TT_BUCKET_NB) ? &slots[i] : replace;
-
-    // Don't overwrite an entry from the same position, unless we have
-    // an exact bound or depth that is nearly as good as the old one
-    if (bound != BOUND_EXACT
-        && hash16 == replace->hash16
-        && depth < replace->depth - 2)
-        return;
-
-    // Don't overwrite a move if we don't have a new one
-    if (move || hash16 != replace->hash16)
-        replace->move = (uint16_t)move;
-
-    // Finally, copy the new data into the replaced slot
-    replace->depth = (int8_t)depth;
-    replace->generation = (uint8_t)bound | Table.generation;
-    replace->value = (score_t)tt_value_to(value, height);
-    replace->eval = (score_t)eval;
-    replace->hash16 = (uint16_t)hash16;
-}
-
-
-uint64 discoveredAttacks(Board* board, int sq, int US) 
-{
-    uint64 enemy = board->colours[!US];
-    uint64 occupied = board->colours[US] | enemy;
-
-    uint64 rAttacks = rookAttacks(sq, occupied);
-    uint64 bAttacks = bishopAttacks(sq, occupied);
-
-    uint64 rooks = (enemy & board->pieces[ROOK]) & ~rAttacks;
-    uint64 bishops = (enemy & board->pieces[BISHOP]) & ~bAttacks;
-
-    return (rooks & rookAttacks(sq, occupied & ~rAttacks))
-        | (bishops & bishopAttacks(sq, occupied & ~bAttacks));
-}
-
-
-/// movegen.c
-
-
-typedef uint64(*JumperFunc)(int);
-typedef uint64(*SliderFunc)(int, uint64);
-
-uint16_t* buildEnpassMoves(uint16_t* moves, uint64 attacks, int epsq) {
-
-    while (attacks)
-        *(moves++) = MoveMake(poplsb(&attacks), epsq, ENPASS_MOVE);
-
-    return moves;
-}
-
-uint16_t* buildPawnMoves(uint16_t* moves, uint64 attacks, int delta) {
-
-    while (attacks) {
-        int sq = poplsb(&attacks);
-        *(moves++) = MoveMake(sq + delta, sq, NORMAL_MOVE);
-    }
-
-    return moves;
-}
-
-uint16_t* buildPawnPromotions(uint16_t* moves, uint64 attacks, int delta) {
-
-    while (attacks) {
-        int sq = poplsb(&attacks);
-        *(moves++) = MoveMake(sq + delta, sq, QUEEN_PROMO_MOVE);
-        *(moves++) = MoveMake(sq + delta, sq, ROOK_PROMO_MOVE);
-        *(moves++) = MoveMake(sq + delta, sq, BISHOP_PROMO_MOVE);
-        *(moves++) = MoveMake(sq + delta, sq, KNIGHT_PROMO_MOVE);
-    }
-
-    return moves;
-}
-
-uint16_t* buildNormalMoves(uint16_t* moves, uint64 attacks, int sq) {
-
-    while (attacks)
-        *(moves++) = MoveMake(sq, poplsb(&attacks), NORMAL_MOVE);
-
-    return moves;
-}
-
-uint16_t* buildJumperMoves(JumperFunc F, uint16_t* moves, uint64 pieces, uint64 targets) {
-
-    while (pieces) {
-        int sq = poplsb(&pieces);
-        moves = buildNormalMoves(moves, F(sq) & targets, sq);
-    }
-
-    return moves;
-}
-
-uint16_t* buildSliderMoves(SliderFunc F, uint16_t* moves, uint64 pieces, uint64 targets, uint64 occupied) {
-
-    while (pieces) {
-        int sq = poplsb(&pieces);
-        moves = buildNormalMoves(moves, F(sq, occupied) & targets, sq);
-    }
-
-    return moves;
-}
-
-
-ptrdiff_t genAllLegalMoves(Board* board, uint16_t* moves) 
-{
-    Undo undo[1];
-    int size = 0;
-    uint16_t pseudoMoves[MAX_MOVES];
-
-    // Call genAllNoisyMoves() & genAllNoisyMoves()
-    ptrdiff_t pseudo = genAllNoisyMoves(board, pseudoMoves);
-    pseudo += genAllQuietMoves(board, pseudoMoves + pseudo);
-
-    // Check each move for legality before copying
-    for (int i = 0; i < pseudo; i++) {
-        applyMove(board, pseudoMoves[i], undo);
-        if (moveWasLegal(board)) moves[size++] = pseudoMoves[i];
-        revertMove(board, pseudoMoves[i], undo);
-    }
-
-    return size;
-}
-
-ptrdiff_t genAllNoisyMoves(Board* board, uint16_t* moves) 
-{
-    const uint16_t* start = moves;
-
-    const int Left = board->turn == WHITE ? -7 : 7;
-    const int Right = board->turn == WHITE ? -9 : 9;
-    const int Forward = board->turn == WHITE ? -8 : 8;
-
-    uint64 destinations, pawnEnpass, pawnLeft, pawnRight;
-    uint64 pawnPromoForward, pawnPromoLeft, pawnPromoRight;
-
-    uint64 us = board->colours[board->turn];
-    uint64 them = board->colours[!board->turn];
-    uint64 occupied = us | them;
-
-    uint64 pawns = us & (board->pieces[PAWN]);
-    uint64 knights = us & (board->pieces[KNIGHT]);
-    uint64 bishops = us & (board->pieces[BISHOP]);
-    uint64 rooks = us & (board->pieces[ROOK]);
-    uint64 kings = us & (board->pieces[KING]);
-
-    // Merge together duplicate piece ideas
-    bishops |= us & board->pieces[QUEEN];
-    rooks |= us & board->pieces[QUEEN];
-
-    // Double checks can only be evaded by moving the King
-    if (Multiple(board->kingAttackers))
-        return buildJumperMoves(&kingAttacks, moves, kings, them) - start;
-
-    // When checked, we may only uncheck by capturing the checker
-    destinations = board->kingAttackers ? board->kingAttackers : them;
-
-    // Compute bitboards for each type of Pawn movement
-    pawnEnpass = pawnEnpassCaptures(pawns, board->epSquare, board->turn);
-    pawnLeft = pawnLeftAttacks(pawns, them, board->turn);
-    pawnRight = pawnRightAttacks(pawns, them, board->turn);
-    pawnPromoForward = pawnAdvance(pawns, occupied, board->turn) & PROMOTION_RANKS;
-    pawnPromoLeft = pawnLeft & PROMOTION_RANKS; pawnLeft &= ~PROMOTION_RANKS;
-    pawnPromoRight = pawnRight & PROMOTION_RANKS; pawnRight &= ~PROMOTION_RANKS;
-
-    // Generate moves for all the Pawns, so long as they are noisy
-    moves = buildEnpassMoves(moves, pawnEnpass, board->epSquare);
-    moves = buildPawnMoves(moves, pawnLeft & destinations, Left);
-    moves = buildPawnMoves(moves, pawnRight & destinations, Right);
-    moves = buildPawnPromotions(moves, pawnPromoForward, Forward);
-    moves = buildPawnPromotions(moves, pawnPromoLeft, Left);
-    moves = buildPawnPromotions(moves, pawnPromoRight, Right);
-
-    // Generate moves for the remainder of the pieces, so long as they are noisy
-    moves = buildJumperMoves(&knightAttacks, moves, knights, destinations);
-    moves = buildSliderMoves(&bishopAttacks, moves, bishops, destinations, occupied);
-    moves = buildSliderMoves(&rookAttacks, moves, rooks, destinations, occupied);
-    moves = buildJumperMoves(&kingAttacks, moves, kings, them);
-
-    return moves - start;
-}
-
-ptrdiff_t genAllQuietMoves(Board* board, uint16_t* moves) 
-{
-    const uint16_t* start = moves;
-
-    const int Forward = board->turn == WHITE ? -8 : 8;
-    const uint64 Rank3Relative = board->turn == WHITE ? Line[2] : Line[5];
-
-    int rook, king, rookTo, kingTo, attacked;
-    uint64 destinations, pawnForwardOne, pawnForwardTwo, mask;
-
-    uint64 us = board->colours[board->turn];
-    uint64 occupied = us | board->colours[!board->turn];
-    uint64 castles = us & board->castleRooks;
-
-    uint64 pawns = us & (board->pieces[PAWN]);
-    uint64 knights = us & (board->pieces[KNIGHT]);
-    uint64 bishops = us & (board->pieces[BISHOP]);
-    uint64 rooks = us & (board->pieces[ROOK]);
-    uint64 kings = us & (board->pieces[KING]);
-
-    // Merge together duplicate piece ideas
-    bishops |= us & board->pieces[QUEEN];
-    rooks |= us & board->pieces[QUEEN];
-
-    // Double checks can only be evaded by moving the King
-    if (Multiple(board->kingAttackers))
-        return buildJumperMoves(&kingAttacks, moves, kings, ~occupied) - start;
-
-    // When checked, we must block the checker with non-King pieces
-    destinations = !board->kingAttackers 
-            ? ~occupied
-            : Between[lsb(kings)][lsb(board->kingAttackers)];
-
-    // Compute bitboards for each type of Pawn movement
-    pawnForwardOne = pawnAdvance(pawns, occupied, board->turn) & ~PROMOTION_RANKS;
-    pawnForwardTwo = pawnAdvance(pawnForwardOne & Rank3Relative, occupied, board->turn);
-
-    // Generate moves for all the pawns, so long as they are quiet
-    moves = buildPawnMoves(moves, pawnForwardOne & destinations, Forward);
-    moves = buildPawnMoves(moves, pawnForwardTwo & destinations, Forward * 2);
-
-    // Generate moves for the remainder of the pieces, so long as they are quiet
-    moves = buildJumperMoves(&knightAttacks, moves, knights, destinations);
-    moves = buildSliderMoves(&bishopAttacks, moves, bishops, destinations, occupied);
-    moves = buildSliderMoves(&rookAttacks, moves, rooks, destinations, occupied);
-    moves = buildJumperMoves(&kingAttacks, moves, kings, ~occupied);
-
-    // Attempt to generate a castle move for each rook
-    while (castles && !board->kingAttackers) {
-
-        // Figure out which pieces are moving to which squares
-        rook = poplsb(&castles), king = lsb(kings);
-        rookTo = castleRookTo(king, rook);
-        kingTo = castleKingTo(king, rook);
-        attacked = 0;
-
-        // Castle is illegal if we would go over a piece
-        mask = Between[king][kingTo] | (1ull << kingTo);
-        mask |= Between[rook][rookTo] | (1ull << rookTo);
-        mask &= ~((1ull << king) | (1ull << rook));
-        if (occupied & mask) continue;
-
-        // Castle is illegal if we move through a checking threat
-        mask = Between[king][kingTo];
-        while (mask)
-            if (squareIsAttacked(board, board->turn, poplsb(&mask)))
-            {
-                attacked = 1; break;
-            }
-        if (attacked) continue;
-
-        // All conditions have been met. Identify which side we are castling to
-        *(moves++) = MoveMake(king, rook, CASTLE_MOVE);
-    }
-
-    return moves - start;
-}
 
 
 
@@ -7095,10 +7229,6 @@ uint64 perft(Board* board, int depth)
 }
 
 
-/// cmdline.h
-
-void handleCommandLine(int argc, char** argv);
-
 
 /// cmdline.c
 
@@ -7112,11 +7242,8 @@ void runBenchmark(int argc, char** argv)
     Board board;
     Limits limits = { 0 };
 
-    int scores[256];
     double times[256];
     uint64 nodes[256];
-    uint16_t bestMoves[256];
-    uint16_t ponderMoves[256];
 
     double time;
     uint64 totalNodes = 0ull;
@@ -7140,12 +7267,13 @@ void runBenchmark(int argc, char** argv)
     limits.limitedByDepth = 1;
     limits.depthLimit = depth;
 
-    for (int i = 0; strcmp(Benchmarks[i], ""); i++) 
+    vector<UCIMove_> moves;
+    for (int i = 0; strcmp(Benchmarks[i], ""); i++)
     {
         // Perform the search on the position
         limits.start = get_real_time();
         boardFromFEN(&board, Benchmarks[i], 0);
-        getBestMove(&threads[0], &board, &limits, &bestMoves[i], &ponderMoves[i], &scores[i]);
+        moves.push_back(getBestMove(&threads[0], &board, &limits));
 
         // Stat collection for later printing
         times[i] = get_real_time() - limits.start;
@@ -7156,15 +7284,15 @@ void runBenchmark(int argc, char** argv)
 
     printf("\n===============================================================================\n");
 
-    for (int i = 0; strcmp(Benchmarks[i], ""); i++) {
-
+    for (int i = 0; strcmp(Benchmarks[i], ""); i++) 
+    {
         // Convert moves to typical UCI notation
         char bestStr[6], ponderStr[6];
-        moveToString(bestMoves[i], bestStr, 0);
-        moveToString(ponderMoves[i], ponderStr, 0);
+        moveToString(moves[i].best, bestStr, 0);
+        moveToString(moves[i].ponder, ponderStr, 0);
 
         // Log all collected information for the current position
-        printf("[# %2d] %5d cp  Best:%6s  Ponder:%6s %12d nodes %12d nps\n", i + 1, scores[i],
+        printf("[# %2d] %5d cp  Best:%6s  Ponder:%6s %12d nodes %12d nps\n", i + 1, moves[i].score,
             bestStr, ponderStr, (int)nodes[i], (int)(1000.0f * nodes[i] / (times[i] + 1)));
     }
 
@@ -7180,11 +7308,9 @@ void runBenchmark(int argc, char** argv)
 
 void runEvalBook(int argc, char** argv) 
 {
-    int score;
     Board board;
     char line[256];
     Limits limits = { 0 };
-    uint16_t best, ponder;
     double start = get_real_time();
 
     FILE* book = fopen(argv[2], "r");
@@ -7203,13 +7329,41 @@ void runEvalBook(int argc, char** argv)
     while ((fgets(line, 256, book)) != NULL) {
         limits.start = get_real_time();
         boardFromFEN(&board, line, 0);
-        getBestMove(&threads[0], &board, &limits, &best, &ponder, &score);
+        auto move = getBestMove(&threads[0], &board, &limits);
         resetThreadPool(&threads[0]);
         tt_clear(nthreads);
         printf("FEN: %s", line);
     }
 
     printf("Time %dms\n", (int)(get_real_time() - start));
+}
+
+int strEquals(const char* str1, const char* str2) {
+    return strcmp(str1, str2) == 0;
+}
+
+int strStartsWith(const char* str, const char* key) {
+    return strstr(str, key) == str;
+}
+
+int strContains(const char* str, const char* key) {
+    return strstr(str, key) != NULL;
+}
+
+int getInput(char* str)
+{
+    char* ptr;
+
+    if (fgets(str, 8192, stdin) == NULL)
+        return 0;
+
+    ptr = strchr(str, '\n');
+    if (ptr != NULL) *ptr = '\0';
+
+    ptr = strchr(str, '\r');
+    if (ptr != NULL) *ptr = '\0';
+
+    return 1;
 }
 
 void handleCommandLine(int argc, char** argv) 
@@ -7250,286 +7404,62 @@ void handleCommandLine(int argc, char** argv)
 #endif
 }
 
-/// thread.c
-
-void populateThreadPool(vector<Thread>* threads)
-{
-    for (size_t i = 0; i < threads->size(); i++) 
-    {
-        auto& thread = (*threads)[i];
-        // Offset the Node Stack to allow looking backwards
-        thread.states = &(thread.nodeStates[STACK_OFFSET]);
-
-        // NULL out the entire continuation history
-        for (int j = 0; j < STACK_SIZE; j++)
-            thread.nodeStates[j].continuations = NULL;
-
-        // Threads will know of each other
-        thread.index = i;
-        thread.threads = &(*threads)[0];
-        thread.nthreads = threads->size();
-
-        // Accumulator stack and table require alignment
-        thread.nnue = nnue_create_evaluator();
-    }
-}
-
-void clearThreadPool(vector<Thread>* threads) 
-{
-    for (auto& thread: *threads)
-        nnue_delete_accumulators(thread.nnue);
-
-    threads->clear();
-}
-
-void resetThreadPool(Thread* threads) 
-{
-    // Reset the per-thread tables, used for move ordering
-    // and evaluation caching. This is needed for ucinewgame
-    // calls in order to ensure a deterministic behaviour
-
-    for (int i = 0; i < threads->nthreads; i++) 
-    {
-        memset(&threads[i].pktable, 0, sizeof(PKTable));
-
-        memset(&threads[i].killers, 0, sizeof(KillerTable));
-        memset(&threads[i].cmtable, 0, sizeof(CounterMoveTable));
-
-        memset(&threads[i].history, 0, sizeof(HistoryTable));
-        memset(&threads[i].chistory, 0, sizeof(CaptureHistoryTable));
-        memset(&threads[i].continuation, 0, sizeof(ContinuationTable));
-    }
-}
-
-void newSearchThreadPool(Thread* threads, Board* board, Limits* limits, TimeManager* tm) 
-{
-    // Initialize each Thread in the Thread Pool. We need a reference
-    // to the UCI seach parameters, access to the timing information,
-    // somewhere to store the results of each iteration by the main, and
-    // our own copy of the board. Also, we reset the seach statistics
-
-    for (int i = 0; i < threads->nthreads; i++) 
-    {
-        threads[i].limits = limits;
-        threads[i].tm = tm;
-        threads[i].height = 0;
-        threads[i].nodes = 0ull;
-        threads[i].tbhits = 0ull;
-
-        memcpy(&threads[i].board, board, sizeof(Board));
-        threads[i].board.thread = &threads[i];
-
-        // Reset the accumulator stack. The table can remain
-        threads[i].nnue->current = &threads[i].nnue->stack[0];
-        threads[i].nnue->current->accurate[WHITE] = 0;
-        threads[i].nnue->current->accurate[BLACK] = 0;
-
-        memset(threads[i].nodeStates, 0, sizeof(NodeState) * STACK_SIZE);
-    }
-}
-
-uint64 nodesSearchedThreadPool(Thread* threads) 
-{
-    // Sum up the node counters across each Thread. Threads have
-    // their own node counters to avoid true sharing the cache
-
-    uint64 nodes = 0ull;
-
-    for (int i = 0; i < threads->nthreads; i++)
-        nodes += threads->threads[i].nodes;
-
-    return nodes;
-}
-
-uint64 tbhitsThreadPool(Thread* threads) {
-
-    // Sum up the tbhit counters across each Thread. Threads have
-    // their own tbhit counters to avoid true sharing the cache
-
-    uint64 tbhits = 0ull;
-
-    for (int i = 0; i < threads->nthreads; i++)
-        tbhits += threads->threads[i].tbhits;
-
-    return tbhits;
-}
-
-
 /// uci.c
 
 const char* StartPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-int main(int argc, char** argv) 
+void uciPosition(char* str, Board* board, int chess960)
 {
-    Board board;
-    char str[8192] = { 0 };
-    unique_ptr<thread> pthreadsgo;
-    UCIGoStruct uciGoStruct;
-
-    int chess960 = 0;
-    int multiPV = 1;
-
-    // Initialize core components of Ethereal
-    initAttacks(); initMasks(); initMaterial();
-    initSearch(); initZobrist(); tt_init(1, 16);
-    initPKNetwork(); nnue_incbin_init();
-
-    // Create the UCI-board and our threads
-    vector<Thread> threads(1);
-    populateThreadPool(&threads);
-    boardFromFEN(&board, StartPosition, chess960);
-
-    // Handle any command line requests
-    handleCommandLine(argc, argv);
-
-    /*
-    |------------|-----------------------------------------------------------------------|
-    |  Commands  | Response. * denotes that the command blocks until no longer searching |
-    |------------|-----------------------------------------------------------------------|
-    |        uci |           Outputs the engine name, authors, and all available options |
-    |    isready | *           Responds with readyok when no longer searching a position |
-    | ucinewgame | *  Resets the TT and any Hueristics to ensure determinism in searches |
-    |  setoption | *     Sets a given option and reports that the option was set if done |
-    |   position | *  Sets the board position via an optional FEN and optional move list |
-    |         go | *       Searches the current position with the provided time controls |
-    |  ponderhit |          Flags the search to indicate that the ponder move was played |
-    |       stop |            Signals the search threads to finish and report a bestmove |
-    |       quit |             Exits the engine and any searches by killing the UCI loop |
-    |      perft |            Custom command to compute PERFT(N) of the current position |
-    |      print |         Custom command to print an ASCII view of the current position |
-    |------------|-----------------------------------------------------------------------|
-    */
-
-    while (getInput(str)) {
-
-        if (strEquals(str, "uci")) {
-            printf("id name Ethereal " ETHEREAL_VERSION "\n");
-            printf("id author Andrew Grant, Alayan & Laldon\n");
-            printf("option name Hash type spin default 16 min 2 max 131072\n");
-            printf("option name Threads type spin default 1 min 1 max 2048\n");
-            printf("option name EvalFile type string default <empty>\n");
-            printf("option name MultiPV type spin default 1 min 1 max 256\n");
-            printf("option name MoveOverhead type spin default 300 min 0 max 10000\n");
-            printf("option name SyzygyPath type string default <empty>\n");
-            printf("option name SyzygyProbeDepth type spin default 0 min 0 max 127\n");
-            printf("option name Ponder type check default false\n");
-            printf("option name AnalysisMode type check default false\n");
-            printf("option name UCI_Chess960 type check default false\n");
-            printf("info string licensed to " LICENSE_OWNER "\n");
-            printf("uciok\n"), fflush(stdout);
-        }
-
-        else if (strEquals(str, "isready"))
-            printf("readyok\n"), fflush(stdout);
-
-        else if (strEquals(str, "ucinewgame"))
-            resetThreadPool(&threads[0]), tt_clear(threads[0].nthreads);
-
-        else if (strStartsWith(str, "setoption"))
-            uciSetOption(str, &threads, &multiPV, &chess960);
-
-        else if (strStartsWith(str, "position"))
-            uciPosition(str, &board, chess960);
-
-        else if (strStartsWith(str, "go"))
-        {
-            pthreadsgo.reset(uciGo(&uciGoStruct, &threads[0], &board, multiPV, str));
-            pthreadsgo->detach();   // maybe not needed?
-        }
-
-        else if (strEquals(str, "ponderhit"))
-            IS_PONDERING = 0;
-
-        else if (strEquals(str, "stop"))
-            ABORT_SIGNAL = 1, IS_PONDERING = 0;
-
-        else if (strEquals(str, "quit"))
-            break;
-
-        else if (strStartsWith(str, "perft"))
-            cout << perft(&board, atoi(str + strlen("perft "))) << endl;
-
-        else if (strStartsWith(str, "print"))
-            printBoard(&board), fflush(stdout);
-    }
-
-    return 0;
-}
-
-thread* uciGo(UCIGoStruct* ucigo, Thread* threads, Board* board, int multiPV, char* str) 
-{
-    /// Parse the entire "go" command in order to fill out a Limits struct, found at ucigo->limits.
-    /// After we have processed all of this, we can execute a new search thread, held by *pthread,
-    /// and detach it.
-
-    double start = get_real_time();
-    double wtime = 0, btime = 0;
-    double winc = 0, binc = 0, mtg = -1;
-
-    char moveStr[6];
-    char* ptr = strtok(str, " ");
-
+    int size;
     uint16_t moves[MAX_MOVES];
-    int size = static_cast<int>(genAllLegalMoves(board, moves)), idx = 0;
+    char* ptr, moveStr[6], testStr[6];
+    Undo undo[1];
 
-    Limits* limits = &ucigo->limits;
-    memset(limits, 0, sizeof(Limits));
+    // Position is defined by a FEN, X-FEN or Shredder-FEN
+    if (strContains(str, "fen"))
+        boardFromFEN(board, strstr(str, "fen") + strlen("fen "), chess960);
 
-    IS_PONDERING = FALSE; // Reset PONDERING every time to be safe
+    // Position is simply the usual starting position
+    else if (strContains(str, "startpos"))
+        boardFromFEN(board, StartPosition, chess960);
 
-    for (ptr = strtok(NULL, " "); ptr != NULL; ptr = strtok(NULL, " ")) 
+    // Position command may include a list of moves
+    ptr = strstr(str, "moves");
+    if (ptr != NULL)
+        ptr += strlen("moves ");
+
+    // Apply each move in the move list
+    while (ptr != NULL && *ptr != '\0')
     {
-        // Parse time control conditions
-        if (strEquals(ptr, "wtime")) wtime = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "btime")) btime = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "winc")) winc = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "binc")) binc = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "movestogo")) mtg = atoi(strtok(NULL, " "));
+        // UCI sends moves in long algebraic notation
+        for (int i = 0; i < 4; i++) moveStr[i] = *ptr++;
+        moveStr[4] = *ptr == '\0' || *ptr == ' ' ? '\0' : *ptr++;
+        moveStr[5] = '\0';
 
-        // Parse special search termination conditions
-        if (strEquals(ptr, "depth")) limits->depthLimit = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "movetime")) limits->timeLimit = atoi(strtok(NULL, " "));
-        if (strEquals(ptr, "nodes")) limits->nodeLimit = static_cast<uint64>(atof(strtok(NULL, " ")));
+        // Generate moves for this position
+        size = static_cast<int>(genAllLegalMoves(board, moves));
 
-        // Parse special search modes
-        if (strEquals(ptr, "infinite")) limits->limitedByNone = TRUE;
-        if (strEquals(ptr, "searchmoves")) limits->limitedByMoves = TRUE;
-        if (strEquals(ptr, "ponder")) IS_PONDERING = TRUE;
-
-        // Parse any specific moves that we are to search
+        // Find and apply the given move
         for (int i = 0; i < size; i++) {
-            moveToString(moves[i], moveStr, board->chess960);
-            if (strEquals(ptr, moveStr)) limits->searchMoves[idx++] = moves[i];
+            moveToString(moves[i], testStr, board->chess960);
+            if (strEquals(moveStr, testStr)) {
+                applyMove(board, moves[i], undo);
+                break;
+            }
         }
+
+        // Reset move history whenever we reset the fifty move rule. This way
+        // we can track all positions that are candidates for repetitions, and
+        // are still able to use a fixed size for the history array (512)
+        if (board->halfMoveCounter == 0)
+            board->numMoves = 0;
+
+        // Skip over all white space
+        while (*ptr == ' ') ptr++;
     }
-
-    // Special exit cases: Time, Depth, and Nodes
-    limits->limitedByTime = limits->timeLimit != 0;
-    limits->limitedByDepth = limits->depthLimit != 0;
-    limits->limitedByNodes = limits->nodeLimit != 0;
-
-    // No special case nor infinite, so we set our own time
-    limits->limitedBySelf = !limits->depthLimit && !limits->timeLimit
-        && !limits->limitedByNone && !limits->nodeLimit;
-
-    // Pick the time values for the colour we are playing as
-    limits->start = (board->turn == WHITE) ? start : start;
-    limits->time = (board->turn == WHITE) ? wtime : btime;
-    limits->inc = (board->turn == WHITE) ? winc : binc;
-    limits->mtg = (board->turn == WHITE) ? mtg : mtg;
-
-    // Cap our MultiPV search based on the suggested or legal moves
-    limits->multiPV = Min(multiPV, limits->limitedByMoves ? idx : size);
-
-    // Prepare the uciGoStruct for the new pthread
-    ucigo->board = board;
-    ucigo->threads = threads;
-
-    // Spawn a new thread to handle the search
-    return new thread(&start_search_threads, ucigo);
 }
 
-void uciSetOption(char* str, vector<Thread>* threads, int* multiPV, int* chess960) 
+void uciSetOption(char* str, vector<Thread>* threads, int* multiPV, int* chess960)
 {
     // Handle setting UCI options in Ethereal. Options include:
     //  Hash                : Size of the Transposition Table in Megabyes
@@ -7591,133 +7521,173 @@ void uciSetOption(char* str, vector<Thread>* threads, int* multiPV, int* chess96
     fflush(stdout);
 }
 
-void uciPosition(char* str, Board* board, int chess960) 
+thread* uciGo(UCIGoStruct* ucigo, Thread* threads, Board* board, int multiPV, char* str)
 {
-    int size;
+    /// Parse the entire "go" command in order to fill out a Limits struct, found at ucigo->limits.
+    /// After we have processed all of this, we can execute a new search thread, held by *pthread,
+    /// and detach it.
+
+    double start = get_real_time();
+    double wtime = 0, btime = 0;
+    double winc = 0, binc = 0, mtg = -1;
+
+    char moveStr[6];
+    char* ptr = strtok(str, " ");
+
     uint16_t moves[MAX_MOVES];
-    char* ptr, moveStr[6], testStr[6];
-    Undo undo[1];
+    int size = static_cast<int>(genAllLegalMoves(board, moves)), idx = 0;
 
-    // Position is defined by a FEN, X-FEN or Shredder-FEN
-    if (strContains(str, "fen"))
-        boardFromFEN(board, strstr(str, "fen") + strlen("fen "), chess960);
+    Limits* limits = &ucigo->limits;
+    memset(limits, 0, sizeof(Limits));
 
-    // Position is simply the usual starting position
-    else if (strContains(str, "startpos"))
-        boardFromFEN(board, StartPosition, chess960);
+    IS_PONDERING = FALSE; // Reset PONDERING every time to be safe
 
-    // Position command may include a list of moves
-    ptr = strstr(str, "moves");
-    if (ptr != NULL)
-        ptr += strlen("moves ");
-
-    // Apply each move in the move list
-    while (ptr != NULL && *ptr != '\0') 
+    for (ptr = strtok(NULL, " "); ptr != NULL; ptr = strtok(NULL, " "))
     {
-        // UCI sends moves in long algebraic notation
-        for (int i = 0; i < 4; i++) moveStr[i] = *ptr++;
-        moveStr[4] = *ptr == '\0' || *ptr == ' ' ? '\0' : *ptr++;
-        moveStr[5] = '\0';
+        // Parse time control conditions
+        if (strEquals(ptr, "wtime")) wtime = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "btime")) btime = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "winc")) winc = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "binc")) binc = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "movestogo")) mtg = atoi(strtok(NULL, " "));
 
-        // Generate moves for this position
-        size = static_cast<int>(genAllLegalMoves(board, moves));
+        // Parse special search termination conditions
+        if (strEquals(ptr, "depth")) limits->depthLimit = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "movetime")) limits->timeLimit = atoi(strtok(NULL, " "));
+        if (strEquals(ptr, "nodes")) limits->nodeLimit = static_cast<uint64>(atof(strtok(NULL, " ")));
 
-        // Find and apply the given move
+        // Parse special search modes
+        if (strEquals(ptr, "infinite")) limits->limitedByNone = TRUE;
+        if (strEquals(ptr, "searchmoves")) limits->limitedByMoves = TRUE;
+        if (strEquals(ptr, "ponder")) IS_PONDERING = TRUE;
+
+        // Parse any specific moves that we are to search
         for (int i = 0; i < size; i++) {
-            moveToString(moves[i], testStr, board->chess960);
-            if (strEquals(moveStr, testStr)) {
-                applyMove(board, moves[i], undo);
-                break;
-            }
+            moveToString(moves[i], moveStr, board->chess960);
+            if (strEquals(ptr, moveStr)) limits->searchMoves[idx++] = moves[i];
+        }
+    }
+
+    // Special exit cases: Time, Depth, and Nodes
+    limits->limitedByTime = limits->timeLimit != 0;
+    limits->limitedByDepth = limits->depthLimit != 0;
+    limits->limitedByNodes = limits->nodeLimit != 0;
+
+    // No special case nor infinite, so we set our own time
+    limits->limitedBySelf = !limits->depthLimit && !limits->timeLimit
+        && !limits->limitedByNone && !limits->nodeLimit;
+
+    // Pick the time values for the colour we are playing as
+    limits->start = start;
+    limits->time = (board->turn == WHITE) ? wtime : btime;
+    limits->inc = (board->turn == WHITE) ? winc : binc;
+    limits->mtg = (board->turn == WHITE) ? mtg : mtg;
+
+    // Cap our MultiPV search based on the suggested or legal moves
+    limits->multiPV = Min(multiPV, limits->limitedByMoves ? idx : size);
+
+    // Prepare the uciGoStruct for the new pthread
+    ucigo->board = board;
+    ucigo->threads = threads;
+
+    // Spawn a new thread to handle the search
+    return new thread(&start_search_threads, ucigo);
+}
+
+int main(int argc, char** argv) 
+{
+    Board board;
+    char str[8192] = { 0 };
+    unique_ptr<thread> pthreadsgo;
+    UCIGoStruct uciGoStruct;
+
+    int chess960 = 0;
+    int multiPV = 1;
+
+    // Initialize core components of Ethereal
+    initAttacks(); initMasks(); initMaterial();
+    initSearch(); initZobrist(); tt_init(1, 16);
+    initPKNetwork(); nnue_incbin_init();
+
+    // Create the UCI-board and our threads
+    vector<Thread> threads(1);
+    populateThreadPool(&threads);
+    boardFromFEN(&board, StartPosition, chess960);
+
+    // Handle any command line requests
+    handleCommandLine(argc, argv);
+
+    /*
+    |------------|-----------------------------------------------------------------------|
+    |  Commands  | Response. * denotes that the command blocks until no longer searching |
+    |------------|-----------------------------------------------------------------------|
+    |        uci |           Outputs the engine name, authors, and all available options |
+    |    isready | *           Responds with readyok when no longer searching a position |
+    | ucinewgame | *  Resets the TT and any Hueristics to ensure determinism in searches |
+    |  setoption | *     Sets a given option and reports that the option was set if done |
+    |   position | *  Sets the board position via an optional FEN and optional move list |
+    |         go | *       Searches the current position with the provided time controls |
+    |  ponderhit |          Flags the search to indicate that the ponder move was played |
+    |       stop |            Signals the search threads to finish and report a bestmove |
+    |       quit |             Exits the engine and any searches by killing the UCI loop |
+    |      perft |            Custom command to compute PERFT(N) of the current position |
+    |      print |         Custom command to print an ASCII view of the current position |
+    |------------|-----------------------------------------------------------------------|
+    */
+
+    while (getInput(str)) 
+    {
+        if (strEquals(str, "uci")) {
+            printf("id name Ethereal " ETHEREAL_VERSION "\n");
+            printf("id author Andrew Grant, Alayan & Laldon\n");
+            printf("option name Hash type spin default 16 min 2 max 131072\n");
+            printf("option name Threads type spin default 1 min 1 max 2048\n");
+            printf("option name EvalFile type string default <empty>\n");
+            printf("option name MultiPV type spin default 1 min 1 max 256\n");
+            printf("option name MoveOverhead type spin default 300 min 0 max 10000\n");
+            printf("option name SyzygyPath type string default <empty>\n");
+            printf("option name SyzygyProbeDepth type spin default 0 min 0 max 127\n");
+            printf("option name Ponder type check default false\n");
+            printf("option name AnalysisMode type check default false\n");
+            printf("option name UCI_Chess960 type check default false\n");
+            printf("info string licensed to " LICENSE_OWNER "\n");
+            printf("uciok\n"), fflush(stdout);
         }
 
-        // Reset move history whenever we reset the fifty move rule. This way
-        // we can track all positions that are candidates for repetitions, and
-        // are still able to use a fixed size for the history array (512)
-        if (board->halfMoveCounter == 0)
-            board->numMoves = 0;
+        else if (strEquals(str, "isready"))
+            printf("readyok\n"), fflush(stdout);
 
-        // Skip over all white space
-        while (*ptr == ' ') ptr++;
-    }
-}
+        else if (strEquals(str, "ucinewgame"))
+            resetThreadPool(&threads[0]), tt_clear(threads[0].nthreads);
 
+        else if (strStartsWith(str, "setoption"))
+            uciSetOption(str, &threads, &multiPV, &chess960);
 
-void uciReport(Thread* threads, PVariation* pv, int alpha, int beta) 
-{
-    // Gather all of the statistics that the UCI protocol would be
-    // interested in. Also, bound the value passed by alpha and
-    // beta, since Ethereal uses a mix of fail-hard and fail-soft
+        else if (strStartsWith(str, "position"))
+            uciPosition(str, &board, chess960);
 
-    int hashfull = tt_hashfull();
-    int depth = threads->depth;
-    int seldepth = threads->seldepth;
-    int multiPV = threads->multiPV + 1;
-    double elapsed = elapsed_time(threads->tm);
-    int bounded = Max(alpha, Min(pv->score, beta));
-    uint64 nodes = nodesSearchedThreadPool(threads);
-    uint64 tbhits = tbhitsThreadPool(threads);
-    //int nps = (int)(1000 * (nodes / (1 + elapsed)));
+        else if (strStartsWith(str, "go"))
+        {
+            pthreadsgo.reset(uciGo(&uciGoStruct, &threads[0], &board, multiPV, str));
+            pthreadsgo->detach();   // maybe not needed?
+        }
 
-    // If the score is MATE or MATED in X, convert to X
-    int score = bounded >= MATE_IN_MAX ? (MATE - bounded + 1) / 2
-        : bounded <= -MATE_IN_MAX ? -(bounded + MATE) / 2 : bounded;
+        else if (strEquals(str, "ponderhit"))
+            IS_PONDERING = 0;
 
-    // Two possible score types, mate and cp = centipawns
-    const char* type = abs(bounded) >= MATE_IN_MAX ? "mate" : "cp";
+        else if (strEquals(str, "stop"))
+            ABORT_SIGNAL = 1, IS_PONDERING = 0;
 
-    // Partial results from a windowed search have bounds
-    const char* bound = bounded >= beta ? " lowerbound "
-        : bounded <= alpha ? " upperbound " : " ";
+        else if (strEquals(str, "quit"))
+            break;
 
-    printf("info depth %d seldepth %d multipv %d score %s %d%stime %d "
-        "knodes %d tbhits %d hashfull %d pv ",
-        depth, seldepth, multiPV, type, score, bound, static_cast<int>(elapsed), static_cast<int>(nodes >> 10), static_cast<int>(tbhits), hashfull);
+        else if (strStartsWith(str, "perft"))
+            cout << perft(&board, atoi(str + strlen("perft "))) << endl;
 
-    // Iterate over the PV and print each move
-    for (int i = 0; i < pv->length; i++) {
-        char moveStr[6];
-        moveToString(pv->line[i], moveStr, threads->board.chess960);
-        printf("%s ", moveStr);
+        else if (strStartsWith(str, "print"))
+            printBoard(&board), fflush(stdout);
     }
 
-    // Send out a newline and flush
-    puts(""); fflush(stdout);
+    return 0;
 }
 
-void uciReportCurrentMove(Board* board, uint16_t move, int currmove, int depth) 
-{
-    char moveStr[6];
-    moveToString(move, moveStr, board->chess960);
-    printf("info depth %d currmove %s currmovenumber %d\n", depth, moveStr, currmove);
-    fflush(stdout);
-}
-
-
-int strEquals(const char* str1, const char* str2) {
-    return strcmp(str1, str2) == 0;
-}
-
-int strStartsWith(const char* str, const char* key) {
-    return strstr(str, key) == str;
-}
-
-int strContains(const char* str, const char* key) {
-    return strstr(str, key) != NULL;
-}
-
-int getInput(char* str) 
-{
-    char* ptr;
-
-    if (fgets(str, 8192, stdin) == NULL)
-        return 0;
-
-    ptr = strchr(str, '\n');
-    if (ptr != NULL) *ptr = '\0';
-
-    ptr = strchr(str, '\r');
-    if (ptr != NULL) *ptr = '\0';
-
-    return 1;
-}
