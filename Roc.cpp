@@ -1,4 +1,5 @@
 // This code is public domain, as defined by the "CC0" Creative Commons license
+// This code is public domain, as defined by the "CC0" Creative Commons license
 
 //#define REGRESSION
 //#define W32_BUILD
@@ -63,6 +64,7 @@ typedef HANDLE event_t;
 //#include "TunerParams.inc"
 
 using namespace std;
+using Gull::Board_;
 
 
 CommonData_* DATA = nullptr;
@@ -160,6 +162,12 @@ typedef struct
 	uint8 turn, castle_flags, ply, ep_square, piece, capture;
 } GPosData;
 
+typedef struct
+{
+	uint16 ref[2];
+	uint16 check_ref[2];
+} GRef;
+
 struct State_
 {
 	std::array<GData, MAX_HEIGHT> stack_;
@@ -174,6 +182,10 @@ struct State_
 
 	INLINE const Board_& operator()() const { return board_; }
 	INLINE const uint64& operator()(int piece_id) const { return board_.Piece(piece_id); }
+
+	array<array<array<uint16, 2>, 64>, 16> HistoryVals;
+	array<sint16, 16 * 4096> DeltaVals;
+	array<GRef, 16 * 64> Ref;
 };
 
 constexpr uint8 FlagSort = 1 << 0;
@@ -457,8 +469,6 @@ INLINE packed_t Pst(int piece, int sq)
 	return PstVals[piece][sq];
 };
 
-array<array<array<uint16, 2>, 64>, 16> HistoryVals;
-
 INLINE int* AddMove(int* list, int from, int to, int flags, int score)
 {
 	*list = ((from) << 6) | (to) | (flags) | (score);
@@ -485,25 +495,25 @@ INLINE uint16 JoinFlag(uint16 move)
 {
 	return (move & FlagCastling) ? 1 : 0;
 }
-INLINE uint16& HistoryScore(int join, int piece, int from, int to)
+INLINE uint16& HistoryScore(State_* state, int join, int piece, int from, int to)
 {
-	return HistoryVals[piece][to][join];
+	return state->HistoryVals[piece][to][join];
 }
 INLINE int HistoryMerit(uint16 hs)
 {
 	return hs / (hs & 0x00FF);	// differs by 1 from Gull convention
 }
-INLINE int HistoryP(int join, int piece, int from, int to)
+INLINE int HistoryP(State_* state, int join, int piece, int from, int to)
 {
-	return HistoryMerit(HistoryScore(join, piece, from, to)) << 16;
+	return HistoryMerit(HistoryScore(state, join, piece, from, to)) << 16;
 }
-INLINE int History(const Board_& board, int join, int from, int to)
+INLINE int History(State_* state, int join, int from, int to)
 {
-	return HistoryP(join, board.PieceAt(from), from, to);
+	return HistoryP(state, join, state->board_.PieceAt(from), from, to);
 }
-INLINE uint16& HistoryM(const Board_& board, int move)
+INLINE uint16& HistoryM(State_* state, int move)
 {
-	return HistoryScore(JoinFlag(move), board.PieceAt(From(move)), From(move), To(move));
+	return HistoryScore(state, JoinFlag(move), state->board_.PieceAt(From(move)), From(move), To(move));
 }
 INLINE int HistoryInc(int depth)
 {
@@ -515,97 +525,93 @@ INLINE void HistoryBad(uint16* hist, int inc)
 		*hist = ((*hist & 0xFEFE) >> 1);
 	*hist += inc;
 }
-INLINE void HistoryBad(const Board_& board, int move, int depth)
+INLINE void HistoryBad(State_* state, int move, int depth)
 {
-	HistoryBad(&HistoryM(board, move), HistoryInc(depth));
+	HistoryBad(&HistoryM(state, move), HistoryInc(depth));
 }
 INLINE void HistoryGood(uint16* hist, int inc)
 {
 	HistoryBad(hist, inc);
 	*hist += inc << 8;
 }
-INLINE void HistoryGood(const Board_& board, int move, int depth)
+INLINE void HistoryGood(State_* state, int move, int depth)
 {
-	HistoryGood(&HistoryM(board, move), HistoryInc(depth));
+	HistoryGood(&HistoryM(state, move), HistoryInc(depth));
 }
-INLINE int* AddHistoryP(int* list, int piece, int from, int to, int flags)
+INLINE int* AddHistoryP(State_* state, int* list, int piece, int from, int to, int flags)
 {
-	return AddMove(list, from, to, flags, HistoryP(JoinFlag(flags), piece, from, to));
+	return AddMove(list, from, to, flags, HistoryP(state, JoinFlag(flags), piece, from, to));
 }
-INLINE int* AddHistoryP(int* list, int piece, int from, int to, int flags, uint8 p_min)
+INLINE int* AddHistoryP(State_* state, int* list, int piece, int from, int to, int flags, uint8 p_min)
 {
-	return AddMove(list, from, to, flags, max(int(p_min) << 16, HistoryP(JoinFlag(flags), piece, from, to)));
+	return AddMove(list, from, to, flags, max(int(p_min) << 16, HistoryP(state, JoinFlag(flags), piece, from, to)));
 }
 
-sint16 DeltaVals[16 * 4096];
-INLINE sint16& DeltaScore(int piece, int from, int to)
+INLINE sint16& DeltaScore(State_* state, int piece, int from, int to)
 {
-	return DeltaVals[(piece << 12) | (from << 6) | to];
+	return state->DeltaVals[(piece << 12) | (from << 6) | to];
 }
-INLINE sint16& Delta(const Board_& board, int from, int to)
+INLINE sint16& Delta(State_* state, int from, int to)
 {
-	return DeltaScore(board.PieceAt(from), from, to);
+	return DeltaScore(state, state->board_.PieceAt(from), from, to);
 }
-INLINE sint16& DeltaM(const Board_& board, int move)
+INLINE sint16& DeltaM(State_* state, int move)
 {
-	return Delta(board, From(move), To(move));
+	return Delta(state, From(move), To(move));
 }
-INLINE int* AddCDeltaP(int* list, int margin, int piece, int from, int to, int flags)
+INLINE int* AddCDeltaP(State_* state, int* list, int margin, int piece, int from, int to, int flags)
 {
-	return DeltaScore(piece, from, to) < margin
+	return DeltaScore(state, piece, from, to) < margin
 		? list
-		: AddMove(list, from, to, flags, (DeltaScore(piece, from, to) + 0x4000) << 16);
+		: AddMove(list, from, to, flags, (DeltaScore(state, piece, from, to) + 0x4000) << 16);
 }
 
-typedef struct
+INLINE GRef& RefPointer(State_* state, int piece, int from, int to)
 {
-	uint16 ref[2];
-	uint16 check_ref[2];
-} GRef;
-GRef Ref[16 * 64];
-INLINE GRef& RefPointer(int piece, int from, int to)
-{
-	return Ref[((piece) << 6) | (to)];
+	return state->Ref[((piece) << 6) | (to)];
 }
-INLINE GRef& RefM(const Board_& board, int move)
+INLINE GRef& RefM(State_* state, int move)
 {
-	return RefPointer(board.PieceAt(To(move)), From(move), To(move));
+	return RefPointer(state, state->board_.PieceAt(To(move)), From(move), To(move));
 }
-INLINE void UpdateRef(const State_& state, int ref_move)
+INLINE void UpdateRef(State_* state, int ref_move)
 {
-	auto& dst = RefM(state(), state[0].move).ref;
-	if (T(state[0].move) && dst[0] != ref_move)
+	auto& dst = RefM(state, (*state)[0].move).ref;
+	if (T((*state)[0].move) && dst[0] != ref_move)
 	{
 		dst[1] = dst[0];
 		dst[0] = ref_move;
 	}
 }
-INLINE void UpdateCheckRef(const State_& state, int ref_move)
+INLINE void UpdateCheckRef(State_* state, int ref_move)
 {
-	auto& dst = RefM(state(), state[0].move).check_ref;
-	if (T(state[0].move) && dst[0] != ref_move)
+	auto& dst = RefM(state, (*state)[0].move).check_ref;
+	if (T((*state)[0].move) && dst[0] != ref_move)
 	{
 		dst[1] = dst[0];
 		dst[0] = ref_move;
 	}
 }
-
+/*  global-looking stuff
 char info_string[1024];
-char pv_string[1024];
 char score_string[16];
 char mstring[65536];
+*/
 int MultiPV[256];
 int pvp;
 int pv_length;
 int LastDepth, LastTime, LastValue, LastExactValue, PrevMove, InstCnt;
 sint64 LastSpeed;
 int PVN, PVHashing = 1, SearchMoves, SMPointer, Previous;
+
 typedef struct
 {
 	int Change, Singular, Early, FailLow, FailHigh;
 	bool Bad;
 } GSearchInfo;
-GSearchInfo CurrentSI[1], BaseSI[1];
+GSearchInfo CurrentSI, BaseSI;
+
+
 #ifdef CPU_TIMING
 int CpuTiming = 0, UciMaxDepth = 0, UciMaxKNodes = 0, UciBaseTime = 1000, UciIncTime = 5;
 int GlobalTime[2] = { 0, 0 };
@@ -2742,299 +2748,6 @@ void init_data(CommonData_* dst)
 	init_material(dst);
 }
 
-
-void create_child
-	(const char *hashName,
-	const char *pvHashName,
-	const char *pawnHashName,
-	const char *dataName,
-	const char *settingsName,
-	const char *sharedName,
-	const char *infoName)
-{
-	char name[PATH_MAX];
-	char command[10 * PATH_MAX];
-	PROCESS_INFORMATION procInfo;
-	STARTUPINFO startInfo;
-
-	memset(&procInfo, 0, sizeof(procInfo));
-	memset(&startInfo, 0, sizeof(startInfo));
-
-	startInfo.cb = sizeof(STARTUPINFO);
-	startInfo.dwFlags |= STARTF_USESTDHANDLES;
-	startInfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-	startInfo.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-	startInfo.hStdInput = INVALID_HANDLE_VALUE;
-
-	if (GetModuleFileName(NULL, name, sizeof(name) - 1) >= sizeof(name) - 1)
-		error_msg("failed to get module name");
-	int len = snprintf(command, sizeof(command) - 1,
-		"\"%s\" child \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"",
-		name, hashName, pvHashName, pawnHashName, dataName, settingsName, sharedName, infoName);
-	if (len < 0 || len >= sizeof(command) - 1)
-		error_msg("failed to create command line for child");
-
-	BOOL success = CreateProcess(NULL, command, NULL, NULL, TRUE, 0, NULL, NULL, &startInfo, &procInfo);
-	if (!success)
-		error_msg("failed to create child process (%d)", GetLastError());
-	CloseHandle(procInfo.hThread);
-}
-
-static void create_children(const Settings_& settings)
-{
-	constexpr size_t maxNHash = ((size_t)1 << 43) / sizeof(GEntry);   // <= 8TB
-	constexpr int maxSyzygyProbeDepth = 64;
-
-	int nThreads = Min(maxNumThreads, settings.nThreads);
-	int tbMinDepth = Min(maxSyzygyProbeDepth, settings.tbMinDepth);
-	int contempt = Max(0, settings.contempt);
-	int wobble = Max(0, settings.wobble);
-	int pid = GetCurrentProcessId();
-
-	log_msg("settings: nThreads=%d, hashSize=%Iu, tbMinDepth=%d, syzygyPath=\"%s\", contempt=%d, wobble=%d\n",
-		settings.nThreads, settings.nHash * sizeof(GEntry), settings.tbMinDepth, settings.tbPath, settings.contempt, settings.wobble);
-
-	// Create shared objects:
-	string dataName = object_name("DATA", pid, 0);
-	DATA = init_object(DATA, dataName.c_str(), true, false);
-	init_data(DATA);
-
-	string settingsName = object_name("SETTINGS", pid, 0);
-	SETTINGS = init_object(SETTINGS, settingsName.c_str(), true, true, 1, &settings);
-
-	string hashName = object_name("HASH", pid, 0);
-	HASH = init_object(HASH, hashName.c_str(), true, false, SETTINGS->nHash);
-
-	string pvHashName = object_name("PVHASH", pid, 0);
-	PVHASH = init_object(PVHASH, pvHashName.c_str(), true, false, N_PV_HASH);
-
-	string pawnHashName = object_name("PAWNHASH", pid, 0);
-	PAWNHASH = init_object(PAWNHASH, pawnHashName.c_str(), true, false, N_PAWN_HASH);
-
-	string sharedName = object_name("SHARED", pid, 0);
-	SHARED = init_object(SHARED, sharedName.c_str(), true, false);
-	SHARED->mutex = mutex_init();
-	SHARED->outMutex = mutex_init();
-	SHARED->goEvent = event_init();
-	SHARED->working.Init();
-	SHARED->stopAll = true;
-
-	// Create children: 
-	THREADS.resize(nThreads);
-	for (int i = 0; i < nThreads; i++)
-	{
-		string infoName = object_name("INFO", pid, i);
-		THREADS[i] = init_object<ThreadOwn_>(nullptr, infoName.c_str(), true, false);
-		THREADS[i]->newGame = true;
-		THREADS[i]->id = i;
-	}
-	{
-		LOCK_SHARED;
-		for (int i = 0; i < nThreads; i++)
-		{
-			SHARED->working.Insert(i);
-			string infoName = object_name("INFO", pid, i);
-			create_child(hashName.c_str(), pvHashName.c_str(), pawnHashName.c_str(), dataName.c_str(), settingsName.c_str(), sharedName.c_str(), infoName.c_str());
-		}
-	}
-
-	INFO = init_object(INFO, nullptr, true, false);
-	INFO->pid = GetCurrentProcessId();
-#if TB
-	tb_init_fwd(settings.tbPath);
-#endif
-
-	// Wait for threads to finish initializing:
-	while (!SHARED->working.Empty())
-		Sleep(1);
-
-	// Cleanup:
-	remove_object(dataName.c_str());
-	remove_object(settingsName.c_str());
-	remove_object(hashName.c_str());
-	remove_object(pvHashName.c_str());
-	remove_object(pawnHashName.c_str());
-	remove_object(sharedName.c_str());
-	for (int i = 0; i < nThreads; i++)
-	{
-		string infoName = object_name("INFO", pid, i);
-		remove_object(infoName.c_str());
-	}
-}
-
-static void nuke_child(unsigned pid)
-{
-	HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, (DWORD)pid);
-	if (handle == NULL)
-		return;
-	TerminateProcess(handle, EXIT_SUCCESS);
-	if (WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0)
-		error_msg("failed to terminate child (%d)", GetLastError());
-	CloseHandle(handle);
-}
-
-static void nuke_children(void)
-{
-	for (size_t i = 0; i < SETTINGS->nThreads; i++)
-		nuke_child(THREADS[i]->pid);
-	delete_object(HASH, SETTINGS->nHash * sizeof(*HASH));
-	delete_object(PVHASH, N_PV_HASH * sizeof(*PVHASH));
-	delete_object(PAWNHASH, N_PAWN_HASH * sizeof(*PAWNHASH));
-	//	event_discard(&SHARED->goEvent);
-	for (size_t i = 0; i < SETTINGS->nThreads; i++)
-		delete_object(THREADS[i], sizeof(*THREADS[i]));
-	delete_object(DATA, sizeof(*DATA));
-	delete_object(SETTINGS, sizeof(*SETTINGS));
-	delete_object(SHARED, sizeof(*SHARED));
-	delete_object(INFO, sizeof(*INFO));
-}
-
-static void reset(const Settings_& settings)
-{
-	nuke_children();
-	create_children(settings);
-}
-
-static void emergency_stop(void)
-{
-	// Something is wrong -- threads are not stopping, or have crashed.
-	// It is unspecified if the global mutex is locked.  We no longer care
-	// about races.
-	// Reset everthing.  We may lose on time, but so be it.
-	bool go = !SHARED->working.Empty();
-	int bestMove = 0;
-	for (const auto& t : THREADS)
-		if (bestMove = t->bestMove)
-			break;
-	// Log this incident:
-	log_msg("warning: threads crashed or deadlocked; initiating emergency reset\n");
-	reset(*SETTINGS);
-	if (go)
-	{
-		char moveStr[16];
-		move_to_string(bestMove, moveStr);
-		Say("bestmove " + string(moveStr) + "\n");
-	}
-}
-
-void wait_for_stop()
-{
-	const uint64_t maxStopTime = 300;       // Max 300ms to stop all threads;
-	auto stopTime = now(), currTime = stopTime;
-	while (true)
-	{
-		Sleep(1);
-		currTime = now();
-		LOCK_SHARED;
-		if (SHARED->working.Empty())
-			break;	// we are done
-	}
-	if (SHARED->best.move)
-	{
-		// workers failed low, get the best cached move
-		LOCK_SHARED;
-		char moveStr[16];
-		move_to_string(SHARED->best.move, moveStr);
-		Say("bestmove " + string(moveStr) + "\n");
-		SHARED->best = { 0, 0, 0, 0 };
-	}
-}
-
-static void stop()
-{
-	//LOCK_SHARED;
-	SHARED->stopAll = true;
-}
-
-static void go(const State_& state)
-{
-#if TB
-	if (popcnt(state().PieceAll()) <= int(TB_LARGEST))
-	{
-		auto res = TBProbe(tb_probe_root_checked, state);
-		if (res != TB_RESULT_FAILED)
-		{
-			int bestScore;
-			int best_move = GetTBMove(res, &bestScore);
-			char movStr[16];
-			move_to_string(best_move, movStr);
-			Say("info depth 1 seldepth 1 score cp " + Str(bestScore / CP_SEARCH) + " nodes 1 tbhits 1 pv " + string(movStr) + "\n");
-			Say("bestmove " + string(movStr) + "\n");
-			return;
-		}
-	}
-#endif
-
-	SHARED->date++;
-	assert(PVN == 1);       // Multi-PV NYI.
-	assert(INFO->pid == SETTINGS->parentPid);
-	memcpy(&SHARED->rootBoard, &state.board_, sizeof(Board_));
-	memcpy(&SHARED->rootData, &state[0], sizeof(GData));
-	memcpy(&SHARED->rootStack, &Stack[0], sp * sizeof(uint64_t));
-	SHARED->rootSp = sp;
-	SHARED->best = { 0, 0, 0, 0 };
-	SHARED->stopAll = false;
-	for (int i = 0; i < SETTINGS->nThreads; i++)
-	{
-		THREADS[i]->nodes = 0;
-		THREADS[i]->tbHits = 0;
-		THREADS[i]->depth = 0;
-		THREADS[i]->selDepth = 0;
-		THREADS[i]->bestMove = 0;
-		THREADS[i]->bestScore = 0;
-		THREADS[i]->PV[0] = 0;
-	}
-	event_signal(&SHARED->goEvent);
-}
-
-static void wait_for_go(void)
-{
-	if (WaitForSingleObject(SHARED->goEvent, INFINITE) != WAIT_OBJECT_0)
-		error_msg("Wait-for-go error %d\n", GetLastError());
-}
-
-static inline void check_for_stop(void)
-{
-	if (SHARED->stopAll) throw 3;
-}
-
-#ifndef W32_BUILD
-#define SET_BIT(var, bit) (InterlockedOr(&(var), 1 << (bit)))
-#define SET_BIT_64(var, bit) (InterlockedOr64(&(var), Bit(bit)));
-#define ZERO_BIT_64(var, bit) (InterlockedAnd64(&(var), ~Bit(bit)));
-#define TEST_RESET_BIT(var, bit) (InterlockedBitTestAndReset64(&(var), bit))
-#define TEST_RESET(var) (InterlockedExchange64(&(var), 0))
-#else
-#define SET_BIT(var, bit) (_InterlockedOr(&(var), 1 << (bit)))
-#define SET_BIT_64(var, bit)                                        \
-    {                                                               \
-        if ((bit) < 32)                                             \
-            _InterlockedOr((LONG*)&(var), 1 << (bit));              \
-        else                                                        \
-            _InterlockedOr(((LONG*)(&(var))) + 1, 1 << ((bit)-32)); \
-    }
-#define ZERO_BIT_64(var, bit)                                           \
-    {                                                                   \
-        if ((bit) < 32)                                                 \
-            _InterlockedAnd((LONG*)&(var), ~(1 << (bit)));              \
-        else                                                            \
-            _InterlockedAnd(((LONG*)(&(var))) + 1, ~(1 << ((bit)-32))); \
-    }
-#define TEST_RESET_BIT(var, bit) (InterlockedBitTestAndReset(&(var), bit))
-#define TEST_RESET(var) (InterlockedExchange(&(var), 0))
-#endif
-#define SET(var, value) (InterlockedExchange(&(var), value))
-
-#define LOCK(lock)                                                     \
-    {                                                                  \
-        while (InterlockedCompareExchange(&(lock), 1, 0)) _mm_pause(); \
-    }
-#define UNLOCK(lock)  \
-    {                 \
-        SET(lock, 0); \
-    }
-
-// END SMP
 packed_t eval_pst(const Board_& board)
 {
 	packed_t retval = 0;
@@ -3175,12 +2888,12 @@ void init_search(State_* state, int clear_hash)
 	for (int ip = 0; ip < 16; ++ip)
 		for (int it = 0; it < 64; ++it)
 		{
-			HistoryVals[ip][it][0] = (1 << 8) | 2;
-			HistoryVals[ip][it][1] = (1 << 8) | 2;
+			state->HistoryVals[ip][it][0] = (1 << 8) | 2;
+			state->HistoryVals[ip][it][1] = (1 << 8) | 2;
 		}
 
-	memset(DeltaVals, 0, 16 * 4096 * sizeof(sint16));
-	memset(Ref, 0, 16 * 64 * sizeof(GRef));
+	state->DeltaVals = {};
+	state->Ref = {};
 	state->ClearStack();
 	if (clear_hash)
 	{
@@ -3196,8 +2909,8 @@ void init_search(State_* state, int clear_hash)
 	PVN = 1;
 	SearchMoves = 0;
 	LastDepth = 128;
-	memset(CurrentSI, 0, sizeof(GSearchInfo));
-	memset(BaseSI, 0, sizeof(GSearchInfo));
+	memset(&CurrentSI, 0, sizeof(GSearchInfo));
+	memset(&BaseSI, 0, sizeof(GSearchInfo));
 }
 
 INLINE GEntry* probe_hash(const GData& current)
@@ -4065,10 +3778,11 @@ template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI, const State_& st
 	}
 }
 
-template <bool me, class POP> INLINE void eval_knights(GEvalInfo& EI, const State_& state)
+template<bool me, class POP> INLINE packed_t eval_knights(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
-	const Board_& board = state();
+	const Board_& board = state.board_;
+	packed_t eval = 0;
 	for (uint64 b, u = board.Knight(me); T(u); u ^= b)
 	{
 		int sq = lsb(u);
@@ -4449,7 +4163,7 @@ template<class POP> void evaluation(State_* state)
 		current->score = -current->score;
 	if (F(current->capture) && T(current->move) && F(current->move & 0xE000) && state->Height() > 0)
 	{
-		sint16& delta = DeltaScore(current->piece, From(current->move), To(current->move));
+		sint16& delta = DeltaScore(state, current->piece, From(current->move), To(current->move));
 		const sint16 observed = -current->score - (current - 1)->score;
 		if (observed >= delta)
 			delta = observed;
@@ -4968,26 +4682,27 @@ INLINE bool is_killer(const GData& current, uint16 move)
 	return false;
 }
 
-void mark_evasions(int* list, const State_& state)
+void mark_evasions(int* list, State_* state)
 {
 	for (; T(*list); ++list)
 	{
 		int move = (*list) & 0xFFFF;
-		if (F(state().PieceAt(To(move))) && F(move & 0xE000))
+		auto& current = (*state)[0];
+		if (F(state->board_.PieceAt(To(move))) && F(move & 0xE000))
 		{
-			if (move == state[0].ref[0])
+			if (move == current.ref[0])
 				*list |= RefOneScore;
-			else if (move == state[0].ref[1])
+			else if (move == current.ref[1])
 				*list |= RefTwoScore;
-			else if (find(state[0].killer.begin() + 1, state[0].killer.end(), move) != state[0].killer.end())
+			else if (find(current.killer.begin() + 1, current.killer.end(), move) != current.killer.end())
 			{
-				int ik = static_cast<int>(find(state[0].killer.begin() + 1, state[0].killer.end(), move) - state[0].killer.begin());
+				int ik = static_cast<int>(find(current.killer.begin() + 1, current.killer.end(), move) - current.killer.begin());
 				*list |= (0xFF >> Max(0, ik - 2)) << 16;
 				if (ik == 1)
 					*list |= 1 << 24;
 			}
 			else
-				*list |= HistoryP(JoinFlag(move), state().PieceAt(From(move)), From(move), To(move));
+				*list |= HistoryP(state, JoinFlag(move), state->board_.PieceAt(From(move)), From(move), To(move));
 		}
 	}
 }
@@ -5074,7 +4789,7 @@ template<bool me> void gen_next_moves(State_* state, int depth)
 	case e_ev:
 		current->mask = Filled;
 		r = gen_evasions<me>(current->moves, *state);
-		mark_evasions(current->moves, *state);
+		mark_evasions(current->moves, state);
 		sort(current->moves, r);
 		current->current = current->moves;
 		return;
@@ -5381,8 +5096,8 @@ template<bool me> void gen_root_moves(State_* state)
 	else
 	{
 		current.stage = stage_search;
-		current.ref[0] = RefM(board, current.move).ref[0];
-		current.ref[1] = RefM(board, current.move).ref[1];
+		current.ref[0] = RefM(state, current.move).ref[0];
+		current.ref[1] = RefM(state, current.move).ref[1];
 	}
 	current.gen_flags = 0;
 	p = &RootList[0];
@@ -5795,65 +5510,66 @@ template<bool me> int* gen_checks(int* list, const State_& state)
 	return NullTerminate(list);
 }
 
-template<bool me> int* gen_delta_moves(int* list, const State_& state, int margin)
+template<bool me> int* gen_delta_moves(int* list, State_* state, int margin)
 {
-	const Board_& board = state.board_;
+	const Board_& board = state->board_;
+	const GData& current = state->current_;
 	uint64 occ = board.PieceAll(), free = ~occ;
 
 	if (me == White)
 	{
-		if (can_castle(state[0], occ, me, true))
-			list = AddCDeltaP(list, margin, WhiteKing, 4, 6, FlagCastling);
-		if (can_castle(state[0], occ, me, false))
-			list = AddCDeltaP(list, margin, WhiteKing, 4, 2, FlagCastling);
+		if (can_castle(current, occ, me, true))
+			list = AddCDeltaP(state, list, margin, WhiteKing, 4, 6, FlagCastling);
+		if (can_castle(current, occ, me, false))
+			list = AddCDeltaP(state, list, margin, WhiteKing, 4, 2, FlagCastling);
 	}
 	else
 	{
-		if (can_castle(state[0], occ, me, true))
-			list = AddCDeltaP(list, margin, BlackKing, 60, 62, FlagCastling);
-		if (can_castle(state[0], occ, me, false))
-			list = AddCDeltaP(list, margin, BlackKing, 60, 58, FlagCastling);
+		if (can_castle(current, occ, me, true))
+			list = AddCDeltaP(state, list, margin, BlackKing, 60, 62, FlagCastling);
+		if (can_castle(current, occ, me, false))
+			list = AddCDeltaP(state, list, margin, BlackKing, 60, 58, FlagCastling);
 	}
 	for (uint64 v = Shift<me>(board.Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
 	{
 		int to = lsb(v);
 		if (HasBit(OwnLine<me>(2), to) && F(board.PieceAt(to + Push[me])))
-			list = AddCDeltaP(list, margin, IPawn[me], to - Push[me], to + Push[me], 0);
-		list = AddCDeltaP(list, margin, IPawn[me], to - Push[me], to, 0);
+			list = AddCDeltaP(state, list, margin, IPawn[me], to - Push[me], to + Push[me], 0);
+		list = AddCDeltaP(state, list, margin, IPawn[me], to - Push[me], to, 0);
 	}
 	for (uint64 u = board.Knight(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & NAtt[lsb(u)]; T(v); Cut(v))
-			list = AddCDeltaP(list, margin, IKnight[me], from, lsb(v), 0);
+			list = AddCDeltaP(state, list, margin, IKnight[me], from, lsb(v), 0);
 	}
 	for (uint64 u = board.Piece(WhiteLight | me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & BishopAttacks(lsb(u), occ); T(v); Cut(v))
-			list = AddCDeltaP(list, margin, ILight[me], from, lsb(v), 0);
+			list = AddCDeltaP(state, list, margin, ILight[me], from, lsb(v), 0);
 	}
 	for (uint64 u = board.Piece(WhiteDark | me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & BishopAttacks(lsb(u), occ); T(v); Cut(v))
-			list = AddCDeltaP(list, margin, IDark[me], from, lsb(v), 0);
+			list = AddCDeltaP(state, list, margin, IDark[me], from, lsb(v), 0);
 	}
 	for (uint64 u = board.Rook(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & RookAttacks(lsb(u), occ); T(v); Cut(v))
-			list = AddCDeltaP(list, margin, IRook[me], from, lsb(v), 0);
+			list = AddCDeltaP(state, list, margin, IRook[me], from, lsb(v), 0);
 	}
 	for (uint64 u = board.Queen(me); T(u); Cut(u))
 	{
 		int from = lsb(u);
 		for (uint64 v = free & QueenAttacks(lsb(u), occ); T(v); Cut(v))
-			list = AddCDeltaP(list, margin, IQueen[me], from, lsb(v), 0);
+			list = AddCDeltaP(state, list, margin, IQueen[me], from, lsb(v), 0);
 	}
 	int from = lsb(board.King(me));
-	for (uint64 v = KAtt[lsb(board.King(me))] & free & (~state[0].att[opp]); T(v); Cut(v))
-		list = AddCDeltaP(list, margin, IKing[me], from, lsb(v), 0);
+	for (uint64 v = KAtt[lsb(board.King(me))] & free & (~current.att[opp]); T(v); Cut(v))
+		list = AddCDeltaP(state, list, margin, IKing[me], from, lsb(v), 0);
 	return NullTerminate(list);
 }
 
@@ -5908,6 +5624,20 @@ template<bool me> INLINE uint64 capture_margin_mask(const State_& state, int alp
 	}
 	return retval;
 }
+
+bool GlobalStopAll;
+struct Abort_ : std::exception {};
+
+inline void check_for_stop()
+{
+	if (GlobalStopAll)
+		throw Abort_();
+}
+inline void stop()
+{
+	GlobalStopAll = true;
+}
+
 
 #define HALT_CHECK(state) {\
     if (state->current_->ply >= 100) return 0; \
@@ -5994,8 +5724,8 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	if (T(hash_move))
 	{
 		if (HasBit(current.mask, To(hash_move))
-			|| T(hash_move & 0xE000)
-			|| (depth >= -8 && (current.score + DeltaM(board, hash_move) > alpha || is_check<me>(*state, hash_move))))
+				|| T(hash_move & 0xE000)
+				|| (depth >= -8 && (current.score + DeltaM(state, hash_move) > alpha || is_check<me>(*state, hash_move))))
 		{
 			move = hash_move;
 			if (is_legal<me>(*state, move) && !IsIllegal(*state, me, move))
@@ -6177,9 +5907,9 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 	else
 	{
 		pext = 0;
-		state->current_->ref[0] = RefM(board, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(board, current.move).check_ref[1];
-		mark_evasions(state->current_->moves, *state);
+		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
+		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
+		mark_evasions(state->current_->moves, state);
 		if (T(hash_move) && (T(Bit(To(hash_move)) & current.mask) || T(hash_move & 0xE000)))
 		{
 			for (p = state->current_->moves; T(*p); ++p)
@@ -6207,7 +5937,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 		{
 			if (cnt > 3 && !is_check<me>(*state, move) && !pv)
 				continue;
-			value = current.score + DeltaM(board, move) + 10 * CP_SEARCH;
+			value = current.score + DeltaM(state, move) + 10 * CP_SEARCH;
 			if (value <= alpha && !pv)
 			{
 				score = Max(value, score);
@@ -6241,7 +5971,7 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 	if (F(state->board_.PieceAt(To(move))) && F(move & 0xE000))
 	{
 		if (evasion)
-			UpdateCheckRef(*state, move);
+			UpdateCheckRef(state, move);
 		else
 		{
 			if (state->current_->killer[1] != move && F(flags & FlagNoKillerUpdate))
@@ -6250,13 +5980,13 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 				state->current_->killer[1] = move;
 			}
 			if (state->current_->stage == s_quiet && (move & 0xFFFF) == (*(state->current_->current - 1) & 0xFFFF))
-				HistoryGood(state->board_, *(state->current_->current - 1), depth);	// restore history information
+				HistoryGood(state, *(state->current_->current - 1), depth);	// restore history information
 			else
-				HistoryGood(state->board_, move, depth);
+				HistoryGood(state, move, depth);
 			if (move != hash_move && state->current_->stage == s_quiet && !sp_init)
 				for (auto p = state->current_->start; p < (state->current_->current - 1); ++p)
-					HistoryBad(state->board_, *p, depth);
-			UpdateRef(*state, move);
+					HistoryBad(state, *p, depth);
+			UpdateRef(state, move);
 		}
 	}
 	return hash_low(*state->current_, move, score, depth);
@@ -6346,7 +6076,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 				if (F(board.PieceAt(To(Entry->move))) && F(Entry->move & 0xE000))
 				{
 					if (evasion)
-						UpdateCheckRef(*state, Entry->move);
+						UpdateCheckRef(state, Entry->move);
 					else
 					{
 						if (current.killer[1] != Entry->move && F(flags & FlagNoKillerUpdate))
@@ -6355,7 +6085,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 								state->current_->killer[jk] = state->current_->killer[jk - 1];
 							state->current_->killer[1] = Entry->move;
 						}
-						UpdateRef(*state, Entry->move);
+						UpdateRef(state, Entry->move);
 					}
 				}
 				return abort(Entry->low);
@@ -6555,17 +6285,17 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 	const int margin = evasion ? 0 : RazoringThreshold(current.score, depth, height);	// not used if evasion
 	if (evasion)
 	{
-		state->current_->ref[0] = RefM(board, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(board, current.move).check_ref[1];
-		mark_evasions(state->current_->moves, *state);
+		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
+		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
+		mark_evasions(state->current_->moves, state);
 	}
 	else
 	{
 		state->current_->killer[0] = 0;
 		state->current_->stage = stage_search;
 		state->current_->gen_flags = 0;
-		state->current_->ref[0] = RefM(board, current.move).ref[0];
-		state->current_->ref[1] = RefM(board, current.move).ref[1];
+		state->current_->ref[0] = RefM(state, current.move).ref[0];
+		state->current_->ref[1] = RefM(state, current.move).ref[1];
 		if (margin < beta)
 		{
 			can_hash_d0 = false;
@@ -6691,7 +6421,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 }
 
 
-int time_to_stop(GSearchInfo* SI, int time, int searching)
+int time_to_stop(const GSearchInfo& SI, int time, int searching)
 {
 	if (time > SHARED->hardTimeLimit)
 		return 1;
@@ -6699,23 +6429,23 @@ int time_to_stop(GSearchInfo* SI, int time, int searching)
 		return 0;
 	if (2 * time > SHARED->hardTimeLimit)
 		return 1;
-	if (SI->Bad)
+	if (SI.Bad)
 		return 0;
 	if (time > SHARED->softTimeLimit)
 		return 1;
-	if (T(SI->Change) || T(SI->FailLow))
+	if (T(SI.Change) || T(SI.FailLow))
 		return 0;
 	if (time * 100 > SHARED->softTimeLimit * TimeNoChangeMargin)
 		return 1;
-	if (F(SI->Early))
+	if (F(SI.Early))
 		return 0;
 	if (time * 100 > SHARED->softTimeLimit * TimeNoPVSCOMargin)
 		return 1;
-	if (SI->Singular < 1)
+	if (SI.Singular < 1)
 		return 0;
 	if (time * 100 > SHARED->softTimeLimit * TimeSingOneMargin)
 		return 1;
-	if (SI->Singular < 2)
+	if (SI.Singular < 2)
 		return 0;
 	if (time * 100 > SHARED->softTimeLimit * TimeSingTwoMargin)
 		return 1;
@@ -7037,14 +6767,14 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 	if (!IsCheck(*state, me))
 	{
 		state->current_->stage = stage_search;
-		state->current_->ref[0] = RefM(board, current.move).ref[0];
-		state->current_->ref[1] = RefM(board, current.move).ref[1];
+		state->current_->ref[0] = RefM(state, current.move).ref[0];
+		state->current_->ref[1] = RefM(state, current.move).ref[1];
 	}
 	else
 	{
 		state->current_->stage = stage_evasion;
-		state->current_->ref[0] = RefM(board, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(board, current.move).check_ref[1];
+		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
+		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
 	}
 	state->current_->killer[0] = 0;
 	state->current_->moves[0] = 0;
@@ -7150,6 +6880,7 @@ template<bool me> void root(State_* state)
 	HERE
 	evaluate(state);
 	gen_root_moves<me>(state);
+	GlobalStopAll = false;
 	if (PVN > 1) {
 		//        memset(MultiPV,0,128 * sizeof(int));
 		//        for (i = 0; MultiPV[i] = RootList[i]; i++);
@@ -7190,8 +6921,8 @@ template<bool me> void root(State_* state)
 		return;
 	}HERE
 
-	memset(CurrentSI, 0, sizeof(GSearchInfo));
-	memset(BaseSI, 0, sizeof(GSearchInfo));
+	memset(&CurrentSI, 0, sizeof(GSearchInfo));
+	memset(&BaseSI, 0, sizeof(GSearchInfo));
 	Previous = -MateValue;
 	if (GPVEntry* PVEntry = probe_pv_hash(*state->current_))
 	{
@@ -7296,12 +7027,12 @@ template<bool me> void root(State_* state)
 				HERE
 				if (value <= alpha)
 				{
-					CurrentSI->FailHigh = 0;
-					CurrentSI->FailLow = 1;
+					CurrentSI.FailHigh = 0;
+					CurrentSI.FailLow = 1;
 					alpha -= deltaLo;
 					deltaLo += (deltaLo * FailLoGrowth) / 64 + FailLoDelta;
 					LastValue = value;
-					memcpy(BaseSI, CurrentSI, sizeof(GSearchInfo));
+					BaseSI = CurrentSI;
 					if (time_to_stop(CurrentSI, LastTime, false))
 					{
 						stop();	// will break the outer loop
@@ -7311,11 +7042,11 @@ template<bool me> void root(State_* state)
 				}
 				else if (value >= beta)
 				{
-					CurrentSI->FailHigh = 1;
-					CurrentSI->FailLow = 0;
-					CurrentSI->Early = 1;
-					CurrentSI->Change = 0;
-					CurrentSI->Singular = Max(CurrentSI->Singular, 1);
+					CurrentSI.FailHigh = 1;
+					CurrentSI.FailLow = 0;
+					CurrentSI.Early = 1;
+					CurrentSI.Change = 0;
+					CurrentSI.Singular = Max(CurrentSI.Singular, 1);
 					beta += deltaHi;
 					deltaHi += (deltaHi * FailHiGrowth) / 64 + FailHiDelta;
 					LastDepth = depth;
@@ -7331,7 +7062,7 @@ template<bool me> void root(State_* state)
 					}
 					state->ClearStack();
 					LastValue = value;
-					memcpy(BaseSI, CurrentSI, sizeof(GSearchInfo));
+					BaseSI = CurrentSI;
 					continue;
 				}
 				else
@@ -7345,8 +7076,8 @@ template<bool me> void root(State_* state)
 		if (!SHARED->stopAll)
 		{
 			HERE
-			CurrentSI->Bad = value < Previous - 12 * CP_SEARCH;
-			memcpy(BaseSI, CurrentSI, sizeof(GSearchInfo));
+			CurrentSI.Bad = value < Previous - 12 * CP_SEARCH;
+			BaseSI = CurrentSI;
 			LastDepth = depth;
 			LastTime = Max<int>(prev_time, millisecs(SHARED->startTime, now()));
 			LastSpeed = INFO->nodes / Max(LastTime, 1);
@@ -7508,6 +7239,7 @@ void get_position(char string[], State_* state)
 	PrevMove = 0;
 	if (moves != nullptr)
 	{
+		char pv_string[1024];
 		ptr = moves + 6;
 		while (*ptr != 0)
 		{
@@ -7561,596 +7293,143 @@ namespace Version
 }
 
 
-void uci(void)
-{
-	char line[4 * PIPE_BUF];
-	State_ state;
-	auto currTime = now();
-
-	while (true)
-	{
-		line[0] = '\0';
-		while (true)
-		{
-			DWORD timeout = numeric_limits<DWORD>::max();
-			//			if (!SHARED->working.Empty())
-			//				timeout = 100;          // 100ms
-
-			bool timedout = get_line(line, sizeof(line) - 1, timeout);
-			currTime = now();
-
-			if (mutex_try_lock(&SHARED->mutex, 500))
-				mutex_unlock(&SHARED->mutex);
-			else
-				emergency_stop();
-			if (!SHARED->working.Empty() && millisecs(SHARED->startTime, currTime) >= SHARED->hardTimeLimit / 2)
-			{
-				stop();
-				wait_for_stop();
-			}
-			if (!timedout)
-				break;
-		}
-
-		if (line[0] == EOF)
-		{
-			nuke_children();
-			exit(EXIT_SUCCESS);
-		}
-		char *saveptr = NULL;
-		char *token = strtok_s(line, " ", &saveptr);
-		if (token == NULL)
-			/* NOP */;
-		else if (strcmp(token, "go") == 0)
-		{
-			if (!SHARED->working.Empty())
-				continue;
-			int binc = 0, btime = 0, depth = 256, movestogo = 0,
-				winc = 0, wtime = 0, movetime = 0;
-			bool infinite = false, ponder = false;
-			while ((token = strtok_s(NULL, " ", &saveptr)) != NULL)
-			{
-				if (strcmp(token, "binc") == 0)
-					binc = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "btime") == 0)
-					btime = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "winc") == 0)
-					winc = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "wtime") == 0)
-					wtime = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "movetime") == 0)
-					movetime = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "movetogo") == 0)
-					movestogo = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "depth") == 0)
-					depth = get_number(strtok_s(NULL, " ", &saveptr));
-				else if (strcmp(token, "infinite") == 0)
-					infinite = true;
-				else if (strcmp(token, "ponder") == 0)
-					ponder = true;
-			}
-			int time = (state[0].turn == White ? wtime : btime);
-			int inc = (state[0].turn == White ? winc : binc);
-			if (movetime == 0 && time == 0 && inc == 0)
-				infinite = true;
-			if (movestogo != 0)
-				movestogo = Max(movestogo - 1, 1);
-			int time_max = Max(time - Min(1000, (3 * time) / 4), 0);
-			int nmoves;
-			int exp_moves = MovesTg - 1;
-			if (movestogo != 0)
-				nmoves = movestogo;
-			else
-			{
-				nmoves = MovesTg - 1;
-				if (state[0].ply > 40)
-					nmoves += Min(state[0].ply - 40, (100 - state[0].ply) / 2);
-				exp_moves = nmoves;
-			}
-			int softTimeLimit = Min(time_max, (time_max + (Min(exp_moves, nmoves) * inc)) / Min(exp_moves, nmoves));
-			int hardTimeLimit = Min(time_max, (time_max + (Min(exp_moves, nmoves) * inc)) / Min(5, Min(exp_moves, nmoves)));
-			softTimeLimit = Min(time_max, (softTimeLimit * TimeRatio) / 100);
-
-			if (movetime != 0)
-			{
-				hardTimeLimit = movetime;
-				softTimeLimit = numeric_limits<decltype(softTimeLimit)>::max();
-			}
-			else if (infinite)
-				hardTimeLimit = softTimeLimit = numeric_limits<int>::max();
-			{
-				LOCK_SHARED;
-				SHARED->ponder = ponder;
-				SHARED->softTimeLimit = softTimeLimit;
-				SHARED->hardTimeLimit = hardTimeLimit;
-				SHARED->depthLimit = 2 * depth + 2;
-				SHARED->startTime = currTime;
-			}
-			SHARED->rootProgress = Progress(state.board_);
-			go(state);
-			// children start working; we wait until they are done
-			for (int i = 1; ; ++i)
-			{
-				Sleep(i);
-				if (SHARED->working.Empty())
-					break;
-				if (millisecs(SHARED->startTime, now()) > SHARED->hardTimeLimit)
-				{
-					VSAY("Hard stop\n");
-					SHARED->stopAll = true;
-				}
-			}
-		}
-		else if (strcmp(token, "isready") == 0)
-		{
-			Say("readyok\n");
-		}
-		else if (strcmp(token, "stop") == 0)
-		{
-			Say("id name stop requested\n");
-			{
-				LOCK_SHARED;
-				if (!SHARED->working.Empty())
-				{
-					for (int ii = 0; ii < SETTINGS->nThreads; ++ii)
-					{
-						if (SHARED->working.vals_[ii].next_ != ii)
-							Say("id name worker " + Str(ii) + " still active\n");
-					}
-				}
-				//if (SHARED->stopAll)
-				//	VSAY("info " + Str(INFO->id) + "received stop request\n");
-				//if (SHARED->best.move)
-				//	VSAY("info stored candidate is move " + Str(SHARED->best.move) + " depth " + Str(SHARED->best.depth) + " score " + Str(SHARED->best.value) + " worker " + Str(SHARED->best.worker) + "\n");
-				//else
-				//	VSAY("info no stored candidate\n");
-			}
-			if (SHARED->working.Empty())
-				continue;
-			stop();
-			wait_for_stop();
-		}
-		else if (strcmp(token, "ponderhit") == 0)
-		{
-			SHARED->ponder = false;	// don't bother with mutex, workers will not write to ponder
-			if (SHARED->working.Empty())
-				send_best_move(true);
-		}
-		else if (strcmp(token, "position") == 0)
-		{
-			token = strtok_s(NULL, " ", &saveptr);
-			if (token == NULL)
-				goto bad_command;
-			char *moves;
-			if (strcmp(token, "fen") == 0)
-			{
-				char *fen = token + strlen(token) + 1;
-				moves = (char*)get_board(fen, &state);
-			}
-			else if (strcmp(token, "startpos") == 0)
-			{
-				moves = saveptr;
-				get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &state);
-			}
-			else
-				goto bad_command;
-			token = strtok_s(moves, " ", &saveptr);
-			if (token != NULL && strcmp(token, "moves") == 0)
-			{
-				LOCK_SHARED;
-				while ((token = strtok_s(NULL, " ", &saveptr)) != NULL)
-				{
-					int move = move_from_string(state, token);
-					if (state[0].turn) do_move<1>(&state, move); else do_move<0>(&state, move);
-					// push to bottom of stack
-					memcpy(&state.stack_[0], state.current_, sizeof(GData));
-					state.current_ = &state.stack_[0];
-					SHARED->rootDepth++;
-				}
-			}
-			copy(Stack.begin() + sp - state[0].ply, Stack.begin() + sp + 1, Stack.begin());
-			sp = state[0].ply;
-		}
-		else if (strcmp(token, "setoption") == 0)
-		{
-			token = strtok_s(NULL, " ", &saveptr);
-			if (token == NULL || strcmp(token, "name") != 0)
-				goto bad_command;
-			const char *name = strtok_s(NULL, " ", &saveptr);
-			if (name == NULL)
-				goto bad_command;
-			token = strtok_s(NULL, " ", &saveptr);
-			if (token == NULL || strcmp(token, "value") != 0)
-				goto bad_command;
-			if (token == NULL)
-				goto bad_command;
-			auto settings = *SETTINGS;
-			if (strcmp(name, "Hash") == 0)
-			{
-				size_t n = get_size(strtok_s(NULL, " ", &saveptr));
-				size_t nc = (n << 20) / (HASH_CLUSTER * sizeof(GEntry));
-				if (nc == 0) nc = 1;	// don't want to deal with degenerate case of no hash
-				settings.nHash = Bit(msb(nc)) * HASH_CLUSTER;
-				settings.hashMask = settings.nHash - HASH_CLUSTER;
-			}
-			else if (strcmp(name, "Threads") == 0)
-				settings.nThreads = get_number(strtok_s(NULL, " ", &saveptr));
-			else if (strcmp(name, "SyzygyPath") == 0)
-			{
-				if (saveptr != NULL && strlen(saveptr) < sizeof(settings.tbPath) - 1)
-					memcpy(settings.tbPath, saveptr, strlen(saveptr) + 1);
-			}
-			else if (strcmp(name, "Contempt") == 0)
-				settings.contempt = get_number(strtok_s(NULL, " ", &saveptr));
-			else if (strcmp(name, "Wobble") == 0)
-				settings.wobble = get_number(strtok_s(NULL, " ", &saveptr));
-			else if (strcmp(name, "SyzygyProbeDepth") == 0)
-				settings.tbMinDepth = get_number(strtok_s(NULL, " ", &saveptr));
-			else
-				goto bad_command;
-			reset(settings);
-		}
-		else if (strcmp(token, "ucinewgame") == 0)
-		{
-			if (!SHARED->working.Empty())
-				continue;
-			init_search(&state, true);
-			for (int i = 0; i < SETTINGS->nThreads; i++)
-				THREADS[i]->newGame = true;
-		}
-		else if (strcmp(token, "uci") == 0)
-		{
-			char reply[] =
-				"id name Roc            \n"
-				"id author Demichev/Falcinelli/Hyer\n"
-				"option name Hash type spin min 1 max 8388608 default 128\n"
-				"option name Threads type spin min 1 max 64 default 4\n"
-				"option name SyzygyPath type string default <empty>\n"
-				"option name SyzygyProbeDepth type spin min 0 max 64 "
-				"default 1\n"
-				"uciok\n";
-			char* dst = &reply[12];
-			for (const char* src = &Version::now[0]; *src; ++src, ++dst) *dst = *src;
-			Say(reply);
-		}
-		else if (strcmp(token, "quit") == 0)
-		{
-			nuke_children();
-			exit(EXIT_SUCCESS);
-		}
-		else
-		{
-		bad_command:
-			log_msg("warning: unknown command\n");
-		}
-	}
-}
-
-void worker()
-{
-	State_ state;
-	while (true)
-	{
-		state.current_ = &state.stack_[0];
-		wait_for_go();
-
-		try
-		{
-			bool newGame = INFO->newGame;
-			INFO->newGame = false;
-
-			{
-				LOCK_SHARED;
-				SHARED->working.Insert(INFO->id);
-			}
-
-			if (newGame)
-				init_search(&state, false);
-
-			memcpy(&state.board_, &SHARED->rootBoard, sizeof(Board_));
-			memcpy(state.current_, &SHARED->rootData, sizeof(GData));
-			memcpy(&Stack[0], &SHARED->rootStack, SHARED->rootSp * sizeof(uint64_t));
-			sp = SHARED->rootSp;
-			Stack[sp] = state[0].key;
-			check_node = INFO->nodes + 1024;	// should cause a check within a millisecond
-
-			if (state[0].turn == White)
-				root<0>(&state);
-			else
-				root<1>(&state);
-		}
-		catch (...) 	// reserve the right to use exceptions to halt work
-		{
-			VSAY("Hard stop of worker " + Str(INFO->id) + " after line " + Str(debug_loc) + "\n");
-		}
-
-		LOCK_SHARED;
-		SHARED->working.Remove(INFO->id);
-		if (SHARED->working.Empty())
-			send_best_move(true);
-	}
-}
-
-void init_os()
-{
-	HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
-	DWORD mode;
-	if (GetConsoleMode(handle, &mode))
-	{
-		mode &= ~ENABLE_MOUSE_INPUT;
-		mode &= ~ENABLE_WINDOW_INPUT;
-		mode |= ENABLE_LINE_INPUT;
-		mode |= ENABLE_ECHO_INPUT;
-		SetConsoleMode(handle, mode);
-		FlushConsoleInputBuffer(handle);
-	}
-
-	HANDLE job = CreateJobObject(NULL, NULL);
-	if (job == NULL)
-		error_msg("failed to create job object (%d)", GetLastError());
-	JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
-	memset(&info, 0, sizeof(info));
-	info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-	SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
-		sizeof(info));
-	AssignProcessToJobObject(job, GetCurrentProcess());     // Allowed to fail
-}
-
+#ifdef ZZZ
 #ifndef REGRESSION
-int roc_main(int argc, char **argv)
+
+struct Thread_
 {
-	if (argc > 1 && strcmp(argv[1], "child") == 0)
-	{
-		if (argc != 9)
-		{
-		usage:
-			fprintf(stderr, "usage: %s\n", argv[0]);
-			fprintf(stderr, "       %s \"bench\" <depth> FEN1 [FEN2 ...]\n",
-				argv[0]);
-			exit(EXIT_FAILURE);
-		}
-
-		// CHILD:
-		const char
-			*hashStr = argv[2],
-			*pvHashStr = argv[3],
-			*pawnHashStr = argv[4],
-			*dataStr = argv[5],
-			*settingsStr = argv[6],
-			*sharedStr = argv[7],
-			*infoStr = argv[8];
-		DATA = share_object(DATA, dataStr, true);
-		SETTINGS = share_object(SETTINGS, settingsStr, true);
-		SHARED = share_object(SHARED, sharedStr, false);
-		HASH = share_object(HASH, hashStr, false);
-		PVHASH = share_object(PVHASH, pvHashStr, false);
-		PAWNHASH = share_object(PAWNHASH, pawnHashStr, false);
-		INFO = share_object(INFO, infoStr, false);
-		INFO->pid = GetCurrentProcessId();
-#if TB
-		tb_init_fwd(SETTINGS->tbPath);
-#endif
-		THREADS.resize(SETTINGS->nThreads);
-		for (int i = 0; i < SETTINGS->nThreads; i++)
-		{
-			if (i == INFO->id)
-			{
-				THREADS[i] = INFO;
-				continue;
-			}
-			string infoName = object_name("INFO", SETTINGS->parentPid, i);
-			THREADS[i] = init_object<ThreadOwn_>(nullptr, infoName.c_str(), false, false);
-		}
-		State_ state;
-		init_search(&state, false);
-
-		// Signal that we are initialized.
-		{
-			LOCK_SHARED;
-			SHARED->working.Remove(INFO->id);
-		}
-		try
-		{
-			worker();   // Wait for work from parent.
-		}
-		catch (...)
-		{
-			Say("Unexpected death\n");
-			Say("At line " + Str(debugLine) + "\n");
-			Say("Worker " + Str(INFO->id) + "\n");
-			Say("*********************************************************************************\n");
-		}
-	}
-	else if (argc > 2 && strcmp(argv[1], "bench") == 0)
-	{
-		const int benchDepth = atoi(argv[2]);
-		DATA = init_object(DATA, nullptr, true, false);
-		init_data(DATA);
-		Settings_ settings;
-		settings.nThreads = 1;
-		settings.nHash = (1 << 23) / sizeof(GEntry);        // 8MB
-		settings.tbPath[0] = 0;
-		SETTINGS = init_object(SETTINGS, nullptr, true, true, 1, &settings);
-		SHARED = init_object(SHARED, nullptr, true, false);
-		SHARED->mutex = mutex_init;
-		SHARED->goEvent = event_init();
-
-		HASH = init_object(HASH, nullptr, true, false, SETTINGS->nHash);
-		PVHASH = init_object(PVHASH, nullptr, true, false, N_PV_HASH);
-		PAWNHASH = init_object(PAWNHASH, nullptr, true, false, N_PAWN_HASH);
-		INFO = init_object(INFO, nullptr, true, false);
-		INFO->pid = GetCurrentProcessId();
-		THREADS[0] = INFO;
-
-		State_ state;
-		auto t0 = now();
-		uint64_t nodes = 0;
-		for (int i = 3; i < argc; i++)
-		{
-			init_search(&state, true);
-			if (strcmp(argv[i], "startpos") != 0)
-				get_board(argv[i], &state);
-			SHARED->stopAll = false;
-			SHARED->depthLimit = 2 * benchDepth + 2;
-			SHARED->softTimeLimit = UINT32_MAX;
-			SHARED->hardTimeLimit = UINT32_MAX;
-			SHARED->startTime = t0;
-			if (state[0].turn == White) root<0>(&state); else root<1>(&state);
-			send_best_move();
-			nodes += INFO->nodes;
-		}
-		Say("TIME : " + Str(millisecs(t0, now())) + "\nNODES: " + Str(nodes) + "\n");
-		exit(EXIT_SUCCESS);
-	}
-	else if (argc > 1)
-		goto usage;
-
-	// PARENT:
-	Say("Roc " + string(Version::now) + "\n");
-	init_os();
-
-	// Read override parameters from the environment (useful for debugging)
-	Settings_ startInfo;
-	startInfo.parentPid = GetCurrentProcessId();
-	const char *val;
-	if ((val = getenv("ROC_HASH")) != NULL)
-		startInfo.nHash = atoll(val) / sizeof(GEntry);
-	else
-		startInfo.nHash = (1 << 27) / sizeof(GEntry);     // 128MB
-	startInfo.nHash = Bit(msb(startInfo.nHash));
-	startInfo.hashMask = startInfo.nHash - HASH_CLUSTER;
-	if ((val = getenv("ROC_THREADS")) != NULL)
-		startInfo.nThreads = atoi(val);
-	else
-		startInfo.nThreads = get_num_cpus();
-	if ((val = getenv("ROC_SYZYGY_PATH")) != NULL)
-		strncpy(startInfo.tbPath, val, sizeof(startInfo.tbPath) - 1);
-	else
-		startInfo.tbPath[0] = 0;
-	// other settings are fine at defaults
-	if ((val = getenv("ROC_TB_MIN_DEPTH")) != NULL)
-		startInfo.tbMinDepth = atoi(val);
-	if ((val = getenv("ROC_CONTEMPT")) != NULL)
-		startInfo.contempt = atoi(val);
-	if ((val = getenv("ROC_WOBBLE")) != NULL)
-		startInfo.wobble = atoi(val);
-
-	PVN = 1;        // XXX NYI
-
 	State_ state;
-	create_children(startInfo);
-	init_search(&state, false);
+//	Limits* limits;
+	TimeManager* tm;
+	PVariation pvs[MAX_PLY];
+	PVariation mpvs[MAX_MOVES];
 
-	while (true)
-		uci();
-	return 0;
-}
-#else
-// regression tester
-struct WriteMove_
-{
-	int m_;
-	WriteMove_(int m) : m_(m) { HI BYE }
+	int multiPV;
+	uint16_t bestMoves[MAX_MOVES];
+
+	uint64 nodes, tbhits;
+	int depth, seldepth, height, completed;
+
+	Undo undoStack[STACK_SIZE];
+	NodeState* states, nodeStates[STACK_SIZE];
+
+	ALIGN64 PKTable pktable;
+	ALIGN64 KillerTable killers;
+	ALIGN64 CounterMoveTable cmtable;
+	ALIGN64 HistoryTable history;
+	ALIGN64 CaptureHistoryTable chistory;
+	ALIGN64 ContinuationTable continuation;
+
+	size_t index, nthreads;
+	Thread_* allThreads;
 };
-ostream& operator<<(ostream& dst, const WriteMove_& m)
-{
-	dst << static_cast<char>('a' + ((m.m_ >> 6) & 7));
-	dst << static_cast<char>('1' + ((m.m_ >> 9) & 7));
-	dst << '-';
-	dst << static_cast<char>('a' + ((m.m_ >> 0) & 7));
-	dst << static_cast<char>('1' + ((m.m_ >> 3) & 7));
-	return dst;
-}
 
-void Test1(const char* fen, int max_depth, const char* solution)
+struct UCIGo_
 {
-	constexpr int DEPTH_LIMIT = 24;
-	max_depth = Min(max_depth, DEPTH_LIMIT);
-	init_search(1);
-	get_board(fen);
-	auto cmd = _strdup("go infinite");
-	free(cmd);
-	char moveStr[16];
-	for (int depth = Min(4, max_depth); depth <= max_depth; ++depth)
+	vector<Thread> threads_;
+	Limits limits;
+	uint64 nodesSofar;
+	double elapsedSofar;
+};
+
+
+int main(int argc, char** argv)
+{
+	State_ state;
+	char str[8192] = { 0 };
+	unique_ptr<thread> pthreadsgo;
+	UCIGo_ uciState;
+
+	int chess960 = 0;
+	int multiPV = 1;
+
+	// Initialize core components of Ethereal
+	initAttacks(); initMasks(); initMaterial();
+	initSearch(); initZobrist(); tt_init(1, 16);
+	initPKNetwork(); nnue_incbin_init();
+
+	// Create the UCI-board and our threads
+	vector<Thread> threads(1);
+	populateThreadPool(&threads);
+	boardFromFEN(&board, StartPosition, chess960);
+
+	// Handle any command line requests
+	handleCommandLine(argc, argv);
+
+	/*
+	|------------|-----------------------------------------------------------------------|
+	|  Commands  | Response. * denotes that the command blocks until no longer searching |
+	|------------|-----------------------------------------------------------------------|
+	|        uci |           Outputs the engine name, authors, and all available options |
+	|    isready | *           Responds with readyok when no longer searching a position |
+	| ucinewgame | *  Resets the TT and any Hueristics to ensure determinism in searches |
+	|  setoption | *     Sets a given option and reports that the option was set if done |
+	|   position | *  Sets the board position via an optional FEN and optional move list |
+	|         go | *       Searches the current position with the provided time controls |
+	|  ponderhit |          Flags the search to indicate that the ponder move was played |
+	|       stop |            Signals the search threads to finish and report a bestmove |
+	|       quit |             Exits the engine and any searches by killing the UCI loop |
+	|      perft |            Custom command to compute PERFT(N) of the current position |
+	|      print |         Custom command to print an ASCII view of the current position |
+	|------------|-----------------------------------------------------------------------|
+	*/
+
+	while (getInput(str))
 	{
-		auto score = state[0].turn
-			? pv_search<true, true>(-MateValue, MateValue, depth, FlagNeatSearch)
-			: pv_search<false, true>(-MateValue, MateValue, depth, FlagNeatSearch);
-		move_to_string(INFO->bestMove, moveStr);
-		Say(string(moveStr) + ":  " + Str(score) + ", " + Str(INFO->nodes) + " nodes\n");
+		if (strEquals(str, "uci")) {
+			printf("id name Ethereal " ETHEREAL_VERSION "\n");
+			printf("id author Andrew Grant, Alayan & Laldon\n");
+			printf("option name Hash type spin default 16 min 2 max 131072\n");
+			printf("option name Threads type spin default 1 min 1 max 2048\n");
+			printf("option name EvalFile type string default <empty>\n");
+			printf("option name MultiPV type spin default 1 min 1 max 256\n");
+			printf("option name MoveOverhead type spin default 300 min 0 max 10000\n");
+			printf("option name SyzygyPath type string default <empty>\n");
+			printf("option name SyzygyProbeDepth type spin default 0 min 0 max 127\n");
+			printf("option name Ponder type check default false\n");
+			printf("option name AnalysisMode type check default false\n");
+			printf("option name UCI_Chess960 type check default false\n");
+			printf("info string licensed to " LICENSE_OWNER "\n");
+			printf("uciok\n"), fflush(stdout);
+		}
+
+		else if (strEquals(str, "isready"))
+			printf("readyok\n"), fflush(stdout);
+
+		else if (strEquals(str, "ucinewgame"))
+			resetThreadPool(&threads[0]), tt_clear(threads[0].nthreads);
+
+		else if (strStartsWith(str, "setoption"))
+			uciSetOption(str, &threads, &multiPV, &chess960);
+
+		else if (strStartsWith(str, "position"))
+			uciPosition(str, &board, chess960);
+
+		else if (strStartsWith(str, "go"))
+		{
+			pthreadsgo.reset(uciGo(&uciGoStruct, &threads[0], &board, multiPV, str));
+			pthreadsgo->detach();   // maybe not needed?
+		}
+
+		else if (strEquals(str, "ponderhit"))
+			IS_PONDERING = 0;
+
+		else if (strEquals(str, "stop"))
+			GlobalStopAll = true, IS_PONDERING = 0;
+
+		else if (strEquals(str, "quit"))
+			break;
+
+		else if (strStartsWith(str, "perft"))
+			cout << perft(&board, atoi(str + strlen("perft "))) << endl;
+
+		else if (strStartsWith(str, "print"))
+			printBoard(&board), fflush(stdout);
 	}
-	cin.ignore();
-}
 
-int main(int argc, char *argv[])
-{
-	int CPUInfo[4] = { -1, 0, 0, 0 };
-	__cpuid(CPUInfo, 1);
-	HardwarePopCnt = (CPUInfo[2] >> 23) & 1;
-
-	init_os();
-
-	// Read override parameters from the environment (useful for debugging)
-	Settings_ startInfo;
-	startInfo.parentPid = GetCurrentProcessId();
-	startInfo.nHash = (1 << 24) / sizeof(GEntry);     // 16MB
-	startInfo.nHash = Bit(msb(startInfo.nHash));
-	startInfo.hashMask = startInfo.nHash - HASH_CLUSTER;
-	startInfo.nThreads = get_num_cpus();
-	startInfo.tbPath[0] = 0;
-	PVN = 1;        // XXX NYI
-
-	create_children(startInfo);
-	init_search(false);
-
-	fprintf(stdout, "Roc (regression mode)\n");
-
-	Test1("8/1B2k3/P3Pp2/5K2/8/4b3/8/8 w - - 0 1", 24, "b7-f3");
-	exit(0);
-
-	Test1("R7/6k1/8/8/6P1/6K1/8/7r w - - 0 1", 24, "g4-g5");
-	Test1("kr6/p7/8/8/8/8/8/BBK5 w - - 0 1", 24, "g4-g5");
-
-	Test1("4kbnr/2pr1ppp/p1Q5/4p3/4P3/2Pq1b1P/PP1P1PP1/RNB2RK1 w - - 0 1", 20, "f1-e1");	// why didn't Roc keep the rook pinned?
-
-	Test1("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1", 20, "a7-a8");
-	Test1("4r1k1/4ppbp/r5p1/3Np3/2PnP3/3P2Pq/1R3P2/2BQ1RK1 w - - 0 1", 20, "b2-b1");
-
-	Test1("8/4p3/8/3P3p/P2pK3/6P1/7b/3k4 w - - 0 1", 24, "d5-d6");
-	Test1("rq2r1k1/5pp1/p7/4bNP1/1p2P2P/5Q2/PP4K1/5R1R w - - 0 1", 4, "f5-g7");
-	Test1("6k1/2b2p1p/ppP3p1/4p3/PP1B4/5PP1/7P/7K w - - 0 1", 31, "d4-b6");			// Slizzard fails
-	Test1("5r1k/p1q2pp1/1pb4p/n3R1NQ/7P/3B1P2/2P3P1/7K w - - 0 1", 26, "e5-e6");	// Slizzard finds at depth 21
-	Test1("5r1k/1P4pp/3P1p2/4p3/1P5P/3q2P1/Q2b2K1/B3R3 w - - 0 1", 36, "a2-f7");	// Slizzard finds at depth 35
-	Test1("3B4/8/2B5/1K6/8/8/3p4/3k4 w - - 0 1", 15, "b5-a6");						// Slizzard fails until depth 17
-	Test1("1k1r4/1pp4p/2n5/P6R/2R1p1r1/2P2p2/1PP2B1P/4K3 b - - 0 1", 18, "e4-e3");
-	Test1("6k1/p3q2p/1nr3pB/8/3Q1P2/6P1/PP5P/3R2K1 b - - 0 1", 12, "c6-d6");
-	Test1("2krr3/1p4pp/p1bRpp1n/2p5/P1B1PP2/8/1PP3PP/R1K3B1 w - - 0 1", 15, "d6-c6");
-	Test1("r5k1/pp2p1bp/6p1/n1p1P3/2qP1NP1/2PQB3/P5PP/R4K2 b - - 0 1", 18, "g6-g5");
-	Test1("2r3k1/1qr1b1p1/p2pPn2/nppPp3/8/1PP1B2P/P1BQ1P2/5KRR w - - 0 1", 25, "g1-g7");
-	Test1("1br3k1/p4p2/2p1r3/3p1b2/3Bn1p1/1P2P1Pq/P3Q1BP/2R1NRK1 b - - 0 1", 20, "h3-h2");
-	Test1("8/pp3k2/2p1qp2/2P5/5P2/1R2p1rp/PP2R3/4K2Q b - - 0 1", 11, "e6-e4");
-	Test1("3b2k1/1pp2rpp/r2n1p1B/p2N1q2/3Q4/6R1/PPP2PPP/4R1K1 w - - 0 1", 15, "d5-b4");
-	Test1("3r1rk1/1p3pnp/p3pBp1/1qPpP3/1P1P2R1/P2Q3R/6PP/6K1 w - - 0 1", 24, "h3-h7");
-	Test1("4k1rr/ppp5/3b1p1p/4pP1P/3pP2N/3P3P/PPP5/2KR2R1 w kq - 0 1", 16, "g1-g6");
-	Test1("r1b3k1/ppp3pp/2qpp3/2r3N1/2R5/8/P1Q2PPP/2B3K1 b - - 0 1", 4, "g7-g6");
-	Test1("4r1k1/p1qr1p2/2pb1Bp1/1p5p/3P1n1R/3B1P2/PP3PK1/2Q4R w - - 0 1", 20, "c1-f4");
-	Test1("3r2k1/pp4B1/6pp/PP1Np2n/2Pp1p2/3P2Pq/3QPPbP/R4RK1 b - - 0 1", 42, "g3-f3");	// fails to find f3
-	Test1("r4rk1/5p2/1n4pQ/2p5/p5P1/P4N2/1qb1BP1P/R3R1K1 w - - 0 1", 23, "a1-a2");
-	Test1("r4rk1/pb3p2/1pp4p/2qn2p1/2B5/6BP/PPQ2PP1/3RR1K1 w - - 0 1", 15, "e1-e6");
-	Test1("rnb1k2r/pp2qppp/3p1n2/2pp2B1/1bP5/2N1P3/PP2NPPP/R2QKB1R w KQkq - 0 1", 4, "a2-a3");
-	Test1("r1b2rk1/pp1p1pBp/6p1/8/2PQ4/8/PP1KBP1P/q7 w - - 0 1", 30, "d4-f6");
-	Test1("R7/3p3p/8/3P2P1/3k4/1p5p/1P1NKP1P/7q w - - 0 1", 31, "g5-g6");
-	Test1("8/8/3k1p2/p2BnP2/4PN2/1P2K1p1/8/5b2 b - - 0 1", 57, "f4-d3");	// fails to find Nd3 (finds at 58 in about 1800 seconds)
-	Test1("2r3k1/pbr1q2p/1p2pnp1/3p4/3P1P2/1P1BR3/PB1Q2PP/5RK1 w - - 0 1", 31, "f4-f5");
-	Test1("3r2k1/p2r2p1/1p1B2Pp/4PQ1P/2b1p3/P3P3/7K/8 w - - 0 1", 39, "d6-b4");
-	Test1("b2r1rk1/2q2ppp/p1nbpn2/1p6/1P6/P1N1PN2/1B2QPPP/1BR2RK1 w - - 0 1", 4, "c3-e4");
-	Test1("r1b4Q/p4k1p/1pp1ppqn/8/1nP5/8/PP1KBPPP/3R2NR w - - 0 1", 4, "e5-e6");
-	Test1("2k5/2p3Rp/p1pb4/1p2p3/4P3/PN1P1P2/1P2KP1r/8 w - - 0 1", 25, "f3-f4");
-
-	cin.ignore();
 	return 0;
 }
-#endif
+
 
 #if TB
 #pragma optimize("gy", off)
@@ -8225,4 +7504,6 @@ bool tb_init_fwd(const char* path)
 	return tb_init(path);
 }
 
+#endif
+#endif
 #endif
