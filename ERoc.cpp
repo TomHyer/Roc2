@@ -1179,7 +1179,7 @@ PKEntry* getCachedPawnKingEval(Thread* thread, const State* state)
     return pke->pkhash == state->pkhash ? pke : NULL;
 }
 
-void storeCachedPawnKingEval(Thread* thread, const State* state, uint64 passed, packed_t eval, packed_t safety[2]) 
+void storeCachedPawnKingEval(Thread* thread, const State* state, uint64 passed, packed_t eval, const array<packed_t, 2>& safety) 
 {
     PKEntry& pke = thread->pktable[state->pkhash & PK_CACHE_MASK];
     pke = { state->pkhash, passed, eval, safety[WHITE], safety[BLACK] };
@@ -3759,26 +3759,19 @@ struct EvalTrace {
     packed_t safety[N_COLORS];
 };
 
-struct EvalInfo {
-    uint64 pawnAttacks[N_COLORS];
-    uint64 pawnAttacksBy2[N_COLORS];
-    uint64 rammedPawns[N_COLORS];
-    uint64 blockedPawns[N_COLORS];
-    uint64 kingAreas[N_COLORS];
-    uint64 mobilityAreas[N_COLORS];
-    uint64 attacked[N_COLORS];
-    uint64 attackedBy2[N_COLORS];
-    uint64 attackedBy[N_COLORS][N_PIECES];
-    uint64 occupiedMinusBishops[N_COLORS];
-    uint64 occupiedMinusRooks[N_COLORS];
+struct EvalInfo 
+{
+    array<array<uint64, N_PIECES>, N_COLORS> attackedBy;
+    array<uint64, N_COLORS> pawnAttacks, pawnAttacksBy2, rammedPawns, blockedPawns;
+    array<uint64, N_COLORS> kingAreas, mobilityAreas, attacked, attackedBy2;
+    array<uint64, N_COLORS> occupiedMinusBishops, occupiedMinusRooks;
+    array<packed_t, N_COLORS> kingAttackersWeight, pkeval, pksafety;
     uint64 passedPawns;
-    int kingSquare[N_COLORS];
-    int kingAttacksCount[N_COLORS];
-    int kingAttackersCount[N_COLORS];
-    packed_t kingAttackersWeight[N_COLORS];
-    packed_t pkeval[N_COLORS];
-    packed_t pksafety[N_COLORS];
+    array<int, N_COLORS> kingSquare, kingAttacksCount, kingAttackersCount;
     PKEntry* pkentry;
+
+    // Roc parts
+
 };
 
 /// nnue/nnue.h
@@ -4523,7 +4516,7 @@ constexpr packed_t ComplexityAdjustment = S(0, -157);
 
 #undef S
 
-void initPSQTInfo(Thread* thread, State* state, EvalInfo* ei)
+void initEvalInfo(Thread* thread, State* state, EvalInfo* ei)
 {
     uint64 white = state->board_.colors_[WHITE];
     uint64 black = state->board_.colors_[BLACK];
@@ -4579,6 +4572,9 @@ void initPSQTInfo(Thread* thread, State* state, EvalInfo* ei)
     ei->pkeval[BLACK] = ei->pkentry == NULL ? 0 : 0;
     ei->pksafety[WHITE] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyw;
     ei->pksafety[BLACK] = ei->pkentry == NULL ? 0 : ei->pkentry->safetyb;
+
+    // Roc part
+    // ei->area_[WHITE] = 
 }
 
 template<int US> packed_t evaluatePawns(EvalInfo* ei, const Board_& board)
@@ -4673,6 +4669,70 @@ template<int US> packed_t evaluatePawns(EvalInfo* ei, const Board_& board)
     return eval;
 }
 
+
+/*
+template<bool me> INLINE packed_t EvalKnights(EvalInfo* ei, const Board_& board)
+{
+    ei->attackedBy[me][KNIGHT] = 0ull;
+
+    packed_t eval = 0;
+    for (uint64 b, u = board.Knights(me); T(u); u ^= b)
+    {
+        int sq = lsb(u);
+        b = Bit(sq);
+        uint64 att = NAtt[sq];
+        if (uint64 a = att & EI.area[opp])
+            EI.king_att[me] += Single(a) ? KingNAttack1 : KingNAttack;
+        state[0].threat |= att & board.Major(opp);
+        uint64 control = att & EI.free[me];
+        NOTICE(EI.score, pop(control));
+        IncV(EI.score, RO->MobKnight[0][pop(control)]);
+        NOTICE(EI.score, NO_INFO);
+        FakeV(EI.score, (64 * pop(control & RO->LocusN[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
+        IncV(EI.score, RO->MobKnight[1][pop(control & RO->LocusN[EI.king[opp]])]);
+        if (control & board.Bishop(opp))
+            IncV(EI.score, Values::TacticalN2B);
+        if (att & EI.area[me])
+            IncV(EI.score, Values::KingDefKnight);
+        if ((b & Outpost[me]) && !(board.Pawn(opp) & PIsolated[FileOf(sq)] & Forward[me][RankOf(sq)]))
+        {
+            IncV(EI.score, Values::KnightOutpost);
+            if (state[0].patt[me] & b)
+            {
+                IncV(EI.score, Values::KnightOutpostProtected);
+                if (att & EI.free[me] & board.Pawn(opp))
+                    IncV(EI.score, Values::KnightOutpostPawnAtt);
+                if (F(board.Knight(opp) | board.Piece((T(b & LightArea) ? WhiteLight : WhiteDark) | opp)))
+                    IncV(EI.score, Values::KnightOutpostNoMinor);
+            }
+        }
+    }
+}
+*/
+
+template<int US> packed_t PrevalKnights(EvalInfo* ei, const Board_& board)
+{
+    packed_t eval = 0;
+
+    ei->attackedBy[US][KNIGHT] = 0ull;
+
+    // Evaluate each knight
+    uint64 tempKnights = board.Knights(US);
+    while (tempKnights)
+    {
+        // Pop off the next knight
+        int sq = poplsb(&tempKnights);
+
+        // Compute possible attacks and store off information for king safety
+        uint64 attacks = knightAttacks(sq);
+        ei->attackedBy2[US] |= attacks & ei->attacked[US];
+        ei->attacked[US] |= attacks;
+        ei->attackedBy[US][KNIGHT] |= attacks;
+    }
+
+    return eval;
+}
+
 template<int US> packed_t evaluateKnights(EvalInfo* ei, const Board_& board)
 {
     const int THEM = !US;
@@ -4682,21 +4742,15 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, const Board_& board)
     uint64 enemyPawns = board.Pawns(THEM);
     uint64 tempKnights = board.Knights(US);
 
-    ei->attackedBy[US][KNIGHT] = 0ull;
-
     // Evaluate each knight
     while (tempKnights)
     {
         // Pop off the next knight
         int sq = poplsb(&tempKnights);
+        uint64 attacks = knightAttacks(sq);
+
         if (TRACE) TheTrace.KnightValue[US]++;
         if (TRACE) TheTrace.KnightPSQT[relativeSquare(US, sq)][US]++;
-
-        // Compute possible attacks and store off information for king safety
-        uint64 attacks = knightAttacks(sq);
-        ei->attackedBy2[US] |= attacks & ei->attacked[US];
-        ei->attacked[US] |= attacks;
-        ei->attackedBy[US][KNIGHT] |= attacks;
 
         // Apply a bonus if the knight is on an outpost square, and cannot be attacked
         // by an enemy pawn. Increase the bonus if one of our pawns supports the knight
@@ -4738,6 +4792,30 @@ template<int US> packed_t evaluateKnights(EvalInfo* ei, const Board_& board)
     return eval;
 }
 
+template<int US> packed_t PrevalBishops(EvalInfo* ei, const Board_& board)
+{
+
+    packed_t eval = 0;
+
+    ei->attackedBy[US][BISHOP] = 0ull;
+
+    // Evaluate each bishop
+    uint64 tempBishops = board.Bishops(US);
+    while (tempBishops)
+    {
+        // Pop off the next Bishop
+        int sq = poplsb(&tempBishops);
+
+        // Compute possible attacks and store off information for king safety
+        uint64 attacks = bishopAttacks(sq, ei->occupiedMinusBishops[US]);
+        ei->attackedBy2[US] |= attacks & ei->attacked[US];
+        ei->attacked[US] |= attacks;
+        ei->attackedBy[US][BISHOP] |= attacks;
+    }
+
+    return eval;
+}
+
 template<int US> packed_t evaluateBishops(EvalInfo* ei, const Board_& board)
 {
     const int THEM = !US;
@@ -4746,8 +4824,6 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, const Board_& board)
 
     uint64 enemyPawns = board.Pawns(THEM);
     uint64 tempBishops = board.Bishops(US);
-
-    ei->attackedBy[US][BISHOP] = 0ull;
 
     // Apply a bonus for having a pair of bishops
     if ((tempBishops & LightArea) && (tempBishops & DarkArea)) 
@@ -4766,9 +4842,6 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, const Board_& board)
 
         // Compute possible attacks and store off information for king safety
         uint64 attacks = bishopAttacks(sq, ei->occupiedMinusBishops[US]);
-        ei->attackedBy2[US] |= attacks & ei->attacked[US];
-        ei->attacked[US] |= attacks;
-        ei->attackedBy[US][BISHOP] |= attacks;
 
         // Apply a penalty for the bishop based on number of rammed pawns
         // of our own colour, which reside on the same shade of square as the bishop
@@ -4816,20 +4889,40 @@ template<int US> packed_t evaluateBishops(EvalInfo* ei, const Board_& board)
     return eval;
 }
 
+template<int US> packed_t PrevalRooks(EvalInfo* ei, const Board_& board)
+{
+    packed_t eval = 0;
+
+    ei->attackedBy[US][ROOK] = 0ull;
+
+    // Evaluate each rook
+    uint64 tempRooks = board.Rooks() & board.colors_[US];
+    while (tempRooks)
+    {
+        // Pop off the next rook
+        int sq = poplsb(&tempRooks);
+
+        // Compute possible attacks and store off information for king safety
+        uint64 attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]);
+        ei->attackedBy2[US] |= attacks & ei->attacked[US];
+        ei->attacked[US] |= attacks;
+        ei->attackedBy[US][ROOK] |= attacks;
+    }
+
+    return eval;
+}
+
 template<int US> packed_t evaluateRooks(EvalInfo* ei, const Board_& board)
 {
     const int THEM = !US;
 
     packed_t eval = 0;
 
-    uint64 myPawns = board.Pawns(US);
-    uint64 enemyPawns = board.Pawns(THEM);
-    uint64 tempRooks = board.Rooks() & board.colors_[US];
-
-    ei->attackedBy[US][ROOK] = 0ull;
+    uint64 myPawns = board.Pawns(US), enemyPawns = board.Pawns(THEM);
 
     // Evaluate each rook
-    while (tempRooks) 
+    uint64 tempRooks = board.Rooks(US);
+    while (tempRooks)
     {
         // Pop off the next rook
         int sq = poplsb(&tempRooks);
@@ -4838,9 +4931,6 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, const Board_& board)
 
         // Compute possible attacks and store off information for king safety
         uint64 attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]);
-        ei->attackedBy2[US] |= attacks & ei->attacked[US];
-        ei->attacked[US] |= attacks;
-        ei->attackedBy[US][ROOK] |= attacks;
 
         // Rook is on a semi-open file if there are no pawns of the rook's
         // colour on the file. If there are no pawns at all, it is an open file
@@ -4875,15 +4965,35 @@ template<int US> packed_t evaluateRooks(EvalInfo* ei, const Board_& board)
     return eval;
 }
 
+template<int US> packed_t PrevalQueens(EvalInfo* ei, const Board_& board)
+{
+    packed_t eval = 0;
+
+    ei->attackedBy[US][QUEEN] = 0ull;
+
+    // Evaluate each queen
+    uint64 tempQueens = board.Queens(US);
+    while (tempQueens)
+    {
+        // Pop off the next queen
+        int sq = poplsb(&tempQueens);
+
+        // Compute possible attacks and store off information for king safety
+        uint64 attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]) | bishopAttacks(sq, ei->occupiedMinusBishops[US]);
+
+        ei->attackedBy2[US] |= attacks & ei->attacked[US];
+        ei->attacked[US] |= attacks;
+        ei->attackedBy[US][QUEEN] |= attacks;
+    }
+
+    return eval;
+}
+
 template<int US> packed_t evaluateQueens(EvalInfo* ei, const Board_& board)
 {
     const int THEM = !US;
 
     packed_t eval = 0;
-
-    uint64 occupied = board.colors_[WHITE] | board.colors_[BLACK];
-
-    ei->attackedBy[US][QUEEN] = 0ull;
 
     // Evaluate each queen
     uint64 tempQueens = board.Queens(US);
@@ -4895,10 +5005,7 @@ template<int US> packed_t evaluateQueens(EvalInfo* ei, const Board_& board)
         if (TRACE) TheTrace.QueenPSQT[relativeSquare(US, sq)][US]++;
 
         // Compute possible attacks and store off information for king safety
-        uint64 attacks = queenAttacks(sq, occupied);
-        ei->attackedBy2[US] |= attacks & ei->attacked[US];
-        ei->attacked[US] |= attacks;
-        ei->attackedBy[US][QUEEN] |= attacks;
+        uint64 attacks = rookAttacks(sq, ei->occupiedMinusRooks[US]) | bishopAttacks(sq, ei->occupiedMinusBishops[US]);
 
         // Apply a penalty if the Queen is at risk for a discovered attack
         if (discoveredAttacks(board, sq, US)) {
@@ -5004,8 +5111,8 @@ template<int US> packed_t evaluateKings(EvalInfo* ei, const Board_& board)
         // Weak squares are attacked by the enemy, defended no more
         // than once and only defended by our Queens or our King
         uint64 weak = ei->attacked[THEM]
-            & ~ei->attackedBy2[US]
-            & (~ei->attacked[US] | ei->attackedBy[US][QUEEN] | ei->attackedBy[US][KING]);
+                & ~ei->attackedBy2[US]
+                & (~ei->attacked[US] | ei->attackedBy[US][QUEEN] | ei->attackedBy[US][KING]);
 
         // Usually the King Area is 9 squares. Scale are attack counts to account for
         // when the king is in an open area and expects more attacks, or the opposite
@@ -5324,6 +5431,11 @@ packed_t evaluatePieces(EvalInfo* ei, const Board_& board)
     evaluateKingsPawns<WHITE>(ei, board);
     evaluateKingsPawns<BLACK>(ei, board);
 
+    eval += PrevalKnights<WHITE>(ei, board) - PrevalKnights<BLACK>(ei, board);
+    eval += PrevalBishops<WHITE>(ei, board) - PrevalBishops<BLACK>(ei, board);
+    eval += PrevalRooks<WHITE>(ei, board) - PrevalRooks<BLACK>(ei, board);
+    eval += PrevalQueens<WHITE>(ei, board) - PrevalQueens<BLACK>(ei, board);
+
     eval += evaluateKnights<WHITE>(ei, board) - evaluateKnights<BLACK>(ei, board);
     eval += evaluateBishops<WHITE>(ei, board) - evaluateBishops<BLACK>(ei, board);
     eval += evaluateRooks<WHITE>(ei, board) - evaluateRooks<BLACK>(ei, board);
@@ -5375,7 +5487,7 @@ score_t evaluateBoard(Thread* thread, State* state)
     else 
     {
         EvalInfo ei;
-        initPSQTInfo(thread, state, &ei);
+        initEvalInfo(thread, state, &ei);
         packed = evaluatePieces(&ei, state->board_);
 
         packed_t pkeval = ei.pkeval[WHITE] - ei.pkeval[BLACK];
