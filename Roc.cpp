@@ -9,7 +9,6 @@
 #define LARGE_PAGES
 #define MP_NPS
 //#define TIME_TO_DEPTH
-#define TB 1
 //#define HNI
 //#define VERBOSE
 
@@ -30,6 +29,8 @@
 #include <cmath>
 #include <algorithm>
 #include <chrono>
+#include <unordered_map>
+#include <bitset>
 typedef std::chrono::high_resolution_clock::time_point time_point;
 #include <windows.h>
 #undef min
@@ -67,8 +68,8 @@ using namespace std;
 using Gull::Board_;
 
 
-CommonData_* DATA = nullptr;
-CommonData_* const& RO = DATA;	// generally we access DATA through RO
+CommonData_ DATA;
+CommonData_* const& RO = &DATA;	// generally we access DATA through RO
 
 // Constants controlling play
 constexpr int PliesToEvalCut = 50;	// halfway to 50-move
@@ -77,14 +78,8 @@ constexpr int SeeThreshold = 40 * CP_EVAL;
 constexpr int DrawCapConstant = 110 * CP_EVAL;
 constexpr int DrawCapLinear = 0;	// numerator; denominator is 64
 constexpr int DeltaDecrement = (3 * CP_SEARCH) / 2;	// 5 (+91/3) vs 3
-constexpr int TBMinDepth = 7;
+int TBMinDepth = 7;
 
-constexpr int FailLoInit = 22;
-constexpr int FailHiInit = 31;
-constexpr int FailLoGrowth = 37;	// numerator; denominator is 64
-constexpr int FailHiGrowth = 26;	// numerator; denominator is 64
-constexpr int FailLoDelta = 27;
-constexpr int FailHiDelta = 24;
 constexpr int InitiativeConst = int(1.5 * CP_SEARCH);
 constexpr int InitiativePhase = int(4.5 * CP_SEARCH);
 
@@ -148,8 +143,6 @@ constexpr int FlagNeatSearch = FlagHashCheck | FlagHaltCheck | FlagCallEvaluatio
 constexpr int FlagNoKillerUpdate = 1 << 24;
 constexpr int FlagReturnBestMove = 1 << 25;
 
-array<uint64, 2048> Stack;
-int sp, save_sp;
 //uint64 nodes, tb_hits, check_node, check_node_smp;
 Board_ SaveBoard[1];
 
@@ -168,34 +161,82 @@ typedef struct
 	uint16 check_ref[2];
 } GRef;
 
+struct TimeLimits_
+{
+	time_point start_;
+	uint64 softLimit_, hardLimit_;
+} TheTimeLimit;
+
+struct SearchInfo_
+{
+	int singular_, hashDepth_;
+	bool change_, early_, failLow_, failHigh_;
+};
+
+constexpr int N_PAWN_HASH = 1 << 20;
+constexpr int PAWN_HASH_MASK = N_PAWN_HASH - 1;
+
+
 struct State_
 {
 	std::array<GData, MAX_HEIGHT> stack_;
 	GData* current_;
 	Board_ board_;
+	SearchInfo_ searchInfo_;
+	vector<uint64> hashHist_;
 
-	State_() : current_(&stack_[0]) {}
-	void ClearStack() { memset(&stack_[1], 0, (MAX_HEIGHT - 1) * sizeof(GData)); }
+	array<array<array<uint16, 2>, 64>, 16> HistoryVals;
+	array<sint16, 16 * 4096> DeltaVals;
+	array<GRef, 16 * 64> Ref;
+	uint64 nodes_, tbHits_;
+
+	vector<GPawnEntry> pawnHash_;
+
+	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH) {}
+
+	void ClearStack() 
+	{ 
+		memset(&stack_[1], 0, (MAX_HEIGHT - 1) * sizeof(GData)); 
+		current_ = &stack_[0];
+	}
+	void Reset(const State_& exemplar)
+	{
+		stack_ = exemplar.stack_;
+		current_ = &stack_[exemplar.Height()];
+		board_ = exemplar.board_;
+		searchInfo_ = exemplar.searchInfo_;
+		hashHist_ = exemplar.hashHist_;
+
+		HistoryVals = exemplar.HistoryVals;
+		for (auto& hp : HistoryVals)
+			for (auto& hs: hp)
+				for (auto& hv: hs)
+					if (F(hv & 0x00FF))
+						hv = 1;
+
+		DeltaVals = exemplar.DeltaVals;
+		Ref = exemplar.Ref;
+		nodes_ = tbHits_ = 0;
+
+		if (exemplar.pawnHash_.size() == N_PAWN_HASH)
+			pawnHash_ = exemplar.pawnHash_;
+	}
 
 	INLINE const GData& operator[](int lookback) const { return *(current_ - lookback); }
 	INLINE int Height() const { return static_cast<int>(current_ - &stack_[0]); }
 
 	INLINE const Board_& operator()() const { return board_; }
 	INLINE const uint64& operator()(int piece_id) const { return board_.Piece(piece_id); }
-
-	array<array<array<uint16, 2>, 64>, 16> HistoryVals;
-	array<sint16, 16 * 4096> DeltaVals;
-	array<GRef, 16 * 64> Ref;
 };
 
 constexpr uint8 FlagSort = 1 << 0;
 constexpr uint8 FlagNoBcSort = 1 << 1;
 
-#if TB
 constexpr sint16 TBMateValue = 31380;
 constexpr sint16 TBCursedMateValue = 13;
 const int TbValues[5] = { -TBMateValue, -TBCursedMateValue, 0, TBCursedMateValue, TBMateValue };
 constexpr int NominalTbDepth = 33;
+constexpr int MaxDepth = 125;
 inline int TbDepth(int depth) { return Min(depth + NominalTbDepth, 117); }
 
 extern unsigned TB_LARGEST;
@@ -220,8 +261,6 @@ template<class F_, typename... Args_> int TBProbe(F_ func, const State_& state, 
 		state[0].turn == White, std::forward<Args_>(args)...);
 }
 
-
-#endif
 
 enum
 {
@@ -258,10 +297,6 @@ struct GEntry
 };
 constexpr GEntry NullEntry = { 0, 1, 0, 0, 0, 0, 0 };
 
-constexpr int N_PAWN_HASH = 1 << 20;
-array<GPawnEntry, N_PAWN_HASH> PawnHash;
-constexpr int PAWN_HASH_MASK = N_PAWN_HASH - 1;
-
 typedef struct
 {
 	int knodes;
@@ -278,8 +313,9 @@ constexpr GPVEntry NullPVEntry = { 0, 0, 0, 1, 0, 0, 0, 0, 0 };
 constexpr int N_PV_HASH = 1 << 20;
 constexpr int PV_CLUSTER = 1 << 2;
 constexpr int PV_HASH_MASK = N_PV_HASH - PV_CLUSTER;
+constexpr int MAX_MOVES = 256;
 
-array<int, 256> RootList;
+vector<int> RootList;
 
 template<class T> void prefetch(T* p)
 {
@@ -501,7 +537,7 @@ INLINE uint16& HistoryScore(State_* state, int join, int piece, int from, int to
 }
 INLINE int HistoryMerit(uint16 hs)
 {
-	return hs / (hs & 0x00FF);	// differs by 1 from Gull convention
+	return hs / (1 | ((hs & 0x00FF) << 1));
 }
 INLINE int HistoryP(State_* state, int join, int piece, int from, int to)
 {
@@ -562,8 +598,8 @@ INLINE sint16& DeltaM(State_* state, int move)
 INLINE int* AddCDeltaP(State_* state, int* list, int margin, int piece, int from, int to, int flags)
 {
 	return DeltaScore(state, piece, from, to) < margin
-		? list
-		: AddMove(list, from, to, flags, (DeltaScore(state, piece, from, to) + 0x4000) << 16);
+			? list
+			: AddMove(list, from, to, flags, (DeltaScore(state, piece, from, to) + 0x4000) << 16);
 }
 
 INLINE GRef& RefPointer(State_* state, int piece, int from, int to)
@@ -600,16 +636,9 @@ char mstring[65536];
 int MultiPV[256];
 int pvp;
 int pv_length;
-int LastDepth, LastTime, LastValue, LastExactValue, PrevMove, InstCnt;
 sint64 LastSpeed;
 int PVN, PVHashing = 1, SearchMoves, SMPointer, Previous;
 
-typedef struct
-{
-	int Change, Singular, Early, FailLow, FailHigh;
-	bool Bad;
-} GSearchInfo;
-GSearchInfo CurrentSI, BaseSI;
 
 
 #ifdef CPU_TIMING
@@ -626,7 +655,6 @@ constexpr int TimeNoPVSCOMargin = 60;
 constexpr int TimeNoChangeMargin = 70;
 constexpr int TimeRatio = 120;
 constexpr int PonderRatio = 120;
-constexpr int MovesTg = 26;
 constexpr int InfoLag = 5000;
 constexpr int InfoDelay = 1000;
 time_point StartTime, InfoTime, CurrTime;
@@ -947,7 +975,7 @@ void mutex_lock0(mutex_t *mutex)
 	if (WaitForSingleObject(*mutex, INFINITE) != WAIT_OBJECT_0)
 		error_msg("failed to lock mutex (%d)", GetLastError());
 }
-static bool mutex_try_lock(mutex_t *mutex, uint64_t timeout)
+static bool mutex_try_lock(mutex_t *mutex, uint64 timeout)
 {
 	switch (WaitForSingleObject(*mutex, (DWORD)timeout))
 	{
@@ -1234,47 +1262,94 @@ void event_signal(event_t* event)
 	ResetEvent(*event);
 }
 
-constexpr int MAX_PV_LEN = 256;
+struct AspirationState_
+{
+	int depth_, alpha_, beta_, delta_;
+};
+constexpr AspirationState_ ASPIRATION_INIT = { 0, -200, 200, 50 };
+
+struct RootScores_
+{
+	struct Record_
+	{
+		uint16 depth_, move_;
+		score_t lower_, upper_;
+	};
+	vector<Record_> results_;
+
+	void Add(uint16 move, score_t score, uint16 depth, score_t alpha, score_t beta)
+	{
+		if (score <= alpha)
+			return;	// nothing learned
+		if (depth >= results_.size())
+			results_.resize(depth + 1, { 0, 0, -MateValue, -MateValue });
+		if (score >= results_[depth].lower_)
+			results_[depth] = { depth, move, score, score < beta ? score : MateValue };
+	}
+	void clear() { results_.clear(); }
+	bool empty() const 
+	{ 
+		for (auto r : results_)
+			if (r.move_)
+				return false;
+		return true;
+	}
+	Record_ best() const
+	{
+		for (auto r = results_.rbegin(); r != results_.rend(); ++r)
+		{
+			if (r->move_)
+				return *r;
+		}
+		return { 0, 0, -MateValue, -MateValue };
+	}
+};
+
+constexpr int MAX_PV_LEN = 124;  // cannot exceed MAX_HEIGHT
 struct ThreadOwn_
 {
-	size_t nodes;
-	size_t tbHits;
-	int pid;
-	int id;
-	int depth;
-	int selDepth;
-	int bestMove;
-	int bestScore;
+	uint16 iThread_;
+	AspirationState_ window_;
 	int PV[MAX_PV_LEN];
-	bool newGame;
+	int depth, selDepth;
+	RootScores_ results_;
+	vector<int> rootList_;	// may be ordered different from RootList
+
+	int lastTime_;
 };
-vector<ThreadOwn_*> THREADS;
-ThreadOwn_* INFO = 0;
-uint64 check_node;
+
+void SetRootMoves(ThreadOwn_* info)
+{
+	info->rootList_ = RootList;
+	size_t n = RootList.size();
+	if (info->iThread_)
+	{	// shuffle late moves somewhat; this has no measurable effect on Elo
+		for (size_t ii = 2; ii + 1 < n; ++ii)
+		{
+			size_t peek = (info->iThread_ + ii) % Min<size_t>(Min(ii, n - ii), 8);
+			swap(info->rootList_[ii], info->rootList_[ii + peek]);
+		}
+	}
+	info->rootList_.push_back(0);
+}
+
 
 constexpr size_t HASH_CLUSTER = 4;
+size_t HashClusters(int megabytes)
+{
+	return Max(1 << 16, megabytes << 20) / (HASH_CLUSTER * sizeof(GEntry));
+}
+
 struct Settings_
 {
 	int nThreads = 1;
 	int tbMinDepth = 7;
-	size_t nHash = 0;
-	size_t hashMask = 0;
+	size_t nHashClusters = HashClusters(16);
 	int contempt = 8;
 	int wobble = 0;
 	unsigned parentPid = numeric_limits<unsigned>::max();
-	char tbPath[PATH_MAX];
-};
-Settings_* SETTINGS = 0;
-
-inline bool Progress_::Reachable() const
-{
-	assert(SHARED);
-	if ((count_ >> 4) > (SHARED->rootProgress.count_ >> 4))
-		return false;
-	if ((count_ & 0xF) > (SHARED->rootProgress.count_ & 0xF))
-		return false;
-	return true;
-}
+	string tbPath;
+} SETTINGS;
 
 void mutex_lock1(mutex_t *mutex, int lineno)
 {
@@ -1287,7 +1362,7 @@ void mutex_lock1(mutex_t *mutex, int lineno)
 }
 void mutex_unlock1(mutex_t *mutex, int lineno)
 {
-	if (SHARED && !SHARED->stopAll)
+	if (SHARED && !SHARED->search_.stopAll_)
 	{
 		char line[64];
 		int len = snprintf(line, sizeof(line) - 1, "id name unlocked by %d at %d\n", GetCurrentProcessId(), lineno);
@@ -1329,9 +1404,22 @@ static int debug_loc = 0;
 #define VSAY(x)
 #endif
 
-GEntry* HASH = 0;
-GPVEntry* PVHASH = 0;
-GPawnEntry* PAWNHASH = 0;
+vector<GEntry> TheHash(SETTINGS.nHashClusters * HASH_CLUSTER);
+INLINE GEntry* HashStart(uint64 key)
+{
+	size_t iCluster = High32(key) % SETTINGS.nHashClusters;
+	return &TheHash[iCluster * HASH_CLUSTER];
+}
+void ResizeHash(int megabytes)
+{
+	SETTINGS.nHashClusters = HashClusters(megabytes);
+	TheHash.resize(SETTINGS.nHashClusters * HASH_CLUSTER);
+	std::fill(TheHash.begin(), TheHash.end(), NullEntry);
+}
+
+vector<GPVEntry> ThePVHash(N_PV_HASH);
+vector<GPawnEntry> ThePawnHash(N_PAWN_HASH);
+
 
 void move_to_string(int move, char string[])
 {
@@ -1463,7 +1551,7 @@ INLINE bool IsRepetition(const State_& state, int margin, int move)
 {
 	return margin > 0
 		&& state[0].ply >= 2
-		&& state[1].move == ((To(move) << 6) | From(move))
+		&& (state.Height() > 1 && state[1].move == ((To(move) << 6) | From(move)))
 		&& F(state().PieceAt(To(move)))
 		&& F((move) & 0xF000);
 };
@@ -2656,10 +2744,6 @@ void calc_material(int index, GMaterial& material)
 			else if (!pawns[me] && knights[me] == 2 && !bishops[me])
 				mat[me] = (!tot[opp] && pawns[opp]) ? 6 : 0;
 		}
-		//		else if (F(queens[me] + queens[opp] + minor[opp] + pawns[opp]) && rooks[me] == rooks[opp] && minor[me] == 1 && T(pawns[me]))	// RNP or RBP vs R
-		//			mat[me] += 24 / (pawns[me] + rooks[me]);
-		//		else if (F(queens[me] + minor[me] + major[opp] + pawns[opp]) && rooks[me] == minor[opp] && T(pawns[me]))	// RP vs minor
-		//			mat[me] = 40;
 
 		if (!mul[me])
 			mat[me] = 0;
@@ -2761,18 +2845,6 @@ void setup_board(std::array<uint8, 64> squares, State_* state)
 {
 	int i;
 
-	sp = 0;
-	if (SHARED)
-	{
-		++SHARED->date;
-		if (SHARED->date > 0x8000)
-		{  // mustn't ever happen
-			SHARED->date = 2;
-			// now GUI must wait for readyok... we have plenty of time :)
-			std::fill(HASH, HASH + SETTINGS->nHash, NullEntry);
-			std::fill(PVHASH, PVHASH + N_PV_HASH, NullPVEntry);
-		}
-	}
 	GData* current = state->current_;
 	Board_* board = &state->board_;
 	current->material = 0;
@@ -2786,7 +2858,8 @@ void setup_board(std::array<uint8, 64> squares, State_* state)
 		current->key ^= RO->EPKey[FileOf(current->ep_square)];
 	current->pawn_key = 0;
 	current->pawn_key ^= RO->CastleKey[current->castle_flags];
-	for (i = 0; i < 16; ++i) board->Piece(i) = 0;
+	for (i = 0; i < 16; ++i) 
+		board->Piece(i) = 0;
 	for (i = 0; i < 64; ++i)
 	{
 		if (auto p = squares[i])
@@ -2806,9 +2879,9 @@ void setup_board(std::array<uint8, 64> squares, State_* state)
 		popcnt(board->Piece(BlackKnight)) > 2 || popcnt(board->Piece(BlackLight)) > 1 || popcnt(board->Piece(BlackDark)) > 1 || popcnt(board->Piece(BlackRook)) > 2 || popcnt(board->Piece(BlackQueen)) > 2)
 		current->material |= FlagUnusualMaterial;
 	current->capture = 0;
-	for (int ik = 1; ik <= N_KILLER; ++ik) current->killer[ik] = 0;
+	current->killer = {};
 	current->ply = 0;
-	Stack[sp] = current->key;
+	state->hashHist_.push_back(current->key);
 }
 
 const char* get_board(const char* fen, State_* state)
@@ -2883,7 +2956,7 @@ const char* get_board(const char* fen, State_* state)
 	return fen + pos;
 }
 
-void init_search(State_* state, int clear_hash)
+void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_board)
 {
 	for (int ip = 0; ip < 16; ++ip)
 		for (int it = 0; it < 64; ++it)
@@ -2897,29 +2970,27 @@ void init_search(State_* state, int clear_hash)
 	state->ClearStack();
 	if (clear_hash)
 	{
-		SHARED->date = 1;
-		fill(HASH, HASH + SETTINGS->nHash, NullEntry);
-		fill(PVHASH, PVHASH + N_PV_HASH, NullPVEntry);
+		TheShare.date_ = 1;
+		fill(TheHash.begin(), TheHash.end(), NullEntry);
+		fill(ThePVHash.begin(), ThePVHash.end(), NullPVEntry);
 	}
-	get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", state);
-	INFO->nodes = INFO->tbHits = 0;
-	INFO->bestMove = INFO->bestScore = 0;
-	LastTime = LastValue = LastExactValue = InstCnt = 0;
-	LastSpeed = 0;
-	PVN = 1;
-	SearchMoves = 0;
-	LastDepth = 128;
-	memset(&CurrentSI, 0, sizeof(GSearchInfo));
-	memset(&BaseSI, 0, sizeof(GSearchInfo));
+	if (clear_board)
+		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", state);
+	state->nodes_ = 0;
+	state->tbHits_ = 0;
+	info->results_.clear();
+	info->lastTime_ = 0;
+	memset(&state->searchInfo_, 0, sizeof(SearchInfo_));
+	SetRootMoves(info);
 }
 
 INLINE GEntry* probe_hash(const GData& current)
 {
-	GEntry* start = HASH + (High32(current.key) & SETTINGS->hashMask);
+	GEntry* start = HashStart(current.key);
 	for (GEntry* Entry = start; Entry < start + HASH_CLUSTER; ++Entry)
 		if (Low32(current.key) == Entry->key)
 		{
-			Entry->date = SHARED->date;
+			Entry->date = TheShare.date_;
 			return Entry;
 		}
 	return nullptr;
@@ -2927,19 +2998,32 @@ INLINE GEntry* probe_hash(const GData& current)
 
 INLINE GPVEntry* probe_pv_hash(const GData& current)
 {
-	GPVEntry* start = PVHASH + (High32(current.key) & PV_HASH_MASK);
+	GPVEntry* start = &ThePVHash[High32(current.key) & PV_HASH_MASK];
 	for (GPVEntry* PVEntry = start; PVEntry < start + PV_CLUSTER; ++PVEntry)
 		if (Low32(current.key) == PVEntry->key)
 		{
-			PVEntry->date = SHARED->date;
+			PVEntry->date = TheShare.date_;
 			return PVEntry;
 		}
 	return nullptr;
 }
 
+bool IsValid(const Board_& board)
+{
+	for (int me = 0; me < 2; ++me)
+	{
+		if (F(board.King(me)) || Multiple(board.King(me)))
+			return false;
+		if (board.bb[me] ^ board.King(me) ^ board.Bishop(me) ^ board.Queen(me) ^ board.Rook(me) ^ board.Knight(me) ^ board.Pawn(me))
+			return false;
+	}
+	return true;
+}
+
 template<bool me> void do_move(State_* state, int move)
 {
 	MOVING
+	assert(IsValid(state->board_));
 	GEntry* Entry;
 	GPawnEntry* PawnEntry;
 	int from, to, piece, capture;
@@ -3004,18 +3088,18 @@ template<bool me> void do_move(State_* state, int move)
 			else
 				next->pawn_key ^= pKey[from] ^ pKey[to];
 
-			PawnEntry = &PawnHash[next->pawn_key & PAWN_HASH_MASK];
+			PawnEntry = &state->pawnHash_[next->pawn_key & PAWN_HASH_MASK];
 			prefetch(PawnEntry);
 		}
 		else if (piece >= WhiteKing)
 		{
 			next->pawn_key ^= pKey[from] ^ pKey[to];
-			PawnEntry = &PawnHash[next->pawn_key & PAWN_HASH_MASK];
+			PawnEntry = &state->pawnHash_[next->pawn_key & PAWN_HASH_MASK];
 			prefetch(PawnEntry);
 		}
 		else if (capture < WhiteKnight)
 		{
-			PawnEntry = &PawnHash[next->pawn_key & PAWN_HASH_MASK];
+			PawnEntry = &state->pawnHash_[next->pawn_key & PAWN_HASH_MASK];
 			prefetch(PawnEntry);
 		}
 
@@ -3071,7 +3155,7 @@ template<bool me> void do_move(State_* state, int move)
 					next->key ^= RO->EPKey[FileOf(next->ep_square)];
 				}
 			}
-			PawnEntry = &PawnHash[next->pawn_key & PAWN_HASH_MASK];
+			PawnEntry = &state->pawnHash_[next->pawn_key & PAWN_HASH_MASK];
 			prefetch(PawnEntry);
 		}
 		else
@@ -3087,7 +3171,7 @@ template<bool me> void do_move(State_* state, int move)
 				if (piece >= WhiteKing)
 				{
 					next->pawn_key ^= pKey[to] ^ pKey[from];
-					PawnEntry = &PawnHash[next->pawn_key & PAWN_HASH_MASK];
+					PawnEntry = &state->pawnHash_[next->pawn_key & PAWN_HASH_MASK];
 					prefetch(PawnEntry);
 				}
 			}
@@ -3114,15 +3198,14 @@ template<bool me> void do_move(State_* state, int move)
 	}	// end F(Capture)
 
 	next->key ^= RO->TurnKey;
-	Entry = HASH + (High32(next->key) & SETTINGS->hashMask);
+	Entry = HashStart(next->key);
 	prefetch(Entry);
-	++sp;
-	Stack[sp] = next->key;
+	state->hashHist_.push_back(next->key);
 	next->move = move;
 	next->gen_flags = 0;
 	state->current_ = next;
-	++INFO->nodes;
-	assert(board->King(me) && board->King(opp));
+	++state->nodes_;
+	assert(IsValid(*board));
 	BYE
 }
 INLINE void do_move(State_* state, bool me, int move)
@@ -3183,7 +3266,7 @@ template<bool me> void undo_move(State_* state, int move)
 		}
 	}
 	--state->current_;
-	--sp;
+	state->hashHist_.pop_back();
 	BYE
 }
 INLINE void undo_move(State_* state, bool me, int move)
@@ -3200,7 +3283,7 @@ void do_null(State_* state)
 	GData* next = state->current_ + 1;
 
 	next->key = current->key ^ RO->TurnKey;
-	GEntry* Entry = HASH + (High32(next->key) & SETTINGS->hashMask);
+	GEntry* Entry = HashStart(next->key);
 	prefetch(Entry);
 	next->pawn_key = current->pawn_key;
 	next->eval_key = 0;
@@ -3213,7 +3296,6 @@ void do_null(State_* state)
 	next->capture = 0;
 	if (current->ep_square)
 		next->key ^= RO->EPKey[FileOf(current->ep_square)];
-	++sp;
 	next->att[White] = current->att[White];
 	next->att[Black] = current->att[Black];
 	next->patt[White] = current->patt[White];
@@ -3222,20 +3304,20 @@ void do_null(State_* state)
 	next->dbl_att[Black] = current->dbl_att[Black];
 	next->xray[White] = current->xray[White];
 	next->xray[Black] = current->xray[Black];
-	Stack[sp] = next->key;
+	state->hashHist_.push_back(next->key);
 	next->threat = current->threat;
 	next->passer = current->passer;
 	next->score = -current->score;
 	next->move = 0;
 	next->gen_flags = 0;
 	state->current_ = next;
-	++INFO->nodes;
+	++state->nodes_;
 }
 
 void undo_null(State_* state)
 {
 	--state->current_;
-	--sp;
+	state->hashHist_.pop_back();
 }
 
 struct ScopedMove_
@@ -3814,6 +3896,8 @@ template<bool me, class POP> INLINE packed_t eval_knights(GEvalInfo& EI, const S
 			}
 		}
 	}
+
+	return eval;
 }
 
 // weight constants
@@ -3828,13 +3912,13 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI, const State_& 
 	uint16 score = Pick16<2>(EI.king_att[me]);
 	if (cnt >= 2 && T(board.Queen(me)))
 	{
-		score += (EI.PawnEntry->shelter[opp] * KingShelterQuad) / 64;
+		score += (EI.pawnEval_.shelter[opp] * KingShelterQuad) / 64;
 		if (uint64 u = state[0].att[me] & EI.area[opp] & (~state[0].att[opp]))
 			score += pop(u) * KingAttackSquare;
 		if (!(KAtt[EI.king[opp]] & (~(board.Piece(opp) | state[0].att[me]))))
 			score += KingNoMoves;
 	}
-	int adjusted = ((score * KingAttackScale[cnt]) >> 3) + EI.PawnEntry->shelter[opp];
+	int adjusted = ((score * KingAttackScale[cnt]) >> 3) + EI.pawnEval_.shelter[opp];
 	int kf = FileOf(EI.king[opp]), kr = OwnRank<opp>(EI.king[opp]);
 	if (kf > 3)
 		kf = 7 - kf;
@@ -3872,7 +3956,7 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const State_
 	bool sr_me = board.Rook(me) && !board.Minor(me) && !board.Queen(me) && Single(board.Rook(me));
 	bool sr_opp = board.Rook(opp) && !board.Minor(opp) && !board.Queen(opp) && Single(board.Rook(opp));
 
-	for (uint8 u = EI.PawnEntry->passer[me]; T(u); u &= (u - 1))
+	for (uint8 u = EI.pawnEval_.passer[me]; T(u); u &= (u - 1))
 	{
 		int file = lsb(u);
 		int sq = NB<opp>(File[file] & board.Pawn(me));  // most advanced in this file
@@ -4078,10 +4162,16 @@ template<class POP> void evaluation(State_* state)
 	eval_sequential<White, POP>(EI, *state);
 	eval_sequential<Black, POP>(EI, *state);
 
-	EI.PawnEntry = &PawnHash[current->pawn_key & PAWN_HASH_MASK];
-	if (current->pawn_key != EI.PawnEntry->key)
-		eval_pawn_structure<POP>(EI, EI.PawnEntry, *state);
-	EI.score += EI.PawnEntry->score;
+	EI.pawnEntry_ = &state->pawnHash_[current->pawn_key & PAWN_HASH_MASK];
+	if (current->pawn_key == EI.pawnEntry_->key)
+		EI.pawnEval_ = *EI.pawnEntry_;
+	else
+	{
+		EI.pawnEntry_ = nullptr;
+		eval_pawn_structure<POP>(EI, &EI.pawnEval_, *state);
+		state->pawnHash_[current->pawn_key & PAWN_HASH_MASK] = EI.pawnEval_;
+	}
+	EI.score += EI.pawnEval_.score;
 
 	eval_king<White, POP>(EI, *state);
 	eval_king<Black, POP>(EI, *state);
@@ -4107,9 +4197,9 @@ template<class POP> void evaluation(State_* state)
 		current->score = mat.score + value(EI.score);
 		
 		// apply contempt before drawishness
-		if (SETTINGS->contempt > 0)
+		if (SETTINGS.contempt > 0)
 		{
-			int maxContempt = (mat.phase * SETTINGS->contempt * CP_EVAL) / 64;
+			int maxContempt = (mat.phase * SETTINGS.contempt * CP_EVAL) / 64;
 			int mySign = F(state->stack_[0].turn) ? 1 : -1;
 			if (current->score * mySign > 2 * maxContempt)
 				current->score += mySign * maxContempt;
@@ -4136,7 +4226,7 @@ template<class POP> void evaluation(State_* state)
 				}
 			}
 
-			current->score -= (Min<int>(current->score, drawCap) * EI.PawnEntry->draw[White]) / 64;
+			current->score -= (Min<int>(current->score, drawCap) * EI.pawnEval_.draw[White]) / 64;
 		}
 		else if (current->score < 0)
 		{
@@ -4153,7 +4243,7 @@ template<class POP> void evaluation(State_* state)
 						EI.mul = Min<uint16>(EI.mul, 43 - Square(rw) / 2);
 				}
 			}
-			current->score += (Min<int>(-current->score, drawCap) * EI.PawnEntry->draw[Black]) / 64;
+			current->score += (Min<int>(-current->score, drawCap) * EI.pawnEval_.draw[Black]) / 64;
 		}
 		else
 			EI.mul = Min(EI.material->mul[White], EI.material->mul[Black]);
@@ -4379,18 +4469,16 @@ template<bool me> bool is_check(const State_& state, int move)
 	return false;
 }
 
-void pick_pv(State_* state, int pvPtr, int pvLen)
+void pick_pv(ThreadOwn_* info, State_* state, int pvPtr, int pvLen)
 {
-	GEntry *Entry;
-	GPVEntry *PVEntry;
-	int i, depth, move;
 	if (pvPtr >= Min(pvLen, MAX_PV_LEN))
 	{
-		INFO->PV[pvPtr] = 0;
+		info->PV[pvPtr] = 0;
 		return;
 	}
-	move = 0;
-	depth = -256;
+	GEntry* Entry;
+	GPVEntry* PVEntry;
+	int move = 0, depth = -16;
 	if ((Entry = probe_hash(*state->current_)) && T(Entry->move) && Entry->low_depth > depth)
 	{
 		depth = Entry->low_depth;
@@ -4403,29 +4491,29 @@ void pick_pv(State_* state, int pvPtr, int pvLen)
 	}
 	evaluate(state);
 	if (state->current_->att[state->current_->turn] & state->board_.King(state->current_->turn ^ 1))
-		INFO->PV[pvPtr] = 0;
+		info->PV[pvPtr] = 0;
 	else if (move && is_legal(*state, move))
 	{
-		INFO->PV[pvPtr] = move;
+		info->PV[pvPtr] = move;
 		pvPtr++;
 		ScopedMove_ restore(state, move);
 		if (state->current_->ply < 100)
 		{
-			INFO->PV[pvPtr] = 1;
-			for (i = 4; i <= state->current_->ply; i += 2)
+			info->PV[pvPtr] = 1;
+			for (int i = 4; i <= state->current_->ply; i += 2)
 			{
-				if (Stack[sp - i] == state->current_->key)
+				if (state->hashHist_[state->hashHist_.size() - 1 - i] == state->current_->key)
 				{
-					INFO->PV[pvPtr] = 0;
+					info->PV[pvPtr] = 0;
 					break;
 				}
 			}
-			if (INFO->PV[pvPtr] != 0)
-				pick_pv(state, pvPtr, pvLen);
+			if (info->PV[pvPtr] != 0)
+				pick_pv(info, state, pvPtr, pvLen);
 		}
 	}
 	else
-		INFO->PV[pvPtr] = 0;
+		info->PV[pvPtr] = 0;
 }
 
 template<bool me> bool draw_in_pv(State_* state)
@@ -4435,7 +4523,7 @@ template<bool me> bool draw_in_pv(State_* state)
 	if (state->current_->ply >= 100)
 		return true;
 	for (int i = 4; i <= state->current_->ply; i += 2)
-		if (Stack[sp - i] == state->current_->key)
+		if (state->hashHist_[state->hashHist_.size() - 1 - i] == state->current_->key)
 			return true;
 	if (GPVEntry* PVEntry = probe_pv_hash(*state->current_))
 	{
@@ -4472,11 +4560,11 @@ void hash_high(const GData& current, int value, int depth)
 
 	// search for an old entry to overwrite
 	int minMerit = 0x70000000;
-	for (i = 0, best = Entry = HASH + (High32(current.key) & SETTINGS->hashMask); i < HASH_CLUSTER; ++i, ++Entry)
+	for (i = 0, best = Entry = HashStart(current.key); i < HASH_CLUSTER; ++i, ++Entry)
 	{
 		if (Entry->key == Low32(current.key))
 		{
-			Entry->date = SHARED->date;
+			Entry->date = TheShare.date_;
 			if (depth > Entry->high_depth || (depth == Entry->high_depth && value < Entry->high))
 			{
 				if (Entry->low <= value)
@@ -4500,7 +4588,7 @@ void hash_high(const GData& current, int value, int depth)
 			best = Entry;
 		}
 	}
-	best->date = SHARED->date;
+	best->date = TheShare.date_;
 	best->key = Low32(current.key);
 	best->high = value;
 	best->high_depth = depth;
@@ -4518,11 +4606,11 @@ int hash_low(const GData& current, int move, int value, int depth)
 
 	int min_merit = 0x70000000;
 	move &= 0xFFFF;
-	for (i = 0, best = Entry = HASH + (High32(current.key) & SETTINGS->hashMask); i < HASH_CLUSTER; ++i, ++Entry)
+	for (i = 0, best = Entry = HashStart(current.key); i < HASH_CLUSTER; ++i, ++Entry)
 	{
 		if (Entry->key == Low32(current.key))
 		{
-			Entry->date = SHARED->date;
+			Entry->date = TheShare.date_;
 			if (depth > Entry->low_depth || (depth == Entry->low_depth && value > Entry->low))
 			{
 				if (move)
@@ -4550,7 +4638,7 @@ int hash_low(const GData& current, int move, int value, int depth)
 			best = Entry;
 		}
 	}
-	best->date = SHARED->date;
+	best->date = TheShare.date_;
 	best->key = Low32(current.key);
 	best->high = 0;
 	best->high_depth = 0;
@@ -4567,11 +4655,11 @@ void hash_exact(const GData& current, int move, int value, int depth, int exclus
 	int i;
 
 	int minMerit = 0x70000000;
-	for (i = 0, best = PVEntry = PVHASH + (High32(current.key) & PV_HASH_MASK); i < PV_CLUSTER; ++i, ++PVEntry)
+	for (i = 0, best = PVEntry = &ThePVHash[High32(current.key) & PV_HASH_MASK]; i < PV_CLUSTER; ++i, ++PVEntry)
 	{
 		if (PVEntry->key == Low32(current.key))
 		{
-			PVEntry->date = SHARED->date;
+			PVEntry->date = TheShare.date_;
 			PVEntry->knodes += knodes;
 			if (PVEntry->depth <= depth)
 			{
@@ -4595,7 +4683,7 @@ void hash_exact(const GData& current, int move, int value, int depth, int exclus
 		}
 	}
 	best->key = Low32(current.key);
-	best->date = SHARED->date;
+	best->date = TheShare.date_;
 	best->value = value;
 	best->depth = depth;
 	best->move = move;
@@ -4642,10 +4730,8 @@ void sort(int* start, int* finish)
 
 template<class I> void sort_moves(I start, I finish)
 {
-	for (I p = start + 1; p < finish; ++p)
-		for (I q = p - 1; q >= start; --q)
-			if (((*q) >> 16) < ((*(q + 1)) >> 16))
-				swap(*q, *(q + 1));
+	auto better = [](int lhs, int rhs) { return (lhs >> 16) > (rhs >> 16); };
+	stable_sort(start, finish, better);
 }
 
 INLINE int pick_move(GData* current)
@@ -4668,10 +4754,10 @@ INLINE int pick_move(GData* current)
 	return move & 0xFFFF;
 }
 
-INLINE void apply_wobble(int* move, int depth)
+INLINE void apply_wobble(void* p, int* move, int depth)
 {
 	int mp = (((*move & 0xFFFF) * 529) >> 9) & 1;
-	*move += (mp + depth + INFO->id) % (SETTINGS->wobble + 1);	// (minimal) bonus for right parity
+	*move += (mp + depth + (static_cast<int>(reinterpret_cast<sint64>(p) >> 12))) % (SETTINGS.wobble + 1);	// (minimal) bonus for right parity
 }
 
 INLINE bool is_killer(const GData& current, uint16 move)
@@ -4764,11 +4850,11 @@ template<bool me> void gen_next_moves(State_* state, int depth)
 		*p = 0;
 		return;
 	case s_quiet:
-		p = gen_quiet_moves<me>(current->start, *state);
+		p = gen_quiet_moves<me>(current->start, state);
 		current->gen_flags |= FlagSort;
 		current->current = current->start;
 		for (q = current->start; *q; ++q)
-			apply_wobble(&*q, depth);
+			apply_wobble(state, &*q, depth);
 		return;
 	case s_bad_cap:
 		*(current->start) = 0;
@@ -4796,18 +4882,12 @@ template<bool me> void gen_next_moves(State_* state, int depth)
 	}
 }
 
-template<bool me, bool root> int get_move(State_* state, int depth)
+template<bool me> int NextMove(State_* state, int depth)
 {
 	GData* current = state->current_;
 	int move;
 
-	if (root)
-	{
-		move = (*current->current) & 0xFFFF;
-		current->current++;
-		return move;
-	}
-	for (; ; )
+	for ( ; ; )
 	{
 		if (F(*current->current))
 		{
@@ -5068,9 +5148,11 @@ template<bool me> bool see(const State_& state, int move, int margin, const uint
 
 template<bool me> void gen_root_moves(State_* state)
 {
+	evaluate(state);	// populate attacks etc
+
 	GData& current = *state->current_;
 	const Board_& board = state->board_;
-	int *p, depth = -256;
+	int depth = -16;
 
 	int killer = 0;
 	if (GEntry* Entry = probe_hash(current))
@@ -5100,25 +5182,23 @@ template<bool me> void gen_root_moves(State_* state)
 		current.ref[1] = RefM(state, current.move).ref[1];
 	}
 	current.gen_flags = 0;
-	p = &RootList[0];
+	RootList.clear();
 	current.current = &current.moves[0];
 	current.moves[0] = 0;
-	while (int move = get_move<me, 0>(state, 0))
+	while (int move = NextMove<me>(state, 0))
 	{
 		if (IsIllegal(*state, me, move))
 			continue;
-		if (p > &RootList[0] && move == killer)
-			continue;
+		if (find(RootList.begin(), RootList.end(), move) != RootList.end())
+			continue;	// most like re-trying killer move
 		if (SearchMoves)
 		{
 			auto stop = &SMoves[SMPointer];
 			if (find(&SMoves[0], stop, move) == stop)
 				continue;
 		}
-		*p = move;
-		++p;
+		RootList.push_back(move);
 	}
-	*p = 0;
 }
 
 template<bool me> INLINE bool forkable(const Board_& board, int dst)
@@ -5326,26 +5406,26 @@ INLINE bool can_castle(const GData& current, const uint64& occ, bool me, bool ki
 	}
 }
 
-template<bool me> int* gen_quiet_moves(int* list, const State_& state)
+template<bool me> int* gen_quiet_moves(int* list, State_* state)
 {
-	auto drop = [&](int loc) { return HasBit(state[0].att[opp] & ~state[0].dbl_att[me], loc) ? FlagCastling : 0; };
-	auto dropPawn = [&](int loc) { return HasBit(state[0].att[opp] & ~state[0].att[me], loc) ? FlagCastling : 0; };
+	auto drop = [&](int loc) { return HasBit(state->current_->att[opp] & ~state->current_->dbl_att[me], loc) ? FlagCastling : 0; };
+	auto dropPawn = [&](int loc) { return HasBit(state->current_->att[opp] & ~state->current_->att[me], loc) ? FlagCastling : 0; };
 
-	const Board_& board = state.board_;
+	const Board_& board = state->board_;
 	uint64 occ = board.PieceAll();
-	if (can_castle(state[0], occ, me, true))
-		list = AddHistoryP(list, WhiteKing | me, me ? 60 : 4, me ? 62 : 6, FlagCastling);
-	if (can_castle(state[0], occ, me, false))
-		list = AddHistoryP(list, WhiteKing | me, me ? 60 : 4, me ? 58 : 2, FlagCastling);
+	if (can_castle(*state->current_, occ, me, true))
+		list = AddHistoryP(state, list, WhiteKing | me, me ? 60 : 4, me ? 62 : 6, FlagCastling);
+	if (can_castle(*state->current_, occ, me, false))
+		list = AddHistoryP(state, list, WhiteKing | me, me ? 60 : 4, me ? 58 : 2, FlagCastling);
 
 	uint64 u, v, free = ~occ;
 	for (v = Shift<me>(board.Pawn(me)) & free & (~OwnLine<me>(7)); T(v); Cut(v))
 	{
 		int to = lsb(v);
-		int passer = T(HasBit(state[0].passer, to - Push[me]));
+		int passer = T(HasBit(state->current_->passer, to - Push[me]));
 		if (HasBit(OwnLine<me>(2), to) && F(board.PieceAt(to + Push[me])))
-			list = AddHistoryP(list, IPawn[me], to - Push[me], to + Push[me], dropPawn(to + Push[me]));
-		list = AddHistoryP(list, IPawn[me], to - Push[me], to, dropPawn(to), Square(OwnRank<me>(to) + 4 * passer - 2));
+			list = AddHistoryP(state, list, IPawn[me], to - Push[me], to + Push[me], dropPawn(to + Push[me]));
+		list = AddHistoryP(state, list, IPawn[me], to - Push[me], to, dropPawn(to), Square(OwnRank<me>(to) + 4 * passer - 2));
 	}
 
 	for (u = board.Knight(me); T(u); Cut(u))
@@ -5355,7 +5435,7 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 		{
 			int to = lsb(v);
 			// int floor = T(NAtt[to] & Major(opp));
-			list = AddHistoryP(list, IKnight[me], from, to, drop(to));
+			list = AddHistoryP(state, list, IKnight[me], from, to, drop(to));
 		}
 	}
 
@@ -5366,7 +5446,7 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 		for (v = free & BishopAttacks(from, occ); T(v); Cut(v))
 		{
 			int to = lsb(v);
-			list = AddHistoryP(list, which, from, to, drop(to));
+			list = AddHistoryP(state, list, which, from, to, drop(to));
 		}
 	}
 
@@ -5376,7 +5456,7 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 		for (v = free & RookAttacks(from, occ); T(v); Cut(v))
 		{
 			int to = lsb(v);
-			list = AddHistoryP(list, IRook[me], from, to, drop(to));
+			list = AddHistoryP(state, list, IRook[me], from, to, drop(to));
 		}
 	}
 	for (u = board.Queen(me); T(u); Cut(u))
@@ -5386,15 +5466,15 @@ template<bool me> int* gen_quiet_moves(int* list, const State_& state)
 		for (v = free & QueenAttacks(from, occ); T(v); Cut(v))
 		{
 			int to = lsb(v);
-			list = AddHistoryP(list, IQueen[me], from, to, drop(to));	// KAtt[to] & qTarget ? FlagCastling : 0);
+			list = AddHistoryP(state, list, IQueen[me], from, to, drop(to));	// KAtt[to] & qTarget ? FlagCastling : 0);
 		}
 	}
 	int kLoc = lsb(board.King(me));
-	auto xray = [&](int loc) { return T(state[0].xray[opp]) && F(state[0].xray[opp] & FullLine[kLoc][loc]) ? FlagCastling : 0; };
-	for (v = KAtt[kLoc] & free & (~state[0].att[opp]); T(v); Cut(v))
+	auto xray = [&](int loc) { return T(state->current_->xray[opp]) && F(state->current_->xray[opp] & FullLine[kLoc][loc]) ? FlagCastling : 0; };
+	for (v = KAtt[kLoc] & free & (~state->current_->att[opp]); T(v); Cut(v))
 	{
 		int to = lsb(v);
-		list = AddHistoryP(list, IKing[me], kLoc, to, xray(to));
+		list = AddHistoryP(state, list, IKing[me], kLoc, to, xray(to));
 	}
 
 	return NullTerminate(list);
@@ -5513,7 +5593,7 @@ template<bool me> int* gen_checks(int* list, const State_& state)
 template<bool me> int* gen_delta_moves(int* list, State_* state, int margin)
 {
 	const Board_& board = state->board_;
-	const GData& current = state->current_;
+	const GData& current = *state->current_;
 	uint64 occ = board.PieceAll(), free = ~occ;
 
 	if (me == White)
@@ -5573,6 +5653,35 @@ template<bool me> int* gen_delta_moves(int* list, State_* state, int margin)
 	return NullTerminate(list);
 }
 
+int time_to_stop(const SearchInfo_& SI, int time, int searching)
+{
+	if (time > TheTimeLimit.hardLimit_)
+		return 1;
+	if (searching)
+		return 0;
+	if (2 * time > TheTimeLimit.hardLimit_)
+		return 1;
+	if (time > TheTimeLimit.softLimit_)
+		return 1;
+	if (SI.change_ || SI.failLow_)
+		return 0;
+	if (time * 100 > TheTimeLimit.softLimit_ * TimeNoChangeMargin)
+		return 1;
+	if (SI.early_)
+		return 0;
+	if (time * 100 > TheTimeLimit.softLimit_ * TimeNoPVSCOMargin)
+		return 1;
+	if (SI.singular_ < 1)
+		return 0;
+	if (time * 100 > TheTimeLimit.softLimit_ * TimeSingOneMargin)
+		return 1;
+	if (SI.singular_ < 2)
+		return 0;
+	if (time * 100 > TheTimeLimit.softLimit_ * TimeSingTwoMargin)
+		return 1;
+	return 0;
+}
+
 template<bool me, bool exclusion, bool evasion> int scout(State_* state, int beta, int depth, int flags);
 
 template<bool me> int singular_extension(State_* state, int ext, int prev_ext, int margin_one, int margin_two, int depth, int killer)
@@ -5625,23 +5734,22 @@ template<bool me> INLINE uint64 capture_margin_mask(const State_& state, int alp
 	return retval;
 }
 
-bool GlobalStopAll;
 struct Abort_ : std::exception {};
 
 inline void check_for_stop()
 {
-	if (GlobalStopAll)
+	if (TheShare.stopAll_)
 		throw Abort_();
 }
 inline void stop()
 {
-	GlobalStopAll = true;
+	TheShare.stopAll_ = true;
 }
 
 
 #define HALT_CHECK(state) {\
     if (state->current_->ply >= 100) return 0; \
-    for (int ihc = 4; ihc <= state->current_->ply; ihc += 2) if (Stack[sp - ihc] == state->current_->key) return 0; \
+    for (int ihc = 4; ihc <= state->current_->ply; ihc += 2) if (state->hashHist_[state->hashHist_.size() - 1 - ihc] == state->current_->key) return 0; \
 	if (state->Height() >= 126) {evaluate(state); return state->current_->score; }}
 
 template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int depth, int flags)
@@ -5697,7 +5805,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	if (flags & FlagHashCheck)
 	{
 		GEntry* Entry = nullptr;
-		for (i = 0, Entry = HASH + (High32(current.key) & SETTINGS->hashMask); i < HASH_CLUSTER; ++Entry, ++i)
+		for (i = 0, Entry = HashStart(current.key); i < HASH_CLUSTER; ++Entry, ++i)
 		{
 			if (Low32(current.key) == Entry->key)
 			{
@@ -5808,13 +5916,13 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	}
 
 	if (T(nTried) 
-		|| current.score + Futility::DeltaCut<me>(*state) < alpha 
-		|| T(current.threat & board.Piece(me)) 
-		|| T(current.xray[opp] & board.NonPawn(opp)) 
-		|| T(board.Pawn(opp) & OwnLine<me>(1) & Shift<me>(~board.PieceAll())))
+			|| current.score + Futility::DeltaCut<me>(*state) < alpha 
+			|| T(current.threat & board.Piece(me)) 
+			|| T(current.xray[opp] & board.NonPawn(opp)) 
+			|| T(board.Pawn(opp) & OwnLine<me>(1) & Shift<me>(~board.PieceAll())))
 		return finish(score, false);
 	int margin = alpha - current.score + 6 * CP_SEARCH;
-	gen_delta_moves<me>(state->current_->moves, *state, margin);
+	gen_delta_moves<me>(state->current_->moves, state, margin);
 	state->current_->current = state->current_->moves;
 	while (move = pick_move(state->current_))
 	{
@@ -5867,7 +5975,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 	if (flags & FlagHashCheck)
 	{
 		GEntry* Entry;
-		for (i = 0, Entry = HASH + (High32(current.key) & SETTINGS->hashMask); i < HASH_CLUSTER; ++Entry, ++i)
+		for (i = 0, Entry = HashStart(current.key); i < HASH_CLUSTER; ++Entry, ++i)
 		{
 			if (Low32(current.key) == Entry->key)
 			{
@@ -6097,17 +6205,16 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 			hash_value = Entry->low;
 	}
 
-#if TB
-	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && unsigned(popcnt(board.PieceAll())) <= TB_LARGEST) {
+	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
+	{
 		auto res = TBProbe(tb_probe_wdl_fwd, *state);
 		if (res != TB_RESULT_FAILED) {
-			INFO->tbHits++;
+			++state->tbHits_;
 			hash_high(current, TbValues[res], TbDepth(depth));
 			hash_low(current, 0, TbValues[res], TbDepth(depth));
 			return abort(TbValues[res]);
 		}
 	}
-#endif
 
 	if (GPVEntry * PVEntry = (depth < 20 ? nullptr : probe_pv_hash(current)))
 	{
@@ -6252,6 +6359,8 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 		{
 			HALT_CHECK(state);
 		}
+		if (depth >= 8 && time_to_stop(state->searchInfo_, millisecs(TheTimeLimit.start_, now()), true))
+			stop();	// will break the outer loop
 	}
 
 	int hash_move = flags & 0xFFFF, cnt = 0, played = 0;
@@ -6327,7 +6436,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 	}
 
 	LMR_<0> reduction_n(depth);
-	while (int move = evasion ? pick_move(state->current_) : get_move<me, 0>(state, depth))
+	while (int move = evasion ? pick_move(state->current_) : NextMove<me>(state, depth))
 	{
 		if (move == hash_move)
 			continue;
@@ -6373,13 +6482,13 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 			}
 			if (!check)
 			{
-				int value = current.score + DeltaM(board, move) + 10 * CP_SEARCH;
+				int value = current.score + DeltaM(state, move) + 10 * CP_SEARCH;
 				if (value < beta && depth <= 3)
 				{
 					score = Max(value, score);
 					continue;
 				}
-				if (!evasion && cnt > 7 && (value = margin + DeltaM(board, move) - 25 * CP_SEARCH * msb(cnt)) < beta && depth <= 19)
+				if (!evasion && cnt > 7 && (value = margin + DeltaM(state, move) - 25 * CP_SEARCH * msb(cnt)) < beta && depth <= 19)
 				{
 					score = Max(value, score);
 					continue;
@@ -6421,43 +6530,11 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 }
 
 
-int time_to_stop(const GSearchInfo& SI, int time, int searching)
-{
-	if (time > SHARED->hardTimeLimit)
-		return 1;
-	if (searching)
-		return 0;
-	if (2 * time > SHARED->hardTimeLimit)
-		return 1;
-	if (SI.Bad)
-		return 0;
-	if (time > SHARED->softTimeLimit)
-		return 1;
-	if (T(SI.Change) || T(SI.FailLow))
-		return 0;
-	if (time * 100 > SHARED->softTimeLimit * TimeNoChangeMargin)
-		return 1;
-	if (F(SI.Early))
-		return 0;
-	if (time * 100 > SHARED->softTimeLimit * TimeNoPVSCOMargin)
-		return 1;
-	if (SI.Singular < 1)
-		return 0;
-	if (time * 100 > SHARED->softTimeLimit * TimeSingOneMargin)
-		return 1;
-	if (SI.Singular < 2)
-		return 0;
-	if (time * 100 > SHARED->softTimeLimit * TimeSingTwoMargin)
-		return 1;
-	return 0;
-}
-
 void send_curr_move(int move, int cnt)
 {
-	if (INFO->id != 0)
-		return;
+	assert(move);
 	auto currTime = now();
-	auto diffTime = millisecs(SHARED->startTime, currTime);
+	auto diffTime = millisecs(TheTimeLimit.start_, currTime);
 	if (diffTime <= InfoLag || millisecs(InfoTime, currTime) <= InfoDelay)
 		return;
 	InfoTime = currTime;
@@ -6466,133 +6543,58 @@ void send_curr_move(int move, int cnt)
 	Say("info currmove " + string(moveStr) + " currmovenumber " + Str(cnt) + "\n");
 }
 
-static void send_pv
-(const int* PV,
-	size_t nodes,
-	size_t tbHits,
-	int depth,
-	int selDepth,
-	int bestScore,
-	int bestMove,
-	bool fail_low,
-	const std::chrono::high_resolution_clock::time_point& startTime)
-{
-	const char* scoreType = "mate";
-	if (bestScore > EvalValue)
-		bestScore = (MateValue - bestScore + 1) / 2;
-	else if (bestScore < -EvalValue)
-		bestScore = -(bestScore + MateValue + 1) / 2;
-	else
-	{
-		scoreType = fail_low ? "cp<" : "cp";
-		bestScore /= CP_SEARCH;
-	}
-
-	auto currTime = now();
-	auto elapsedTime = millisecs(startTime, currTime);
-	if (elapsedTime == 0)
-		elapsedTime = 1;
-
-	size_t nps = (nodes * 1000) / elapsedTime;
-
-	char pvStr[PIPE_BUF];
-	unsigned pvPos = 0;
-	for (unsigned i = 0; i < MAX_PV_LEN && PV[i] != 0; i++)
-	{
-		if (pvPos >= sizeof(pvStr) - 32)
-			break;
-		int move = PV[i];
-		pvStr[pvPos++] = ' ';
-		pvStr[pvPos++] = ((move >> 6) & 7) + 'a';
-		pvStr[pvPos++] = ((move >> 9) & 7) + '1';
-		pvStr[pvPos++] = (move & 7) + 'a';
-		pvStr[pvPos++] = ((move >> 3) & 7) + '1';
-		if (IsPromotion(move))
-		{
-			if ((move & 0xF000) == FlagPQueen)
-				pvStr[pvPos++] = 'q';
-			else if ((move & 0xF000) == FlagPRook)
-				pvStr[pvPos++] = 'r';
-			else if ((move & 0xF000) == FlagPBishop)
-				pvStr[pvPos++] = 'b';
-			else if ((move & 0xF000) == FlagPKnight)
-				pvStr[pvPos++] = 'n';
-		}
-	}
-	pvStr[pvPos++] = '\0';
-
-	Say("info depth " + Str(depth / 2) +
-		" seldepth " + Str(selDepth) +
-		" score " + string(scoreType) + " " + Str(bestScore) +
-		" nodes " + Str(nodes) + " nps " + Str(nps) + " tbhits " + Str(tbHits) +
-		" time " + Str(millisecs(startTime, currTime)) + " pv" + string(pvStr) + "\n");
-}
-
 void send_multipv(int depth, int curr_number)
 {
 	abort();	// not implemented
 }
 
-void send_pv(State_* state, int depth, int alpha, int beta, bool fail_low = false)
-{
-	int sel_depth = 0;
-	while (sel_depth < 126 && T(state->stack_[sel_depth + 1].att[0]))
-		++sel_depth;
-	int move = (INFO->bestMove == 0 ? RootList[0] : INFO->bestMove);
-	bool isBest = false;
-	INFO->selDepth = sel_depth;
-	INFO->PV[0] = move;
-	do_move(state, T(state->current_->turn), move);
-	unsigned pvPtr = 1, pvLen = 64;
-	pick_pv(state, pvPtr, pvLen);
-	undo_move(state, F(state->current_->turn), move);
-	// find out whether this is the best candidate move so far
-	{
-		LOCK_SHARED;
-		isBest = depth > SHARED->best.depth;
-		if (depth == SHARED->best.depth && move != SHARED->best.move)
-		{
-			double delta = INFO->bestScore - SHARED->best.value + (SHARED->best.failLow ? 65536 : 0) - (fail_low ? 65536 : 0) + (INFO->id ? 0 : 0.5);
-			isBest = delta > 0;
-		}
-		if (isBest)
-			SHARED->best = { depth, INFO->bestScore, move, INFO->id, fail_low };
-	}
-	if (!isBest)
-		return;
 
-	size_t nodes = 0, tbHits = 0;
-	for (int i = 0; i < SETTINGS->nThreads; i++)
-	{
-		nodes += THREADS[i]->nodes;
-		tbHits += THREADS[i]->tbHits;
-	}
-	const ThreadOwn_ my = *THREADS[INFO->id];
-	send_pv(&my.PV[0], nodes, tbHits, my.depth, my.selDepth, my.bestScore, my.bestMove, fail_low, SHARED->startTime);
+struct Thread_
+{
+	State_ state_;
+	vector<Thread_>* peeps_;	// held by only first thread
+	ThreadOwn_ own_;
+};
+
+template<bool me> int RootMove(Thread_* self, int depth)
+{
+	GData* current = self->state_.current_;
+	int move = (*current->current) & 0xFFFF;
+	current->current++;
+	return move;
 }
 
-template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, int depth, int flags)
+
+
+template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, int depth, int flags)
 {
+	bool RootList = false;	// hide global RootList; we use only self->own_.rootList_
+	State_* state = &self->state_;
 	const GData& current = *state->current_;
 	const Board_& board = state->board_;
 
 	int value, move, cnt, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
-		hash_depth, old_alpha = alpha, old_best, ex_depth = 0, ex_value = 0, start_knodes = (int)(INFO->nodes >> 10);
+			hash_depth, old_alpha = alpha, ex_depth = 0, ex_value = 0;
+	int start_knodes = static_cast<int>(state->nodes_ >> 10);
 
+	if (!self->own_.results_.empty() && (root || depth > 8 || depth > 2 + state->Height()))
+	{	// don't bother checking for stop until we can make some move
+		self->own_.lastTime_ = millisecs(TheTimeLimit.start_, now());
+		if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !root))
+			stop();	// will break the outer loop
+	}
 	if (root)
 	{
+		auto& rootList = self->own_.rootList_;
 		depth = Max(depth, 2);
 		flags |= ExtToFlag(1);
-		if (F(RootList[0]))
+		if (F(rootList[0]))
 			return 0;
-		if (time_to_stop(CurrentSI, LastTime, false))
-			stop();	// will break the outer loop
 
-		auto p = &RootList[0];
-		while (*p) ++p;
-		sort_moves(&RootList[0], p);
-		for (p = &RootList[0]; *p; ++p) *p &= 0xFFFF;
-		SetScore(&RootList[0], 2);
+		sort_moves(rootList.begin(), rootList.end());
+		for (auto& m : rootList)
+			m &= 0xFFFF;
+		SetScore(&rootList[0], 2);
 	}
 	else
 	{
@@ -6626,7 +6628,9 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 			hash_depth = PVEntry->depth;
 			hash_value = PVEntry->value;
 		}
+		state->searchInfo_.hashDepth_ = hash_depth;
 	}
+	check_for_stop();
 	if (GEntry* Entry = probe_hash(current))
 	{
 		if (T(Entry->move) && Entry->low_depth > hash_depth)
@@ -6637,21 +6641,19 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 				hash_value = Entry->low;
 		}
 	}
-#if TB
-	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && unsigned(popcnt(board.PieceAll())) <= TB_LARGEST)
+	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
 	{
 		auto res = TBProbe(tb_probe_wdl_fwd, *state);
 		if (res != TB_RESULT_FAILED) {
-			++INFO->tbHits;
-			hash_high(*state->current_, TbValues[res], TbDepth(depth));
-			hash_low(*state->current_, 0, TbValues[res], TbDepth(depth));
+			++state->tbHits_;
+			hash_high(current, TbValues[res], TbDepth(depth));
+			hash_low(current, 0, TbValues[res], TbDepth(depth));
 		}
 	}
-#endif
 
 	if (root)
 	{
-		hash_move = RootList[0];
+		hash_move = self->own_.rootList_[0];
 		hash_value = Previous;
 		hash_depth = Max(0, depth - 2);
 	}
@@ -6661,7 +6663,7 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 	if (F(root) && depth >= 6 && (F(hash_move) || hash_value <= alpha || hash_depth < depth - 8))
 	{
 		new_depth = depth - (T(hash_move) ? 4 : 2);
-		value = pv_search<me, 0>(state, alpha, beta, new_depth, hash_move);
+		value = pv_search<me, 0>(self, alpha, beta, new_depth, hash_move);
 		bool accept = value > alpha || alpha < -EvalValue;
 		if (!accept)
 		{
@@ -6701,7 +6703,7 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 		if (root)
 		{
 			state->ClearStack();
-			if (INFO->id == 0)
+			if (self->peeps_)
 				send_curr_move(move, cnt);
 		}
 		ext = Max(pext, extension<me, 1>(*state->current_, move, depth));
@@ -6716,7 +6718,7 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 			{
 				ext = Max(ext, singular + (prev_ext < 1) - (singular >= 2 && prev_ext >= 2));
 				if (root)
-					CurrentSI->Singular = singular;
+					state->searchInfo_.singular_ = singular;
 				ex_depth = new_depth;
 				ex_value = (singular >= 2 ? margin_two : margin_one) - 1;
 			}
@@ -6731,19 +6733,19 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 		}
 		else
 		{
-			value = -pv_search<opp, 0>(state, -beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
 			undo_move<me>(state, move);
 			++played;
+			if (root)
+				self->own_.results_.Add(move, value, depth, alpha, beta);
 			if (value > alpha)
 			{
 				if (root)
 				{
-					CurrentSI->FailLow = 0;
+					state->searchInfo_.failLow_ = false;
+					state->searchInfo_.failHigh_ = state->searchInfo_.early_ = value >= beta;
 					hash_low(current, move, value, depth);
-					INFO->bestMove = move;
-					INFO->bestScore = value;
-					if (depth >= 8)
-						send_pv(state, depth, old_alpha, beta);
+					// only send info on return to aspiration window
 				}
 				current.best = move;
 				if (value >= beta)
@@ -6752,13 +6754,10 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 			}
 			else if (root)
 			{
-				CurrentSI->FailLow = 1;
-				CurrentSI->FailHigh = 0;
-				CurrentSI->Singular = 0;
-				INFO->bestScore = value;
-				Say("Fail low at depth " + Str(depth/2) + "\n");
-				if (depth >= 8)
-					send_pv(state, depth, old_alpha, beta, true);
+				state->searchInfo_.failLow_ = true;
+				state->searchInfo_.failHigh_ = false;
+				state->searchInfo_.singular_ = 0;
+				// only send PV on return to aspiration window
 			}
 		}
 	}
@@ -6779,12 +6778,12 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 	state->current_->killer[0] = 0;
 	state->current_->moves[0] = 0;
 	if (root)
-		state->current_->current = &RootList[1];
+		state->current_->current = &self->own_.rootList_[1];
 	else
 		state->current_->current = state->current_->moves;
 
 	LMR_<1> reduction_n(depth);
-	while (move = get_move<me, root>(state, depth))
+	while (move = (root ? RootMove<me>(self, depth) : NextMove<me>(state, depth)))
 	{
 		if (move == hash_move)
 			continue;
@@ -6794,7 +6793,8 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 		if (root)
 		{
 			state->ClearStack();
-			send_curr_move(move, cnt);
+			if (self->peeps_)
+				send_curr_move(move, cnt);
 		}
 		if (IsRepetition(*state, alpha + 1, move))
 			continue;
@@ -6813,40 +6813,32 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 
 		do_move<me>(state, move);  // now current != state->current_, until undo_move below
 		if (new_depth <= 1)
-			value = -pv_search<opp, 0>(state, -beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
 		else
 			value = -scout<opp, 0, 0>(state, -alpha, new_depth, FlagNeatSearch | ExtToFlag(ext));
 		if (value > alpha && new_depth > 1)
 		{
 			if (root)
 			{
-				SetScore(&RootList[cnt - 1], 1);
-				CurrentSI->Early = 0;
-				old_best = INFO->bestMove;
-				INFO->bestMove = move;
+				SetScore(&self->own_.rootList_[cnt - 1], 1);
+				state->searchInfo_.early_ = false;
 			}
 			new_depth = depth - 2 + ext;
-			value = -pv_search<opp, 0>(state, -beta, -alpha, new_depth, ExtToFlag(ext));
-			if (root)
-			{
-				if (value <= alpha)
-					INFO->bestMove = old_best;
-			}
+			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
 		}
 		undo_move<me>(state, move);
 		++played;
+		if (root)
+			self->own_.results_.Add(move, value, depth, alpha, beta);
 		if (value > alpha)
 		{
 			if (root)
 			{
-				SetScore(&RootList[cnt - 1], cnt + 3);
-				CurrentSI->Change = 1;
-				CurrentSI->FailLow = 0;
+				SetScore(&self->own_.rootList_[cnt - 1], cnt + 3);
+				state->searchInfo_.change_ = true;
+				state->searchInfo_.failLow_ = false;
 				hash_low(current, move, value, depth);
-				INFO->bestMove = move;
-				INFO->bestScore = value;
-				if (depth >= 8)
-					send_pv(state, depth, old_alpha, beta);
+				// only send PV on return to aspiration window
 			}
 			current.best = move;
 			if (value >= beta)
@@ -6867,376 +6859,264 @@ template<bool me, bool root> int pv_search(State_* state, int alpha, int beta, i
 		if (current.best != hash_move)
 			ex_depth = 0;
 		if (F(root) || F(SearchMoves))
-			hash_exact(current, current.best, alpha, depth, ex_value, ex_depth, static_cast<int>(INFO->nodes >> 10) - start_knodes);
+			hash_exact(current, current.best, alpha, depth, ex_value, ex_depth, static_cast<int>(state->nodes_ >> 10) - start_knodes);
 	}
 	return alpha;
 }
 
-template<bool me> void root(State_* state)
-{HERE
-	int& depth = INFO->depth;
-	int value, alpha, beta, start_depth = 2, hash_depth = 0, hash_value, store_time = 0, time_est, ex_depth = 0, ex_value, prev_time = 0, knodes = 0;
-	int64_t time;
-	HERE
-	evaluate(state);
-	gen_root_moves<me>(state);
-	GlobalStopAll = false;
-	if (PVN > 1) {
-		//        memset(MultiPV,0,128 * sizeof(int));
-		//        for (i = 0; MultiPV[i] = RootList[i]; i++);
-		fprintf(stderr, "MPV NYI...\n");
-		abort();
-	}HERE
-	INFO->bestMove = RootList[0];
-	if (F(INFO->bestMove))
-	{
-		stop();
-		return;
-	}HERE
-	if (F(RootList[1]))
-	{
-		if (F(SHARED->best.move))
-		{
-			LOCK_SHARED;
-			if (F(SHARED->best.move))
-			{
-				ScopedMove_ next(state, RootList[0]);
-				const score_t* score = nullptr;
-				if (GEntry* Entry = probe_hash(*state->current_))
-				{
-					if (Entry->low_depth)
-						score = &Entry->low;
-					else if (Entry->high_depth)
-						score = &Entry->high;
-				}
-				if (!score)
-				{
-					evaluate(state);
-					score = &state->current_->score;
-				}
-				SHARED->best = { 1, -*score, RootList[0], INFO->id };
-				stop();
-			}
-		}
-		return;
-	}HERE
 
-	memset(&CurrentSI, 0, sizeof(GSearchInfo));
-	memset(&BaseSI, 0, sizeof(GSearchInfo));
-	Previous = -MateValue;
-	if (GPVEntry* PVEntry = probe_pv_hash(*state->current_))
-	{
-		if (is_legal<me>(*state, PVEntry->move) && PVEntry->move == INFO->bestMove && PVEntry->depth > hash_depth)
-		{
-			hash_depth = PVEntry->depth;
-			hash_value = PVEntry->value;
-			ex_depth = PVEntry->ex_depth;
-			ex_value = PVEntry->exclusion;
-			knodes = PVEntry->knodes;
-		}
-	}HERE
-	LastTime = 0;
-	if (hash_depth > 0 && PVN == 1)
-	{
-		Previous = INFO->bestScore = hash_value;
-		depth = hash_depth;
-		if (PVHashing)
-		{
-			send_pv(state, depth, -MateValue, MateValue);
-			start_depth = (depth + 2) & (~1);
-		}
-		if ((depth >= LastDepth - 8 || T(store_time)) && LastValue >= LastExactValue && hash_value >= LastExactValue && T(LastTime) && T(LastSpeed))
-		{
-			time = SHARED->softTimeLimit;
-			if (ex_depth >= depth - Min(12, depth / 2) && ex_value <= hash_value - ExclSingle(depth))
-			{
-				BaseSI->Early = 1;
-				BaseSI->Singular = 1;
-				if (ex_value <= hash_value - ExclDouble(depth))
-				{
-					time = (time * TimeSingTwoMargin) / 100;
-					BaseSI->Singular = 2;
-				}
-				else time = (time * TimeSingOneMargin) / 100;
-			}
-			time_est = Min(LastTime, int((knodes << 10) / LastSpeed));
-			time_est = Max(time_est, store_time);
-			//		set_prev_time:
-			LastTime = prev_time = time_est;
-		}
-	}HERE
+// try to fit into Ethereal framework
 
-	memcpy(SaveBoard, &state->board_, sizeof(Board_));
-	GData saveData;
-	memcpy(&saveData, &state->stack_[0], sizeof(GData));
-	save_sp = sp;
-	int skipped = 0;
-	for (depth = start_depth; !SHARED->stopAll && depth < SHARED->depthLimit && depth < 126; depth += 2)
+struct PVariation
+{
+	score_t score_;
+	vector<uint16> line_;
+	PVariation(score_t score) : score_(score) { line_.reserve(MAX_HEIGHT); }
+};
+
+void uciReport(const Thread_& thread, const vector<Thread_>* all_threads, const PVariation& pv)
+{
+	// Gather all of the statistics that the UCI protocol would be
+	// interested in. Also, bound the value passed by alpha and
+	// beta, since Ethereal uses a mix of fail-hard and fail-soft
+
+	const AspirationState_& window = thread.own_.window_;
+	uint32 elapsed = millisecs(TheTimeLimit.start_, now());
+	int bounded = Max(window.alpha_, Min<int>(pv.score_, window.beta_));
+
+	if (all_threads)
 	{
-		if (INFO->id == 0)
-			Say("info depth " + Str(depth / 2) + "\n");
-		if (SHARED->best.depth > depth)	// we have fallen too far behind
-			continue;
-		HERE
-		state->ClearStack();
-		CurrentSI->Early = 1;
-		CurrentSI->Change = CurrentSI->FailHigh = CurrentSI->FailLow = CurrentSI->Singular = 0;
-		if (PVN > 1)
-			value = multipv<me>(state, depth);
-		else if ((depth / 2) < 7 || F(Aspiration) || INFO->id < 0)
+		uint64 nodes = 0, tbhits = 0;
+		for (const auto& t : *all_threads)
 		{
-			LastValue = LastExactValue = value = pv_search<me, 1>(state, -MateValue, MateValue, depth, FlagNeatSearch);
-			send_pv(state, depth, -MateValue, MateValue);
+			nodes += t.state_.nodes_;
+			tbhits += t.state_.tbHits_;
+		}
+		//int nps = (int)(1000 * (nodes / (1 + elapsed)));
+
+		printf("info time %d knodes %d tbhits %d\n",
+			static_cast<int>(elapsed), static_cast<int>(nodes >> 10), static_cast<int>(tbhits));
+	}
+
+	// If the score is MATE or MATED in X, convert to X
+	int score = bounded >= EvalValue
+			? (MateValue - bounded + 1) / 2
+			: bounded <= -EvalValue ? -(bounded + MateValue) / 2 : bounded;
+
+	// Two possible score types, mate and cp = centipawns
+	const char* type = abs(bounded) >= EvalValue ? "mate" : "cp";
+
+	// Partial results from a windowed search have bounds
+	const char* bound = bounded >= window.beta_
+			? " lowerbound "
+			: bounded <= window.alpha_ ? " upperbound " : " ";
+
+	printf("info depth %d seldepth %d score %s %d%spv",
+			window.depth_ / 2, static_cast<int>(pv.line_.size()), type, score / CP_SEARCH, bound);
+
+	// Iterate over the PV and print each move
+	for (auto m: pv.line_)
+	{
+		if (!m)
+			break;
+		char moveStr[6];
+		move_to_string(m, moveStr);
+		printf("%s ", moveStr);
+	}
+
+	// Send out a newline and flush
+	puts(""); fflush(stdout);
+}
+
+
+score_t search(Thread_* self, score_t alpha, score_t beta, int depth, bool cutnode)
+{
+	State_* state = &self->state_;
+	// NodeState* ns = &thread->states[thread->height];
+
+	auto func = state->current_->turn ? pv_search<Black, true> : pv_search<White, true>;
+	return func(self, alpha, beta, depth, FlagNeatSearch);
+}
+
+
+struct LimitInputs_
+{
+	int time, inc, mtg;
+	uint32 timeLimit;
+	int limitedByNone, limitedByTime, limitedBySelf;
+	int limitedByDepth, limitedByMoves, limitedByNodes;
+	int multiPV, depthLimit;
+	uint64 nodeLimit;
+	array<uint16_t, 256> searchMoves, excludedMoves;
+};
+
+
+uint16 move_from_hash(const State_& state, size_t height = 0)
+{
+	if (GPVEntry* PVEntry = probe_pv_hash(state.stack_[height]))
+	{
+		if (PVEntry->move)
+			return PVEntry->move;
+	}
+	if (GEntry* Entry = probe_hash(state.stack_[height]))
+	{
+		if (Entry->move)
+			return Entry->move;
+	}
+	return 0;
+}
+
+PVariation PVFromHash(score_t score, const State_& state_in, int best_move)
+{
+	constexpr int MICRO_HASH = 1024;	// accept some stubby PVs
+	bitset<MICRO_HASH> seen = {};
+	PVariation pv(score);
+	// See if we can provide a ponder from the hashtable
+	State_ tempState;
+	tempState.Reset(state_in);
+	while (pv.line_.size() < MAX_PV_LEN)
+	{
+		uint16 move = pv.line_.empty() && T(best_move) ? best_move : move_from_hash(tempState, pv.line_.size());
+		if (move && !is_legal(tempState, move))
+			move = 0;
+		if (!move)
+			break;
+		pv.line_.push_back(move);
+		do_move(&tempState, tempState.current_->turn, move);
+		auto loc = tempState.current_->key & (MICRO_HASH - 1);
+		if (pv.line_.size() > 4 && seen[loc])
+			break;
+		seen.set(loc);
+	}
+	return pv;
+}
+
+sint16 ExpandDelta(sint16 delta)
+{
+	return delta > EvalValue / 2
+			? EvalValue / 2
+			: 4 * CP_SEARCH + delta + max(0, delta - 10 * CP_SEARCH);
+}
+
+void aspirationWindow(Thread_* thread)
+{
+	constexpr size_t MinUpdateMS = 2500;
+	constexpr int MinUpdateDepth = 10;
+
+	AspirationState_& window = thread->own_.window_;
+	window.delta_ = ExpandDelta(0);
+	auto update = [&](score_t score)
+		{
+			window.alpha_ = Max<int>(-MateValue, score - window.delta_);
+			window.beta_ = Min<int>(MateValue, score + window.delta_);
+		};
+
+	int depth = window.depth_;
+	if (auto h = probe_pv_hash(*thread->state_.current_))
+	{
+		if (h->move)
+			thread->own_.results_.Add(h->move, h->value, h->depth, h->value - 1, h->value + 1);
+		window.alpha_ = Max(-MateValue, h->value - window.delta_);
+		window.beta_ = Min<int>(MateValue, h->value + window.delta_);
+	}
+
+	for ( ; ; )
+	{
+		// Perform a search and consider reporting results
+		bool haveMove = F(thread->own_.results_.empty());
+		score_t score = search(thread, haveMove ? window.alpha_ : -MateValue, haveMove ? window.beta_: MateValue, depth, FALSE);
+		if (!!thread->peeps_)
+			if ((score > window.alpha_ && score < window.beta_) || millisecs(TheTimeLimit.start_, now()) >= MinUpdateMS)
+			{
+				PVariation pv = PVFromHash(score, thread->state_, 0);
+				uciReport(*thread, nullptr, pv);
+			}
+
+		// Search returned a result within our window
+		if (score < window.beta_)
+		{
+			if (score > window.alpha_)
+			{
+				if (window.depth_ > MinUpdateDepth)
+					update(score);
+				return;
+			}
+
+			// Search failed low, adjust window and reset depth
+			//window.beta_ = window.alpha_ + 1;
+			window.alpha_ = Max(-MateValue + window.delta_, window.alpha_) - window.delta_;
+			depth = window.depth_;
 		}
 		else
-		{
-			int deltaLo = FailLoInit, deltaHi = FailHiInit;
-			if (SHARED->best.depth == depth)
-			{
-				Previous = SHARED->best.value;
-				deltaLo /= 2;
-				deltaHi /= 2;
-			}HERE
-			alpha = Previous - deltaLo;
-			beta = Previous + deltaHi;
-			if (SHARED->best.failLow)
-			{
-				alpha -= 1 + deltaHi;
-				beta -= 1 + deltaHi;
-				if (INFO->id & 1)
-				{
-					// try to escape fail-low state quickly
-					alpha -= (alpha * INFO->id) % 256;
-					beta = alpha + 1;
-				}
-			}HERE
-			for ( ; ; )
-			{
-				HERE
-				if (SHARED->best.depth > depth)	// search has moved beyond us
-				{
-					Previous = value = SHARED->best.value;
-					break;
-				}
-				if (Max(deltaLo, deltaHi) >= 1300)
-				{
-					LastValue = LastExactValue = value = pv_search<me, 1>(state, -MateValue, MateValue, depth, FlagNeatSearch);
-					break;
-				}HERE
-				value = pv_search<me, 1>(state, alpha, beta, depth, FlagNeatSearch);
-				HERE
-				if (value <= alpha)
-				{
-					CurrentSI.FailHigh = 0;
-					CurrentSI.FailLow = 1;
-					alpha -= deltaLo;
-					deltaLo += (deltaLo * FailLoGrowth) / 64 + FailLoDelta;
-					LastValue = value;
-					BaseSI = CurrentSI;
-					if (time_to_stop(CurrentSI, LastTime, false))
-					{
-						stop();	// will break the outer loop
-						break;
-					}
-					continue;
-				}
-				else if (value >= beta)
-				{
-					CurrentSI.FailHigh = 1;
-					CurrentSI.FailLow = 0;
-					CurrentSI.Early = 1;
-					CurrentSI.Change = 0;
-					CurrentSI.Singular = Max(CurrentSI.Singular, 1);
-					beta += deltaHi;
-					deltaHi += (deltaHi * FailHiGrowth) / 64 + FailHiDelta;
-					LastDepth = depth;
-					LastTime = Max<int>(prev_time, millisecs(SHARED->startTime, now()));
-					LastSpeed = INFO->nodes / Max(LastTime, 1);
-					if (depth + 2 < SHARED->depthLimit)
-						depth += 2;
-					InstCnt = 0;
-					if (time_to_stop(CurrentSI, LastTime, false))
-					{
-						stop();	// will break the outer loop
-						break;
-					}
-					state->ClearStack();
-					LastValue = value;
-					BaseSI = CurrentSI;
-					continue;
-				}
-				else
-				{
-					LastValue = LastExactValue = value;
-					break;
-				}HERE
-			}HERE
-		}HERE
+		{	// Search failed high, adjust window and reduce depth
+			//window.alpha_ = window.beta_ - 1;
+			window.beta_ = Min(MateValue - window.delta_, window.beta_) + window.delta_;
+			if (abs(score) <= MateValue / 2 && depth > 1)
+				--depth;
+		}
+		if (window.alpha_ < -MateValue)
+			window.alpha_ = -MateValue;
+		if (window.beta_ > MateValue)
+			window.beta_ = MateValue;
+		window.delta_ = ExpandDelta(window.delta_);
+	}
+}
 
-		if (!SHARED->stopAll)
+
+void iterativeDeepening(Thread_* thread, const LimitInputs_& limits)
+{
+	constexpr sint16 InitBeta = 200, InitDelta = 50;
+	// Bind when we expect to deal with NUMA
+	//if (thread->nthreads > 8)
+	//    bindThisThread(thread->index);
+	constexpr uint64 MAX_INDEX = 256, SKIP_INDEX = 1;
+
+	// Perform iterative deepening until exit conditions
+	try
+	{
+		AspirationState_& window = thread->own_.window_ = ASPIRATION_INIT;
+		window.depth_ = 2;
+		if (auto pvEntry = probe_pv_hash(*thread->state_.current_))
+			window.depth_ = pvEntry->depth;
+
+		for (; window.depth_ < MaxDepth; window.depth_ += 2)
 		{
-			HERE
-			CurrentSI.Bad = value < Previous - 12 * CP_SEARCH;
-			BaseSI = CurrentSI;
-			LastDepth = depth;
-			LastTime = Max<int>(prev_time, millisecs(SHARED->startTime, now()));
-			LastSpeed = INFO->nodes / Max(LastTime, 1);
-			Previous = value;
-			InstCnt = 0;
-			if (INFO->id == 0 && time_to_stop(CurrentSI, LastTime, false))
+			if (thread->own_.iThread_ > 0 && ((rand16() + 97 * thread->own_.iThread_) % MAX_INDEX) < SKIP_INDEX)
+				continue;
+			// Perform a search for the current depth for each requested line of play
+			aspirationWindow(thread);
+			// if (IS_PONDERING) continue;
+
+			// Check for termination by any of the possible limits
+			if ((limits.limitedBySelf && time_to_stop(thread->state_.searchInfo_, thread->own_.lastTime_, false))
+					|| (limits.limitedByDepth && window.depth_ >= 2 * limits.depthLimit)
+					|| (limits.limitedByTime && millisecs(TheTimeLimit.start_, now()) >= limits.timeLimit))
 			{
-				stop();
+				stop();  // for other threads
 				break;
 			}
 		}
 	}
-
-	state->current_ = &state->stack_[0];
-	memcpy(&state->board_, SaveBoard, sizeof(Board_));
-	memcpy(state->current_, &saveData, sizeof(GData));
-	sp = save_sp;
-	if (!SHARED->stopAll)
-	{
-		LOCK_SHARED;
-		SHARED->stopAll = true;
+	catch (Abort_)
+	{	
+		return;
 	}
 }
 
-template<bool me> int multipv(State_* state, int depth)
-{
-	int move, low = MateValue, value, i, cnt, ext, new_depth = depth;
-	Say("info depth " + Str(depth / 2) + "\n");
-	for (cnt = 0; cnt < PVN && T(move = (MultiPV[cnt] & 0xFFFF)); ++cnt)
-	{
-		MultiPV[cnt] = move;
-		send_curr_move(move, cnt);
-		new_depth = depth - 2 + (ext = extension<me, 1>(*state->current_, move, depth));
-		do_move<me>(state, move);
-		value = -pv_search<opp, 0>(state, -MateValue, MateValue, new_depth, ExtToFlag(ext));
-		MultiPV[cnt] |= value << 16;
-		if (value < low)
-			low = value;
-		undo_move<me>(state, move);
-		for (i = cnt - 1; i >= 0; --i)
-		{
-			if ((MultiPV[i] >> 16) < value)
-			{
-				MultiPV[i + 1] = MultiPV[i];
-				MultiPV[i] = move | (value << 16);
-			}
-		}
-		INFO->bestMove = MultiPV[0] & 0xFFFF;
-		state->current_->score = MultiPV[0] >> 16;
-		send_multipv((depth / 2), cnt);
-	}
-	for (; T(move = (MultiPV[cnt] & 0xFFFF)); ++cnt)
-	{
-		MultiPV[cnt] = move;
-		send_curr_move(move, cnt);
-		new_depth = depth - 2 + (ext = extension<me, 1>(*state->current_, move, depth));
-		do_move<me>(state, move);
-		value = -scout<opp, 0, 0>(state, -low, new_depth, FlagNeatSearch | ExtToFlag(ext));
-		if (value > low)
-			value = -pv_search<opp, 0>(state, -MateValue, -low, new_depth, ExtToFlag(ext));
-		MultiPV[cnt] |= value << 16;
-		undo_move<me>(state, move);
-		if (value > low)
-		{
-			for (i = cnt; i >= PVN; --i) MultiPV[i] = MultiPV[i - 1];
-			MultiPV[PVN - 1] = move | (value << 16);
-			for (i = PVN - 2; i >= 0; --i)
-			{
-				if ((MultiPV[i] >> 16) < value)
-				{
-					MultiPV[i + 1] = MultiPV[i];
-					MultiPV[i] = move | (value << 16);
-				}
-			}
-			INFO->bestMove = MultiPV[0] & 0xFFFF;
-			state->current_->score = MultiPV[0] >> 16;
-			low = MultiPV[PVN - 1] >> 16;
-			send_multipv((depth / 2), cnt);
-		}
-	}
-	return state->current_->score;
-}
 
-void send_move_info(int bestScore)
-{
-	size_t nodes = 1, tbHits = 0;
-	for (int i = 0; i < SETTINGS->nThreads; i++)
-	{
-		nodes += THREADS[i]->nodes;
-		tbHits += THREADS[i]->tbHits;
-	}
-	auto stopTime = now();
-	auto time = millisecs(SHARED->startTime, stopTime);
-	uint64_t nps = (nodes / Max(time / 1000, 1u));
-	const char *scoreType = "mate";
-	if (bestScore > EvalValue)
-		bestScore = (MateValue - bestScore + 1) / 2;
-	else if (bestScore < -EvalValue)
-		bestScore = -(bestScore + MateValue + 1) / 2;
-	else
-	{
-		scoreType = "cp";
-		bestScore /= CP_SEARCH;
-	}
-
-	Say("info nodes " + Str(nodes) + " tbhits " + Str(tbHits) + " time " + Str(time) + " nps " + Str(nps) + " score " + string(scoreType) + " " + Str(bestScore) + "\n");
-}
-
-template<class T_> void send_best_move(T_ best)
-{
-	char moveStr[16];
-	move_to_string(best.move, moveStr);
-	const int* PV = nullptr;
-	int pvd = 0;
-	for (int i = 0; i < THREADS.size(); ++i)
-		if (THREADS[i]->PV[0] == best.move && THREADS[i]->depth > pvd)
-			PV = &THREADS[i]->PV[0];
-	if (PV && PV[0] && PV[1])
-	{
-		char ponderStr[16];
-		move_to_string(PV[1], ponderStr);
-		Say("bestmove " + string(moveStr) + " ponder " + string(ponderStr) + "\n");
-	}
-	else
-		Say("bestmove " + string(moveStr) + "\n");
-}
-
-void send_best_move(bool have_lock = false)
-{
-	assert(SHARED->best.move);
-	if (have_lock)
-	{
-		send_move_info(SHARED->best.value);
-		send_best_move(SHARED->best);
-		SHARED->best = { 0, 0, 0, 0 };
-	}
-	else
-	{
-		LOCK_SHARED;
-		send_move_info(SHARED->best.value);
-		send_best_move(SHARED->best);
-		SHARED->best = { 0, 0, 0, 0 };
-	}
-}
-
-void get_position(char string[], State_* state)
+void get_position(char src[], State_* state)
 {
 	const char* fen;
 	char* moves;
 	const char* ptr;
-	int move, move1 = 0;
+	int move;
 
-	fen = strstr(string, "fen ");
-	moves = strstr(string, "moves ");
+	fen = strstr(src, "fen ");
+	moves = strstr(src, "moves ");
 	if (fen != nullptr)
 		get_board(fen + 4, state);
 	else
 		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", state);
-	PrevMove = 0;
 	if (moves != nullptr)
 	{
 		char pv_string[1024];
@@ -7256,8 +7136,6 @@ void get_position(char string[], State_* state)
 			}
 			evaluate(state);
 			move = move_from_string(*state, pv_string);
-			PrevMove = move1;
-			move1 = move;
 			if (state->current_->turn)
 				do_move<1>(state, move);
 			else
@@ -7268,9 +7146,13 @@ void get_position(char string[], State_* state)
 			while (*ptr == ' ') ++ptr;
 		}
 	}
-	copy(Stack.begin() + sp - state->current_->ply, Stack.begin() + sp + 1, Stack.begin());
-	//memcpy(Stack, Stack + sp - state[0].ply, (state[0].ply + 1) * sizeof(uint64));
-	sp = state->current_->ply;
+	if (state->hashHist_.size() > state->current_->ply + 1)
+	{
+		size_t offset = state->hashHist_.size() - state->current_->ply - 1;
+		for (size_t ii = 0; ii < state->current_->ply; ++ii)
+			state->hashHist_[ii] = state->hashHist_[ii + offset];
+		state->hashHist_.resize(state->current_->ply + 1);
+	}
 }
 
 inline int get_number(const char *token)
@@ -7292,45 +7174,364 @@ namespace Version
 	const char now[10] = { mdy[7], mdy[8], mdy[9], mdy[10], mdy[0], mdy[1], mdy[2], mdy[4], mdy[5], 0 };
 }
 
+void SetTimeLimit(const LimitInputs_& input, int ply = 0)
+{
+	constexpr int MovesTg = 32, TimeRatio = 120;
 
-#ifdef ZZZ
+	int time_max = Max(input.time - Min(1000, (3 * input.time) / 4), 0);
+	int nmoves;
+	int exp_moves = MovesTg - 1;
+	if (input.mtg != 0)
+		nmoves = Max(1, input.mtg - 1);
+	else
+	{
+		nmoves = MovesTg - 1;
+		if (ply > 40)
+			nmoves += Min(ply - 40, (100 - ply) / 2);
+		exp_moves = nmoves;
+	}
+	int softTimeLimit = Min(time_max, (time_max + (Min(exp_moves, nmoves) * input.inc) / 2) / Min(exp_moves, nmoves));
+	int hardTimeLimit = Min(time_max, (time_max + (Min(exp_moves, nmoves) * input.inc)) / Min(7, Min(exp_moves, nmoves)));
+	hardTimeLimit = Min(hardTimeLimit, 3 * softTimeLimit);
+
+	if (input.timeLimit != 0)
+	{
+		hardTimeLimit = input.timeLimit;
+		softTimeLimit = numeric_limits<decltype(softTimeLimit)>::max();
+	}
+	else if (input.limitedByNone)
+		hardTimeLimit = softTimeLimit = numeric_limits<int>::max();
+
+	TheTimeLimit.softLimit_ = softTimeLimit;
+	TheTimeLimit.hardLimit_ = hardTimeLimit;
+}
+
+
 #ifndef REGRESSION
 
-struct Thread_
+void populateThreadPool(vector<Thread_>* threads)
 {
-	State_ state;
-//	Limits* limits;
-	TimeManager* tm;
-	PVariation pvs[MAX_PLY];
-	PVariation mpvs[MAX_MOVES];
+	for (size_t i = 0; i < threads->size(); i++)
+	{
+		auto& thread = (*threads)[i];
 
-	int multiPV;
-	uint16_t bestMoves[MAX_MOVES];
+		thread.peeps_ = i ? 0 : threads;
+		init_search(&thread.own_, &thread.state_, !i, true);	// POSTPONED:  delete this?
+		thread.own_.iThread_ = static_cast<uint16>(i);
+	}
+}
 
-	uint64 nodes, tbhits;
-	int depth, seldepth, height, completed;
+void resetThreadPool(vector<Thread_>* threads, bool clear_hash)
+{
+	// Reset the per-thread tables, used for move ordering
+	// and evaluation caching. This is needed for ucinewgame
+	// calls in order to ensure a deterministic behaviour
 
-	Undo undoStack[STACK_SIZE];
-	NodeState* states, nodeStates[STACK_SIZE];
+	for (auto& thread: *threads)
+	{
+		init_search(&thread.own_, &thread.state_, clear_hash && !!thread.peeps_, true);	// POSTPONED:  delete this?
+	}
+}
 
-	ALIGN64 PKTable pktable;
-	ALIGN64 KillerTable killers;
-	ALIGN64 CounterMoveTable cmtable;
-	ALIGN64 HistoryTable history;
-	ALIGN64 CaptureHistoryTable chistory;
-	ALIGN64 ContinuationTable continuation;
 
-	size_t index, nthreads;
-	Thread_* allThreads;
+namespace
+{
+	int getInput(char* str)
+	{
+		char* ptr;
+
+		if (fgets(str, 8192, stdin) == NULL)
+			return 0;
+
+		ptr = strchr(str, '\n');
+		if (ptr != NULL) *ptr = '\0';
+
+		ptr = strchr(str, '\r');
+		if (ptr != NULL) *ptr = '\0';
+
+		return 1;
+	}
+
+	int strEquals(const char* str1, const char* str2) {
+		return strcmp(str1, str2) == 0;
+	}
+
+	int strStartsWith(const char* str, const char* key) {
+		return strstr(str, key) == str;
+	}
+}	// leave local
+
+struct UCIResponse_
+{
+	uint16_t best, ponder;
+	int score;
 };
 
-struct UCIGo_
+UCIResponse_ select_from_threads(const vector<Thread_>& threads, const State_& state_in)
 {
-	vector<Thread> threads_;
-	Limits limits;
-	uint64 nodesSofar;
-	double elapsedSofar;
-};
+	/// A thread is better than another if any are true:
+	/// [1] The thread has an equal depth and greater score.
+	/// [2] The thread has a mate score and is closer to mate.
+	/// [3] The thread has a greater depth without replacing a closer mate
+
+	const Thread_* bestThread = nullptr;
+	RootScores_::Record_ best = { 0, 0, -MateValue, -MateValue };
+	for (const auto& t : threads)
+	{
+		auto result = t.own_.results_.best();
+		if (result.move_ == 0)
+			continue;
+		char move[6];
+		move_to_string(result.move_, move);
+		printf("info best from thread %d: %s %d %d \n", t.own_.iThread_, move, result.lower_, result.depth_);
+
+		if (bestThread)
+		{
+			if (result.lower_ <= best.lower_ && result.depth_ <= best.depth_)
+				continue;
+			if (result.lower_ < best.lower_ && best.lower_ > EvalValue)
+				continue;
+			if (result.depth_ < best.depth_ && result.lower_ < EvalValue)
+				continue;
+		}
+		bestThread = &t;
+		best = result;
+	}
+
+	if (best.move_ == 0)
+	{
+		printf("info No best thread, choosing via hash");
+		best.move_ = move_from_hash(threads[0].state_, 0);
+	}
+	if (best.move_ == 0)
+	{
+		printf("info No best thread or hash, choosing via root");
+		best.move_ = *max_element(threads[0].own_.rootList_.begin(), threads[0].own_.rootList_.end());
+	}
+
+	// Best and Ponder moves are simply the PV moves
+	UCIResponse_ retval = {
+		best.move_,
+		0,
+		best.lower_
+	};
+
+	// See if we can provide a ponder from the hashtable
+	PVariation pv = PVFromHash(retval.score, state_in, best.move_);
+	retval.ponder = pv.line_.size() >= 2 ? pv.line_[1] : 0;
+
+	uciReport(bestThread ? *bestThread : threads[0], threads[0].peeps_, pv);
+
+	assert(retval.best);
+	return retval;
+}
+
+UCIResponse_ getBestMove(vector<Thread_>& threads, const State_& state, const LimitInputs_& limits)
+{
+	// Initialize each Thread in the Thread Pool. We need a reference
+	// to the UCI seach parameters, access to the timing information,
+	// somewhere to store the results of each iteration by the main, and
+	// our own copy of the state. Also, we reset the seach statistics
+
+	LastSpeed = 0;
+	PVN = 1;
+	SearchMoves = 0;
+	for (auto& thread : threads)
+	{
+		thread.state_.Reset(state);
+		init_search(&thread.own_, &thread.state_, false, false);
+
+		// Reset the accumulator stack. The table can remain
+		//threads[i].nnue->current = &threads[i].nnue->stack[0];
+		//threads[i].nnue->current->accurate[WHITE] = 0;
+		//threads[i].nnue->current->accurate[BLACK] = 0;
+
+		// memset(threads[i].nodeStates, 0, sizeof(NodeState) * STACK_SIZE);
+	}
+
+	// Allow Syzygy to refine the move list for optimal results
+	// if (!limits->limitedByMoves && limits->multiPV == 1)
+	//	tablebasesProbeDTZ(state, limits);
+
+	// Create a new thread for each of the helpers and reuse the current
+	// thread for the main thread, which avoids some overhead and saves
+	// us from having the current thread eating CPU time while waiting
+	vector<unique_ptr<thread>> pthreads;
+	for (int i = 1; i < threads.size(); i++)
+		pthreads.emplace_back(new thread(&iterativeDeepening, &threads[i], limits));
+	iterativeDeepening(&threads[0], limits);
+
+	// When the main thread exits it should signal for the helpers to
+	// shutdown. Wait until all helpers have finished before moving on
+	stop();
+	for (auto& p : pthreads)
+		p->join();
+
+	// Pick the best of our completed threads
+	return select_from_threads(threads, state);
+}
+
+
+void start_search_threads(vector<Thread_>* threads_in, const State_* state_in, const LimitInputs_* limits_in)
+{
+	auto& threads = *threads_in;
+	const auto& state = *state_in;
+	const auto& limits = *limits_in;
+
+	static uint64 nodesSofar = 0;
+	static double elapsedSofar = 0.0;
+
+	SetTimeLimit(limits);	// set TheTimeLimit
+	++TheShare.date_; // age the hash contents
+	// Execute search, setting best and ponder moves
+	auto uciMove = getBestMove(threads, state, limits);
+	assert(uciMove.best);
+
+	// UCI spec does not want reports until out of pondering
+	// while (IS_PONDERING);
+	
+	elapsedSofar += millisecs(TheTimeLimit.start_, now());
+	uint64 nodes = 0;
+	for (const auto& t : threads)
+		nodes += t.state_.nodes_;
+	nodesSofar += nodes;
+	int nps = (int)(1000 * (nodesSofar / (1 + elapsedSofar)));
+	printf("info nodes %llu nps %d score cp %d\n", nodes, nps, uciMove.score / CP_SEARCH);
+
+	// Report best move ( we should always have one )
+	char str[6];
+	move_to_string(uciMove.best, str);
+	printf("bestmove %s score %d", str, uciMove.score / CP_SEARCH);
+
+	// Report ponder move ( if we have one )
+	if (uciMove.ponder != 0) 
+	{
+		move_to_string(uciMove.ponder, str);
+		printf(" ponder %s", str);
+	}
+
+	// Make sure this all gets reported
+	printf("\n"); fflush(stdout);
+}
+
+thread* uciGo(vector<Thread_>& threads, State_& state, int multiPV, char* str)
+{
+	/// Parse the entire "go" command in order to fill out a Limits struct, found at ucigo->limits.
+	/// After we have processed all of this, we can execute a new search thread, held by *pthread,
+	/// and detach it.
+	TheTimeLimit.start_ = now();
+	int wtime = 0, btime = 0;
+	int winc = 0, binc = 0, mtg = -1;
+
+	char moveStr[6];
+	char* ptr = strtok(str, " ");
+
+	auto turn = state.current_->turn;
+	(turn ? gen_root_moves<1> : gen_root_moves<0>)(&state);
+	int idx = 0;
+
+	LimitInputs_ limits = {};
+	// memset(limits, 0, sizeof(Limits_));
+
+	for (ptr = strtok(NULL, " "); ptr != NULL; ptr = strtok(NULL, " "))
+	{
+		// Parse time control conditions
+		if (strEquals(ptr, "wtime")) wtime = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "btime")) btime = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "winc")) winc = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "binc")) binc = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "movestogo")) mtg = atoi(strtok(NULL, " "));
+
+		// Parse special search termination conditions
+		if (strEquals(ptr, "depth")) limits.depthLimit = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "movetime")) limits.timeLimit = atoi(strtok(NULL, " "));
+		if (strEquals(ptr, "nodes")) limits.nodeLimit = static_cast<uint64>(atof(strtok(NULL, " ")));
+
+		// Parse special search modes
+		if (strEquals(ptr, "infinite")) limits.limitedByNone = TRUE;
+		if (strEquals(ptr, "searchmoves")) limits.limitedByMoves = TRUE;
+		// if (strEquals(ptr, "ponder")) IS_PONDERING = TRUE;
+
+		// Parse any specific moves that we are to search
+		for (auto m: RootList)
+		{
+			move_to_string(m, moveStr);
+			if (strEquals(ptr, moveStr))
+			{
+				limits.searchMoves[idx++] = m & 0xFFFF;
+				break;
+			}
+		}
+	}
+
+	// Special exit cases: Time, Depth, and Nodes
+	limits.limitedByTime = limits.timeLimit != 0;
+	limits.limitedByDepth = limits.depthLimit != 0;
+	limits.limitedByNodes = limits.nodeLimit != 0;
+
+	// No special case nor infinite, so we set our own time
+	limits.limitedBySelf = !limits.depthLimit && !limits.timeLimit
+			&& !limits.limitedByNone && !limits.nodeLimit;
+
+	// Pick the time values for the colour we are playing as
+	limits.time = (state.current_->turn == White) ? wtime : btime;
+	limits.inc = (state.current_->turn == White) ? winc : binc;
+	limits.mtg = (state.current_->turn == White) ? mtg : mtg;
+
+	// Cap our MultiPV search based on the suggested or legal moves
+	limits.multiPV = Min(multiPV, limits.limitedByMoves ? idx : static_cast<int>(RootList.size()));
+
+	// Spawn a new thread to handle the search
+	TheShare.stopAll_ = false;
+	return new thread(&start_search_threads, &threads, &state, &limits);
+}
+
+unsigned tb_probe_force_init_fwd();
+void uciSetOption(char* str, vector<Thread_>* threads)
+{
+	// Handle setting UCI options in Ethereal. Options include:
+	//  Hash                : Size of the Transposition Table in Megabyes
+	//  Threads             : Number of search threads to use
+	//  EvalFile            : Network weights for Ethereal's NNUE evaluation
+	//  MultiPV             : Number of search lines to report per iteration
+	//  MoveOverhead        : Overhead on time allocation to avoid time losses
+	//  SyzygyPath          : Path to Syzygy Tablebases
+	//  SyzygyProbeDepth    : Minimal Depth to probe the highest cardinality Tablebase
+	//  UCI_Chess960        : Set when playing FRC, but not required in order to work
+
+	if (strStartsWith(str, "setoption name Hash value "))
+	{
+		int megabytes = atoi(str + strlen("setoption name Hash value "));
+		ResizeHash(megabytes);
+		printf("info string set Hash to %dMB\n", megabytes);
+	}
+
+	if (strStartsWith(str, "setoption name Threads value ")) {
+		int nthreads = atoi(str + strlen("setoption name Threads value "));
+		threads->resize(nthreads);
+		populateThreadPool(threads);	// initializes each state
+		printf("info string set Threads to %d\n", nthreads);
+	}
+
+	if (strStartsWith(str, "setoption name SyzygyPath value ")) {
+		char* ptr = str + strlen("setoption name SyzygyPath value ");
+		if (!strStartsWith(ptr, "<empty>"))
+		{
+			tb_init_fwd(ptr);
+			SETTINGS.tbPath = ptr;
+			auto res = tb_probe_force_init_fwd();
+			printf("info tb init %d", res);
+		}
+		printf("info string set SyzygyPath to %s\n", ptr);
+	}
+
+	if (strStartsWith(str, "setoption name SyzygyProbeDepth value ")) {
+		TBMinDepth = atoi(str + strlen("setoption name SyzygyProbeDepth value "));
+		printf("info string set SyzygyProbeDepth to %u\n", TBMinDepth);
+	}
+
+	fflush(stdout);
+}
 
 
 int main(int argc, char** argv)
@@ -7338,23 +7539,15 @@ int main(int argc, char** argv)
 	State_ state;
 	char str[8192] = { 0 };
 	unique_ptr<thread> pthreadsgo;
-	UCIGo_ uciState;
+	bool multiPV = false;
 
-	int chess960 = 0;
-	int multiPV = 1;
-
-	// Initialize core components of Ethereal
-	initAttacks(); initMasks(); initMaterial();
-	initSearch(); initZobrist(); tt_init(1, 16);
-	initPKNetwork(); nnue_incbin_init();
+	init_data(&DATA);
 
 	// Create the UCI-board and our threads
-	vector<Thread> threads(1);
-	populateThreadPool(&threads);
-	boardFromFEN(&board, StartPosition, chess960);
+	vector<Thread_> threads(1);
+	populateThreadPool(&threads);	// initializes the one state to startpos
 
-	// Handle any command line requests
-	handleCommandLine(argc, argv);
+	// no command line control
 
 	/*
 	|------------|-----------------------------------------------------------------------|
@@ -7377,19 +7570,13 @@ int main(int argc, char** argv)
 	while (getInput(str))
 	{
 		if (strEquals(str, "uci")) {
-			printf("id name Ethereal " ETHEREAL_VERSION "\n");
-			printf("id author Andrew Grant, Alayan & Laldon\n");
+			printf("id name Roc "); printf(Version::now); printf("\n");
+			printf("id author Demichev, Grant, Hyer\n");
 			printf("option name Hash type spin default 16 min 2 max 131072\n");
 			printf("option name Threads type spin default 1 min 1 max 2048\n");
-			printf("option name EvalFile type string default <empty>\n");
-			printf("option name MultiPV type spin default 1 min 1 max 256\n");
-			printf("option name MoveOverhead type spin default 300 min 0 max 10000\n");
 			printf("option name SyzygyPath type string default <empty>\n");
 			printf("option name SyzygyProbeDepth type spin default 0 min 0 max 127\n");
 			printf("option name Ponder type check default false\n");
-			printf("option name AnalysisMode type check default false\n");
-			printf("option name UCI_Chess960 type check default false\n");
-			printf("info string licensed to " LICENSE_OWNER "\n");
 			printf("uciok\n"), fflush(stdout);
 		}
 
@@ -7397,41 +7584,40 @@ int main(int argc, char** argv)
 			printf("readyok\n"), fflush(stdout);
 
 		else if (strEquals(str, "ucinewgame"))
-			resetThreadPool(&threads[0]), tt_clear(threads[0].nthreads);
+			resetThreadPool(&threads, true);
 
 		else if (strStartsWith(str, "setoption"))
-			uciSetOption(str, &threads, &multiPV, &chess960);
+			uciSetOption(str, &threads);
 
 		else if (strStartsWith(str, "position"))
-			uciPosition(str, &board, chess960);
+			get_position(str, &state);
 
 		else if (strStartsWith(str, "go"))
 		{
-			pthreadsgo.reset(uciGo(&uciGoStruct, &threads[0], &board, multiPV, str));
+			pthreadsgo.reset(uciGo(threads, state, multiPV, str));
 			pthreadsgo->detach();   // maybe not needed?
 		}
 
-		else if (strEquals(str, "ponderhit"))
-			IS_PONDERING = 0;
+		//else if (strEquals(str, "ponderhit"))
+		//	IS_PONDERING = 0;
 
 		else if (strEquals(str, "stop"))
-			GlobalStopAll = true, IS_PONDERING = 0;
+			stop();  // , IS_PONDERING = 0;
 
 		else if (strEquals(str, "quit"))
 			break;
 
-		else if (strStartsWith(str, "perft"))
-			cout << perft(&board, atoi(str + strlen("perft "))) << endl;
+		//else if (strStartsWith(str, "perft"))
+		//	cout << perft(&board, atoi(str + strlen("perft "))) << endl;
 
-		else if (strStartsWith(str, "print"))
-			printBoard(&board), fflush(stdout);
+		//else if (strStartsWith(str, "print"))
+		//	printBoard(&board), fflush(stdout);
 	}
 
 	return 0;
 }
 
 
-#if TB
 #pragma optimize("gy", off)
 #pragma warning(push)
 #pragma warning(disable: 4334)
@@ -7467,14 +7653,14 @@ int GetTBMove(unsigned res, int* best_score)
 #undef UNLOCK
 
 unsigned tb_probe_root_fwd(
-	uint64_t _white,
-	uint64_t _black,
-	uint64_t _kings,
-	uint64_t _queens,
-	uint64_t _rooks,
-	uint64_t _bishops,
-	uint64_t _knights,
-	uint64_t _pawns,
+	uint64 _white,
+	uint64 _black,
+	uint64 _kings,
+	uint64 _queens,
+	uint64 _rooks,
+	uint64 _bishops,
+	uint64 _knights,
+	uint64 _pawns,
 	unsigned _rule50,
 	unsigned _ep,
 	bool     _turn)
@@ -7483,14 +7669,14 @@ unsigned tb_probe_root_fwd(
 }
 
 unsigned tb_probe_wdl_fwd(
-	uint64_t _white,
-	uint64_t _black,
-	uint64_t _kings,
-	uint64_t _queens,
-	uint64_t _rooks,
-	uint64_t _bishops,
-	uint64_t _knights,
-	uint64_t _pawns,
+	uint64 _white,
+	uint64 _black,
+	uint64 _kings,
+	uint64 _queens,
+	uint64 _rooks,
+	uint64 _bishops,
+	uint64 _knights,
+	uint64 _pawns,
 	unsigned _rule50,
 	unsigned _castling,
 	unsigned _ep,
@@ -7499,11 +7685,14 @@ unsigned tb_probe_wdl_fwd(
 	return tb_probe_wdl(_white, _black, _kings, _queens, _rooks, _bishops, _knights, _pawns, _rule50, _castling, _ep, _turn);
 }
 
+unsigned tb_probe_force_init_fwd()
+{
+	return tb_probe_wdl(0x80, 0x0120, 0xA0, 0, 0, 0, 0, 0x0100, 25, 0, 0, false);
+}
+
 bool tb_init_fwd(const char* path)
 {
 	return tb_init(path);
 }
 
-#endif
-#endif
 #endif

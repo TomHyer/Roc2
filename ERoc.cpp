@@ -524,7 +524,7 @@ struct Limits {
 struct TimeManager {
     int pv_stability;
     double start_time, ideal_usage, max_usage;
-    uint64 nodes[0x10000];
+    array<uint64, 0x1000> nodes;
 };
 
 
@@ -1116,7 +1116,7 @@ struct PKEntry
     uint64 pkhash, passed;
     packed_t eval, safetyw, safetyb;
 };
-typedef PKEntry PKTable[PK_CACHE_SIZE];
+typedef array<PKEntry, PK_CACHE_SIZE>  PKTable;
 
 /// thread.h
 
@@ -3338,7 +3338,7 @@ void tm_init(const Limits* limits, TimeManager* tm)
 {
     tm->pv_stability = 0; // Clear our stability time usage heuristic
     tm->start_time = limits->start; // Save off the start time of the search
-    memset(tm->nodes, 0, sizeof(uint16_t) * 0x10000); // Clear Node counters
+    tm->nodes = {}; // Clear Node counters
 
     // Allocate time if Ethereal is handling the clock
     if (limits->limitedBySelf) 
@@ -3393,7 +3393,8 @@ bool tm_finished(const Thread* thread, const TimeManager* tm) {
     const double score_factor = Max(0.75, Min(1.25, 0.05 * score_change));
 
     // Scale time between 50% and 240%, based on where nodes have been spent
-    const uint64 best_nodes = tm->nodes[thread->pvs[thread->completed - 0].line[0]];
+    int move = thread->pvs[thread->completed - 0].line[0];
+    const uint64 best_nodes = tm->nodes[move & 0xFFF];
     const double non_best_pct = 1.0 - ((double)best_nodes / thread->nodes);
     const double nodes_factor = Max(0.50, 2 * non_best_pct + 0.4);
 
@@ -5671,8 +5672,8 @@ int tt_hashfull()
     return used / TT_BUCKET_NB;
 }
 
-void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound) {
-
+void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound) 
+{
     int i;
     const uint16_t hash16 = hash >> 48;
     TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
@@ -5682,7 +5683,7 @@ void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int d
     // where xN equals the depth minus 4 times the age difference
     for (i = 0; i < TT_BUCKET_NB && slots[i].hash16 != hash16; i++)
         if (replace->depth - ((259 + Table.generation - replace->generation) & TT_MASK_AGE)
-            >= slots[i].depth - ((259 + Table.generation - slots[i].generation) & TT_MASK_AGE))
+                >= slots[i].depth - ((259 + Table.generation - slots[i].generation) & TT_MASK_AGE))
             replace = &slots[i];
 
     // Prefer a matching hash, otherwise score a replacement
@@ -5691,8 +5692,8 @@ void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int d
     // Don't overwrite an entry from the same position, unless we have
     // an exact bound or depth that is nearly as good as the old one
     if (bound != BOUND_EXACT
-        && hash16 == replace->hash16
-        && depth < replace->depth - 2)
+            && hash16 == replace->hash16
+            && depth < replace->depth - 2)
         return;
 
     // Don't overwrite a move if we don't have a new one
@@ -5762,15 +5763,17 @@ void uciReport(Thread* threads, PVariation* pv, int alpha, int beta)
     //int nps = (int)(1000 * (nodes / (1 + elapsed)));
 
     // If the score is MATE or MATED in X, convert to X
-    int score = bounded >= MATE_IN_MAX ? (MATE - bounded + 1) / 2
-        : bounded <= -MATE_IN_MAX ? -(bounded + MATE) / 2 : bounded;
+    int score = bounded >= MATE_IN_MAX 
+            ? (MATE - bounded + 1) / 2
+            : bounded <= -MATE_IN_MAX ? -(bounded + MATE) / 2 : bounded;
 
     // Two possible score types, mate and cp = centipawns
     const char* type = abs(bounded) >= MATE_IN_MAX ? "mate" : "cp";
 
     // Partial results from a windowed search have bounds
-    const char* bound = bounded >= beta ? " lowerbound "
-        : bounded <= alpha ? " upperbound " : " ";
+    const char* bound = bounded >= beta 
+            ? " lowerbound "
+            : bounded <= alpha ? " upperbound " : " ";
 
     printf("info depth %d seldepth %d multipv %d score %s %d%stime %d "
         "knodes %d tbhits %d hashfull %d pv ",
@@ -5854,9 +5857,8 @@ void update_best_line(Thread* thread, PVariation* pv)
     /// this Thread's line of best play for the newly completed depth.
     /// We store seperately the lines that we explore in multipv searches
 
-    if (!thread->multiPV
-        || pv->score > thread->pvs[thread->completed].score) {
-
+    if (!thread->multiPV || pv->score > thread->pvs[thread->completed].score) 
+    {
         thread->completed = thread->depth;
         memcpy(&thread->pvs[thread->depth], pv, sizeof(PVariation));
     }
@@ -6026,8 +6028,9 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
     }
 
     // Step 8. Store results of search into the Transposition Table.
-    ttBound = best >= beta ? BOUND_LOWER
-        : best > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
+    ttBound = best >= beta 
+            ? BOUND_LOWER
+            : best > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
     tt_store(state->hash, thread->height, bestMove, best, eval, 0, ttBound);
 
     return best;
@@ -6099,14 +6102,14 @@ int singularity(Thread* thread, uint16_t ttMove, int ttValue, int depth, int PvN
     else applyLegal(thread, state, ttMove);
 
     bool double_extend = !PvNode
-        && value < rBeta - 15
-        && (ns - 1)->dextensions <= 6;
+            && value < rBeta - 15
+            && (ns - 1)->dextensions <= 6;
 
     return double_extend ? 2 // Double extension in some non-pv nodes
-        : value < rBeta ? 1 // Singular due to no cutoffs produced
-        : ttValue >= beta ? -1 // Potential multi-cut even at current depth
-        : ttValue <= alpha ? -1 // Negative extension if ttValue was already failing-low
-        : 0;                    // Not singular, and unlikely to produce a cutoff
+            : value < rBeta ? 1 // Singular due to no cutoffs produced
+            : ttValue >= beta ? -1 // Potential multi-cut even at current depth
+            : ttValue <= alpha ? -1 // Negative extension if ttValue was already failing-low
+            : 0;                    // Not singular, and unlikely to produce a cutoff
 }
 
 
@@ -6174,20 +6177,19 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     // Don't probe the TT or TB during singluar searches
     if (ns->excluded == NONE_MOVE)
     {
-
         // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
-        if ((ttHit = tt_probe(state->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
-
+        if (ttHit = tt_probe(state->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))
+        {
             // Only cut with a greater depth search, and do not return
             // when in a PvNode, unless we would otherwise hit a qsearch
             if (ttDepth >= depth
-                && (depth == 0 || !PvNode)
-                && (cutnode || ttValue <= alpha)) {
-
+                    && (depth == 0 || !PvNode)
+                    && (cutnode || ttValue <= alpha)) 
+            {
                 // Table is exact or produces a cutoff
                 if (ttBound == BOUND_EXACT
-                    || (ttBound == BOUND_LOWER && ttValue >= beta)
-                    || (ttBound == BOUND_UPPER && ttValue <= alpha))
+                        || (ttBound == BOUND_LOWER && ttValue >= beta)
+                        || (ttBound == BOUND_UPPER && ttValue <= alpha))
                     return ttValue;
             }
 
@@ -6359,17 +6361,15 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     // Step 11. Internal Iterative Reductions. Artifically lower the depth on cutnodes
     // that are high enough up in the search tree that we would expect to have found
     // a Transposition. This is a modernized approach to Internal Iterative Deepening
-    if (cutnode
-        && depth >= 7
-        && ttMove == NONE_MOVE)
+    if (cutnode && depth >= 7 && ttMove == NONE_MOVE)
         depth -= 1;
 
     // Step 12. Initialize the Move Picker and being searching through each
     // move one at a time, until we run out or a move generates a cutoff. We
     // reuse an already initialized MovePicker to verify Singular Extension
     if (!ns->excluded) init_picker(&ns->mp, thread, ttMove);
-    while ((move = select_next(&ns->mp, thread, skipQuiets)) != NONE_MOVE) {
-
+    while ((move = select_next(&ns->mp, thread, skipQuiets)) != NONE_MOVE) 
+    {
         const uint64 starting_nodes = thread->nodes;
 
         // MultiPV and UCI searchmoves may limit our search options
@@ -6381,15 +6381,16 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
         isQuiet = !moveIsTactical(state->board_, move);
 
         // All moves have one or more History scores
-        hist = !isQuiet ? get_capture_history(thread, move)
-            : get_quiet_history(thread, move, &cmhist, &fmhist);
+        hist = isQuiet
+                ? get_quiet_history(thread, move, &cmhist, &fmhist)
+                : get_capture_history(thread, move);
 
         // Step 13 (~80 elo). Late Move Pruning / Move Count Pruning. If we
         // have seen many moves in this position already, and we don't expect
         // anything from this move, we can skip all the remaining quiets
         if (best > -TBWIN_IN_MAX
-            && depth <= LateMovePruningDepth
-            && movesSeen >= LateMovePruningCounts[improving][depth])
+                && depth <= LateMovePruningDepth
+                && movesSeen >= LateMovePruningCounts[improving][depth])
             skipQuiets = 1;
 
         // Step 14 (~175 elo). Quiet Move Pruning. Prune any quiet move that meets one
@@ -6403,24 +6404,24 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
             // Step 14A (~3 elo). Futility Pruning. If our score is far below alpha,
             // and we don't expect anything from this move, we can skip all other quiets
             if (!inCheck
-                && eval + fmpMargin <= alpha
-                && lmrDepth <= FutilityPruningDepth
-                && hist < FutilityPruningHistoryLimit[improving])
+                    && eval + fmpMargin <= alpha
+                    && lmrDepth <= FutilityPruningDepth
+                    && hist < FutilityPruningHistoryLimit[improving])
                 skipQuiets = 1;
 
             // Step 14B (~2.5 elo). Futility Pruning. If our score is not only far
             // below alpha but still far below alpha after adding the Futility Margin,
             // we can somewhat safely skip all quiet moves after this one
             if (!inCheck
-                && lmrDepth <= FutilityPruningDepth
-                && eval + fmpMargin + FutilityMarginNoHistory <= alpha)
+                    && lmrDepth <= FutilityPruningDepth
+                    && eval + fmpMargin + FutilityMarginNoHistory <= alpha)
                 skipQuiets = 1;
 
             // Step 14C (~10 elo). Continuation Pruning. Moves with poor counter
             // or follow-up move history are pruned near the leaf nodes of the search
             if (ns->mp.stage > STAGE_COUNTER_MOVE
-                && lmrDepth <= ContinuationPruningDepth[improving]
-                && Min(cmhist, fmhist) < ContinuationPruningHistoryLimit[improving])
+                    && lmrDepth <= ContinuationPruningDepth[improving]
+                    && Min(cmhist, fmhist) < ContinuationPruningHistoryLimit[improving])
                 continue;
         }
 
@@ -6428,9 +6429,9 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
         // to beat a depth dependent SEE threshold. The use of the Move Picker's stage
         // is a speedup, which assumes that good noisy moves have a positive SEE
         if (best > -TBWIN_IN_MAX
-            && depth <= SEEPruningDepth
-            && ns->mp.stage > STAGE_GOOD_NOISY
-            && !staticExchangeEvaluation(state, move, seeMargin[isQuiet]))
+                && depth <= SEEPruningDepth
+                && ns->mp.stage > STAGE_GOOD_NOISY
+                && !staticExchangeEvaluation(state, move, seeMargin[isQuiet]))
             continue;
 
         // Apply move, skip if move is illegal
@@ -6469,14 +6470,14 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
         if (ns->mp.stage == STAGE_DONE)
             return Max(ttValue - depth, -MATE);
 
-        if (depth > 2 && played > 1) {
-
+        if (depth > 2 && played > 1) 
+        {
             // Step 18A (~249 elo). Quiet Late Move Reductions. Reduce the search depth
             // of Quiet moves after we've explored the main line. If a reduced search
             // manages to beat alpha, against our expectations, we perform a research
 
-            if (isQuiet) {
-
+            if (isQuiet) 
+            {
                 // Use the LMR Formula as a starting point
                 R = LMRTable[Min(depth, 63)][Min(played, 63)];
 
@@ -6496,8 +6497,8 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
             // Step 18B (~3 elo). Noisy Late Move Reductions. The same as Step 18A, but
             // only applied to Tactical moves, based mostly on the Capture History scores
 
-            else {
-
+            else 
+            {
                 // Initialize R based on Capture History
                 R = 2 - (hist / 5000);
 
@@ -6537,12 +6538,13 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
 
         // Step 19. Update search stats for the best move and its value. Update
         // our lower bound (alpha) if exceeded, and also update the PV in that case
-        if (value > best) {
-
+        if (value > best) 
+        {
             best = value;
             bestMove = move;
 
-            if (value > alpha) {
+            if (value > alpha) 
+            {
                 alpha = value;
 
                 // Copy our child's PV and prepend this move to it
@@ -6606,7 +6608,7 @@ void aspirationWindow(Thread* thread)
         // Perform a search and consider reporting results
         pv.score = search(thread, &pv, alpha, beta, Max(1, depth), FALSE);
         if ((report && pv.score > alpha && pv.score < beta)
-            || (report && elapsed_time(thread->tm) >= WindowTimerMS))
+                || (report && elapsed_time(thread->tm) >= WindowTimerMS))
             uciReport(thread->threads, &pv, alpha, beta);
 
         // Search returned a result within our window
@@ -6797,10 +6799,8 @@ struct UCIGoStruct {
     double elapsedSofar;
 };
 
-void* start_search_threads(void* arguments)
+void* start_search_threads(UCIGoStruct* go)
 {
-    auto go = reinterpret_cast<UCIGoStruct*>(arguments);
-    // Unpack the UCIGoStruct that was cast to void*
     Thread* threads = go->threads;
     State* state = go->state;
     Limits* limits = &go->limits;
@@ -6830,7 +6830,7 @@ void* start_search_threads(void* arguments)
     // Make sure this all gets reported
     printf("\n"); fflush(stdout);
 
-    return arguments;
+    return go;
 }
 
 
@@ -7716,7 +7716,7 @@ thread* uciGo(UCIGoStruct* ucigo, Thread* threads, State* state, int multiPV, ch
     return new thread(&start_search_threads, ucigo);
 }
 
-int main(int argc, char** argv) 
+int e_main(int argc, char** argv) 
 {
     State state;
     char str[8192] = { 0 };
