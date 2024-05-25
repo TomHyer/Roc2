@@ -78,7 +78,7 @@ constexpr int SeeThreshold = 40 * CP_EVAL;
 constexpr int DrawCapConstant = 110 * CP_EVAL;
 constexpr int DrawCapLinear = 0;	// numerator; denominator is 64
 constexpr int DeltaDecrement = (3 * CP_SEARCH) / 2;	// 5 (+91/3) vs 3
-int TBMinDepth = 7;
+int TBMinDepth = 9;
 
 constexpr int InitiativeConst = int(1.5 * CP_SEARCH);
 constexpr int InitiativePhase = int(4.5 * CP_SEARCH);
@@ -6205,7 +6205,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 			hash_value = Entry->low;
 	}
 
-	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
+	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && current.ply == 0 && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
 	{
 		auto res = TBProbe(tb_probe_wdl_fwd, *state);
 		if (res != TB_RESULT_FAILED) {
@@ -6505,6 +6505,8 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 		}
 
 		do_move<me>(state, move);
+		if (probe_pv_hash(*state->current_) && new_depth < depth - 2 + Min(1, ext))
+			++new_depth;
 		int value = -scout<opp, 0, 0>(state, 1 - beta, new_depth, FlagNeatSearch | ExtToFlag(ext));	// POSTPONED -- call scout_evasion here if check?
 		if (value >= beta && new_depth < depth - 2 + ext)
 			value = -scout<opp, 0, 0>(state, 1 - beta, depth - 2 + ext, FlagNeatSearch | FlagDisableNull | ExtToFlag(ext));
@@ -6641,7 +6643,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				hash_value = Entry->low;
 		}
 	}
-	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
+	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && current.ply == 0 && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
 	{
 		auto res = TBProbe(tb_probe_wdl_fwd, *state);
 		if (res != TB_RESULT_FAILED) {
@@ -7520,7 +7522,24 @@ void uciSetOption(char* str, vector<Thread_>* threads)
 			tb_init_fwd(ptr);
 			SETTINGS.tbPath = ptr;
 			auto res = tb_probe_force_init_fwd();
-			printf("info tb init %d", res);
+			unsigned tbTest = tb_probe_wdl_fwd(
+				0x0000000200404002,
+				0x0000000080000000,
+				0x0000000080004000,
+				0,
+				0x0000000200000002,
+				0,
+				0,
+				0x0000000000400000,
+				0,
+				0,
+				0,
+				false);
+			printf("info tb init %d %d\n", res, tbTest);
+		}
+		else
+		{
+
 		}
 		printf("info string set SyzygyPath to %s\n", ptr);
 	}
@@ -7631,6 +7650,34 @@ int main(int argc, char** argv)
 #include "tbcore.h"
 #include "tbprobe.c"
 #pragma optimize("", on)
+
+
+unsigned PyrrhicWDL(const State_& state, int depth, int height)
+{
+	// Never take a Syzygy Probe in a Root node, in a node with Castling rights or en passant,
+	// in a node which was not just zero'ed by a Pawn Move or Capture
+	if (height == 0 || state.current_->castle_flags || state.current_->ply || state.current_->ep_square)
+		return TB_RESULT_FAILED;
+
+	const Board_& board = state.board_;
+	uint64 white = board.Piece(White);
+	uint64 black = board.Piece(Black);
+	auto pop = popcount(white | black);
+
+	// Apply TB_PROBE_DEPTH only at the maximum popcount
+	if (pop > static_cast<int>(TB_LARGEST) || (pop == TB_LARGEST && depth < TBMinDepth))
+		return TB_RESULT_FAILED;
+
+	// Tap into Pyrrhic's API. Pyrrhic takes the state representation, followed
+	// by the enpass square (0 if none set), and the turn. Pyrrhic defines WHITE
+	// as 1, and BLACK as 0, which is the opposite of how Ethereal defines them
+
+	return tb_probe_wdl(white, black, board.King(White) | board.King(Black),
+		    board.Queen(White) | board.Queen(Black), board.Rook(White) | board.Rook(Black),
+			board.Bishop(White) | board.Bishop(Black), board.Knight(White) | board.Knight(Black),
+		    board.Pawn(White) | board.Pawn(Black), 0, 0, 0, state.current_->turn ^ 1);
+}
+
 
 int GetTBMove(unsigned res, int* best_score)
 {
