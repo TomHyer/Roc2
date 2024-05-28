@@ -4558,32 +4558,37 @@ INLINE int HashMerit(const GPVEntry& entry)
 	return HashMerit(entry.date, entry.depth);
 }
 
-void hash_high(const GData& current, int value, int depth)
+void hash_high_update(GEntry* Entry, int value, int depth)
+{
+	Entry->date = TheShare.date_;
+	if (depth > Entry->high_depth || (depth == Entry->high_depth && value < Entry->high))
+	{
+		if (Entry->low <= value)
+		{
+			Entry->high_depth = depth;
+			Entry->high = value;
+		}
+		else if (Entry->low_depth < depth)
+		{
+			Entry->high_depth = depth;
+			Entry->high = value;
+			Entry->low = value;
+		}
+	}
+}
+
+void hash_high(const GData& current, int value, int depth, bool force_update)
 {
 	int i;
 	GEntry* best, *Entry;
 
 	// search for an old entry to overwrite
-	int minMerit = 0x70000000;
+	int minMerit = force_update ? 0x700000 : HashMerit(TheShare.date_, depth);
 	for (i = 0, best = Entry = HashStart(current.key); i < HASH_CLUSTER; ++i, ++Entry)
 	{
 		if (Entry->key == Low32(current.key))
 		{
-			Entry->date = TheShare.date_;
-			if (depth > Entry->high_depth || (depth == Entry->high_depth && value < Entry->high))
-			{
-				if (Entry->low <= value)
-				{
-					Entry->high_depth = depth;
-					Entry->high = value;
-				}
-				else if (Entry->low_depth < depth)
-				{
-					Entry->high_depth = depth;
-					Entry->high = value;
-					Entry->low = value;
-				}
-			}
+			hash_high_update(Entry, value, depth);
 			return;
 		}
 		int merit = HashMerit(*Entry);
@@ -4604,42 +4609,45 @@ void hash_high(const GData& current, int value, int depth)
 }
 
 // POSTPONED -- can hash_low return something more useful than its input?
-int hash_low(const GData& current, int move, int value, int depth)
+int hash_low_update(GEntry* Entry, int move, int value, int depth)
+{
+	Entry->date = TheShare.date_;
+	if (depth > Entry->low_depth || (depth == Entry->low_depth && value > Entry->low))
+	{
+		if (move)
+			Entry->move = move;
+		if (Entry->high >= value)
+		{
+			Entry->low_depth = depth;
+			Entry->low = value;
+		}
+		else if (Entry->high_depth < depth)
+		{
+			Entry->low_depth = depth;
+			Entry->low = value;
+			Entry->high = value;
+		}
+	}
+	else if (F(Entry->move))
+		Entry->move = move;
+	return value;
+}
+
+int hash_low(const GData& current, int move, int value, int depth, bool force_update)
 {
 	int i;
 	GEntry* best, *Entry;
 
-	int min_merit = 0x70000000;
+	int minMerit = force_update ? 0x700000 : HashMerit(TheShare.date_, depth);
 	move &= 0xFFFF;
 	for (i = 0, best = Entry = HashStart(current.key); i < HASH_CLUSTER; ++i, ++Entry)
 	{
 		if (Entry->key == Low32(current.key))
-		{
-			Entry->date = TheShare.date_;
-			if (depth > Entry->low_depth || (depth == Entry->low_depth && value > Entry->low))
-			{
-				if (move)
-					Entry->move = move;
-				if (Entry->high >= value)
-				{
-					Entry->low_depth = depth;
-					Entry->low = value;
-				}
-				else if (Entry->high_depth < depth)
-				{
-					Entry->low_depth = depth;
-					Entry->low = value;
-					Entry->high = value;
-				}
-			}
-			else if (F(Entry->move))
-				Entry->move = move;
-			return value;
-		}
+			return hash_low_update(Entry, move, value, depth);
 		int merit = HashMerit(*Entry);
-		if (merit < min_merit)
+		if (merit < minMerit)
 		{
-			min_merit = merit;
+			minMerit = merit;
 			best = Entry;
 		}
 	}
@@ -5766,7 +5774,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	{
 		if (depth >= -2 
 			&& (depth >= 0 || state->current_->score + Futility::HashCut<me>(*state, did_delta_moves) >= alpha))
-			hash_high(*state->current_, score, 1);
+			hash_high(*state->current_, score, 1, false);
 		return score;
 	};
 
@@ -5854,7 +5862,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 					if (value > alpha)
 					{
 						if (value >= beta)
-							return hash_low(current, move, score, 1);
+							return hash_low(current, move, score, 1, false);
 						alpha = value;
 					}
 				}
@@ -5886,7 +5894,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 				if (score > alpha)
 				{
 					if (score >= beta)
-						return hash_low(current, move, Max(score, beta), 1);
+						return hash_low(current, move, Max(score, beta), 1, false);
 					alpha = score;
 				}
 			}
@@ -5913,7 +5921,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 				if (score > alpha)
 				{
 					if (score >= beta)
-						return hash_low(current, move, Max(score, beta), 1);
+						return hash_low(current, move, Max(score, beta), 1, false);
 					alpha = score;
 				}
 			}
@@ -5953,7 +5961,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 								state->current_->killer[jk] = state->current_->killer[jk - 1];
 							state->current_->killer[1] = move;
 						}
-						return hash_low(current, move, Max(score, beta), 1);
+						return hash_low(current, move, Max(score, beta), 1, false);
 					}
 					alpha = score;
 				}
@@ -6102,7 +6110,7 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 			UpdateRef(state, move);
 		}
 	}
-	return hash_low(*state->current_, move, score, depth);
+	return hash_low(*state->current_, move, score, depth, false);
 };
 
 INLINE int RazoringThreshold(int score, int depth, int height)
@@ -6213,15 +6221,15 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 	if (auto res = PyrrhicWDL(*state, depth); res != TB_RESULT_FAILED)
 	{
 		++state->tbHits_;
-		hash_high(current, TbValues[res], TbDepth(depth));
-		hash_low(current, 0, TbValues[res], TbDepth(depth));
+		hash_low(current, 0, TbValues[res], TbDepth(depth), true);
+		hash_high(current, TbValues[res], TbDepth(depth), true);
 		return abort(TbValues[res]);
 	}
 
 	if (GPVEntry * PVEntry = (depth < 20 ? nullptr : probe_pv_hash(current)))
 	{
-		hash_low(current, PVEntry->move, PVEntry->value, PVEntry->depth);
-		hash_high(current, PVEntry->value, PVEntry->depth);
+		hash_low(current, PVEntry->move, PVEntry->value, PVEntry->depth, true);
+		hash_high(current, PVEntry->value, PVEntry->depth, true);
 		if (PVEntry->depth >= depth)
 		{
 			if (PVEntry->move)
@@ -6272,7 +6280,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 		if (value >= beta)
 		{
 			if (depth < 12)
-				hash_low(current, 0, value, depth);
+				hash_low(current, 0, value, depth, false);
 			return abort(value);
 		}
 	}
@@ -6524,12 +6532,12 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 
 	if (can_hash_d0 && F(cnt))
 	{
-		hash_high(current, 0, 127);
-		hash_low(current, 0, 0, 127);
+		hash_high(current, 0, 127, true);
+		hash_low(current, 0, 0, 127, true);
 		return 0;
 	}
 	if (F(exclusion))
-		hash_high(current, score, depth);
+		hash_high(current, score, depth, false);
 	return score;
 }
 
@@ -6616,8 +6624,8 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	current.best = hash_move = 0;
 	if (GPVEntry* PVEntry = probe_pv_hash(current))
 	{
-		hash_low(current, PVEntry->move, PVEntry->value, PVEntry->depth);
-		hash_high(current, PVEntry->value, PVEntry->depth);
+		hash_low(current, PVEntry->move, PVEntry->value, PVEntry->depth, true);
+		hash_high(current, PVEntry->value, PVEntry->depth, true);
 		if (PVEntry->depth >= depth && T(PVHashing))
 		{
 			if (PVEntry->move)
@@ -6648,8 +6656,8 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	if (auto res = PyrrhicWDL(*state, depth); res != TB_RESULT_FAILED) 
 	{
 		++state->tbHits_;
-		hash_high(current, TbValues[res], TbDepth(depth));
-		hash_low(current, 0, TbValues[res], TbDepth(depth));
+		hash_high(current, TbValues[res], TbDepth(depth), true);
+		hash_low(current, 0, TbValues[res], TbDepth(depth), true);
 	}
 
 	if (root)
@@ -6745,12 +6753,12 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				{
 					state->searchInfo_.failLow_ = false;
 					state->searchInfo_.failHigh_ = state->searchInfo_.early_ = value >= beta;
-					hash_low(current, move, value, depth);
+					hash_low(current, move, value, depth, false);
 					// only send info on return to aspiration window
 				}
 				current.best = move;
 				if (value >= beta)
-					return hash_low(current, move, value, depth);
+					return hash_low(current, move, value, depth, false);
 				alpha = value;
 			}
 			else if (root)
@@ -6838,12 +6846,12 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				SetScore(&self->own_.rootList_[cnt - 1], cnt + 3);
 				state->searchInfo_.change_ = true;
 				state->searchInfo_.failLow_ = false;
-				hash_low(current, move, value, depth);
+				hash_low(current, move, value, depth, false);
 				// only send PV on return to aspiration window
 			}
 			current.best = move;
 			if (value >= beta)
-				return hash_low(current, move, value, depth);
+				return hash_low(current, move, value, depth, false);
 			alpha = value;
 		}
 	}
@@ -6853,10 +6861,10 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		return 0;
 	}
 	if (F(root) || F(SearchMoves))
-		hash_high(current, alpha, depth);
+		hash_high(current, alpha, depth, false);
 	if (alpha > old_alpha)
 	{
-		hash_low(current, current.best, alpha, depth);
+		hash_low(current, current.best, alpha, depth, false);
 		if (current.best != hash_move)
 			ex_depth = 0;
 		if (F(root) || F(SearchMoves))
