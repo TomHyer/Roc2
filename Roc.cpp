@@ -59,13 +59,12 @@ typedef HANDLE event_t;
 #include "Chess/Magic.h"
 #include "Chess/Futility.h"
 #include "Chess/Shared.h"
-#include "Chess/Fathom_fwd.h"
 #include "Chess/Roc.h"
 
 //#include "TunerParams.inc"
 
-using namespace std;
 using Gull::Board_;
+using std::array;
 
 
 CommonData_ DATA;
@@ -143,9 +142,6 @@ constexpr int FlagNeatSearch = FlagHashCheck | FlagHaltCheck | FlagCallEvaluatio
 constexpr int FlagNoKillerUpdate = 1 << 24;
 constexpr int FlagReturnBestMove = 1 << 25;
 
-//uint64 nodes, tb_hits, check_node, check_node_smp;
-Board_ SaveBoard[1];
-
 typedef struct
 {
 	array<uint8, 64> square;
@@ -183,14 +179,14 @@ struct State_
 	GData* current_;
 	Board_ board_;
 	SearchInfo_ searchInfo_;
-	vector<uint64> hashHist_;
+	std::vector<uint64> hashHist_;
 
 	array<array<array<uint16, 2>, 64>, 16> HistoryVals;
 	array<sint16, 16 * 4096> DeltaVals;
 	array<GRef, 16 * 64> Ref;
 	uint64 nodes_, tbHits_;
 
-	vector<GPawnEntry> pawnHash_;
+	std::vector<GPawnEntry> pawnHash_;
 
 	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH) {}
 
@@ -239,27 +235,8 @@ constexpr int NominalTbDepth = 33;
 constexpr int MaxDepth = 125;
 inline int TbDepth(int depth) { return Min(depth + NominalTbDepth, 117); }
 
-extern unsigned TB_LARGEST;
-bool tb_init_fwd(const char*);
-
-#define TB_CUSTOM_POP_COUNT pop1
-#define TB_CUSTOM_LSB lsb
-#define TB_CUSTOM_BSWAP32 _byteswap_ulong 
-template<class F_, typename... Args_> int TBProbe(F_ func, const State_& state, const Args_&&... args)
-{
-	const Board_& board = state();
-	return func(board.Piece(White), board.Piece(Black),
-		board.King(White) | board.King(Black),
-		board.Queen(White) | board.Queen(Black),
-		board.Rook(White) | board.Rook(Black),
-		board.Bishop(White) | board.Bishop(Black),
-		board.Knight(White) | board.Knight(Black),
-		board.Pawn(White) | board.Pawn(Black),
-		state[0].ply,
-		state[0].castle_flags,
-		state[0].ep_square,
-		state[0].turn == White, std::forward<Args_>(args)...);
-}
+extern int TB_LARGEST;
+unsigned PyrrhicWDL(const State_& state, int depth);
 
 
 enum
@@ -315,21 +292,20 @@ constexpr int PV_CLUSTER = 1 << 2;
 constexpr int PV_HASH_MASK = N_PV_HASH - PV_CLUSTER;
 constexpr int MAX_MOVES = 256;
 
-vector<int> RootList;
+std::vector<int> RootList;
 
 template<class T> void prefetch(T* p)
 {
 	_mm_prefetch(reinterpret_cast<const char*>(p), _MM_HINT_NTA);
 }
 
-int rankOf(int loc);
 template<bool me> INLINE int OwnRank(int loc)
 {
-	return me ? (7 - rankOf(loc)) : rankOf(loc);
+	return me ? (7 - RankOf(loc)) : RankOf(loc);
 }
 INLINE int OwnRank(bool me, int loc)
 {
-	return me ? (7 - rankOf(loc)) : rankOf(loc);
+	return me ? (7 - RankOf(loc)) : RankOf(loc);
 }
 
 namespace Futility
@@ -386,6 +362,28 @@ INLINE uint64 QueenAttacks(int sq, const uint64& occ)
 {
 	return BishopAttacks(sq, occ) | RookAttacks(sq, occ);
 }
+
+#define kingAttacks(sq) KAtt[sq]
+#define rookAttacks RookAttacks
+#define bishopAttacks BishopAttacks
+#define knightAttacks(sq) NAtt[sq]
+#define pawnAttacks(turn, sq) PAtt[turn][sq]
+#define popcount pop1
+inline int poplsb(uint64* bb)
+{
+	int retval = lsb(*bb);
+	*bb &= *bb - 1;
+	return retval;
+}
+#include "pyrrhic/tbprobe.cpp"
+#undef popcount
+#undef pawnAttacks
+#undef knightAttacks
+#undef bishopAttacks
+#undef rookAttacks
+#undef kingAttacks
+using namespace std;	// only after Pyrrhic
+
 
 // helper to divide intermediate quantities to form scores
 // note that straight integer division (a la Gull) creates an attractor at 0
@@ -1556,14 +1554,22 @@ INLINE bool IsRepetition(const State_& state, int margin, int move)
 		&& F((move) & 0xF000);
 };
 
-uint16 rand16()
+uint16 Rand16()
 {
 	static uint64 seed = 1;
 	seed = (seed * 6364136223846793005ull) + 1442695040888963407ull;
 	return static_cast<uint16>((seed >> 32) & 0xFFFF);
 }
 
-uint64 rand64();
+inline uint32 Rand32()
+{
+	return static_cast<uint32>(Rand16()) << 16 | Rand16();
+}
+
+uint64 Rand64()
+{
+	return static_cast<uint64>(Rand32()) << 32 | Rand32();
+}
 
 // DEBUG debug cry for help
 static int debugLine;
@@ -1676,12 +1682,12 @@ constexpr std::array<std::array<uint64, 64>, 2> BishopForward = MakeBishopForwar
 
 void init_misc(CommonData_* data)
 {
-	data->TurnKey = rand64();
-	for (int i = 0; i < 8; ++i) data->EPKey[i] = rand64();
-	for (int i = 0; i < 16; ++i) data->CastleKey[i] = rand64();
+	data->TurnKey = Rand64();
+	for (int i = 0; i < 8; ++i) data->EPKey[i] = Rand64();
+	for (int i = 0; i < 16; ++i) data->CastleKey[i] = Rand64();
 	for (int i = 0; i < 16; ++i)
 		for (int j = 0; j < 64; ++j)
-			data->PieceKey[i][j] = i ? rand64() : 0;
+			data->PieceKey[i][j] = i ? Rand64() : 0;
 	for (int i = 0; i < 16; ++i)
 		data->LogDist[i] = (int)(10.0 * log(1.01 + i));
 }
@@ -4262,10 +4268,9 @@ template<class POP> void evaluation(State_* state)
 	}
 }
 
-int HardwarePopCnt;
 INLINE void evaluate(State_* state)
 {
-	HardwarePopCnt ? evaluation<pop1_>(state) : evaluation<pop0_>(state);
+	evaluation<pop1_>(state);	// assume we have hardware popcount
 	BYE
 }
 
@@ -6205,15 +6210,12 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 			hash_value = Entry->low;
 	}
 
-	if (hash_depth < NominalTbDepth && TB_LARGEST > 0 && depth >= TBMinDepth && current.ply == 0 && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
+	if (auto res = PyrrhicWDL(*state, depth); res != TB_RESULT_FAILED)
 	{
-		auto res = TBProbe(tb_probe_wdl_fwd, *state);
-		if (res != TB_RESULT_FAILED) {
-			++state->tbHits_;
-			hash_high(current, TbValues[res], TbDepth(depth));
-			hash_low(current, 0, TbValues[res], TbDepth(depth));
-			return abort(TbValues[res]);
-		}
+		++state->tbHits_;
+		hash_high(current, TbValues[res], TbDepth(depth));
+		hash_low(current, 0, TbValues[res], TbDepth(depth));
+		return abort(TbValues[res]);
 	}
 
 	if (GPVEntry * PVEntry = (depth < 20 ? nullptr : probe_pv_hash(current)))
@@ -6643,14 +6645,11 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				hash_value = Entry->low;
 		}
 	}
-	if (!root && hash_depth < NominalTbDepth && depth >= TBMinDepth && current.ply == 0 && popcnt(board.PieceAll()) <= static_cast<int>(TB_LARGEST))
+	if (auto res = PyrrhicWDL(*state, depth); res != TB_RESULT_FAILED) 
 	{
-		auto res = TBProbe(tb_probe_wdl_fwd, *state);
-		if (res != TB_RESULT_FAILED) {
-			++state->tbHits_;
-			hash_high(current, TbValues[res], TbDepth(depth));
-			hash_low(current, 0, TbValues[res], TbDepth(depth));
-		}
+		++state->tbHits_;
+		hash_high(current, TbValues[res], TbDepth(depth));
+		hash_low(current, 0, TbValues[res], TbDepth(depth));
 	}
 
 	if (root)
@@ -6913,7 +6912,7 @@ void uciReport(const Thread_& thread, const vector<Thread_>* all_threads, const 
 			? " lowerbound "
 			: bounded <= window.alpha_ ? " upperbound " : " ";
 
-	printf("info depth %d seldepth %d score %s %d%spv",
+	printf("info depth %d seldepth %d score %s %d%spv ",
 			window.depth_ / 2, static_cast<int>(pv.line_.size()), type, score / CP_SEARCH, bound);
 
 	// Iterate over the PV and print each move
@@ -7083,7 +7082,7 @@ void iterativeDeepening(Thread_* thread, const LimitInputs_& limits)
 
 		for (; window.depth_ < MaxDepth; window.depth_ += 2)
 		{
-			if (thread->own_.iThread_ > 0 && ((rand16() + 97 * thread->own_.iThread_) % MAX_INDEX) < SKIP_INDEX)
+			if (thread->own_.iThread_ > 0 && ((Rand16() + 97 * thread->own_.iThread_) % MAX_INDEX) < SKIP_INDEX)
 				continue;
 			// Perform a search for the current depth for each requested line of play
 			aspirationWindow(thread);
@@ -7519,27 +7518,14 @@ void uciSetOption(char* str, vector<Thread_>* threads)
 		char* ptr = str + strlen("setoption name SyzygyPath value ");
 		if (!strStartsWith(ptr, "<empty>"))
 		{
-			tb_init_fwd(ptr);
 			SETTINGS.tbPath = ptr;
-			auto res = tb_probe_force_init_fwd();
-			unsigned tbTest = tb_probe_wdl_fwd(
-				0x0000000200404002,
-				0x0000000080000000,
-				0x0000000080004000,
-				0,
-				0x0000000200000002,
-				0,
-				0,
-				0x0000000000400000,
-				0,
-				0,
-				0,
-				false);
-			printf("info tb init %d %d\n", res, tbTest);
+			tb_init(ptr);
+			//auto res = tb_probe_force_init_fwd();
+			//printf("info tb init %d\n", res);
 		}
 		else
 		{
-
+			SETTINGS.tbPath.clear();
 		}
 		printf("info string set SyzygyPath to %s\n", ptr);
 	}
@@ -7559,6 +7545,7 @@ int main(int argc, char** argv)
 	char str[8192] = { 0 };
 	unique_ptr<thread> pthreadsgo;
 	bool multiPV = false;
+	TheShare.stopAll_ = true;
 
 	init_data(&DATA);
 
@@ -7600,7 +7587,14 @@ int main(int argc, char** argv)
 		}
 
 		else if (strEquals(str, "isready"))
+		{
+			while (!TheShare.stopAll_)
+			{ 
+				printf("info not ready, still working\n");
+				this_thread::sleep_for(chrono::seconds(1));
+			}
 			printf("readyok\n"), fflush(stdout);
+		}
 
 		else if (strEquals(str, "ucinewgame"))
 			resetThreadPool(&threads, true);
@@ -7636,27 +7630,11 @@ int main(int argc, char** argv)
 	return 0;
 }
 
-
-#pragma optimize("gy", off)
-#pragma warning(push)
-#pragma warning(disable: 4334)
-#pragma warning(disable: 4244)
-#pragma warning(disable: 4800)
-#define Say(x)	// mute TB query
-// Fathom/Syzygy code at end where its #defines cannot screw us up
-#undef LOCK
-#undef UNLOCK
-#include "tbconfig.h"
-#include "tbcore.h"
-#include "tbprobe.c"
-#pragma optimize("", on)
-
-
-unsigned PyrrhicWDL(const State_& state, int depth, int height)
+unsigned PyrrhicWDL(const State_& state, int depth)
 {
 	// Never take a Syzygy Probe in a Root node, in a node with Castling rights or en passant,
 	// in a node which was not just zero'ed by a Pawn Move or Capture
-	if (height == 0 || state.current_->castle_flags || state.current_->ply || state.current_->ep_square)
+	if (state.Height() == 0 || state.current_->castle_flags || state.current_->ply || state.current_->ep_square)
 		return TB_RESULT_FAILED;
 
 	const Board_& board = state.board_;
@@ -7675,71 +7653,14 @@ unsigned PyrrhicWDL(const State_& state, int depth, int height)
 	return tb_probe_wdl(white, black, board.King(White) | board.King(Black),
 		    board.Queen(White) | board.Queen(Black), board.Rook(White) | board.Rook(Black),
 			board.Bishop(White) | board.Bishop(Black), board.Knight(White) | board.Knight(Black),
-		    board.Pawn(White) | board.Pawn(Black), 0, 0, 0, state.current_->turn ^ 1);
-}
-
-
-int GetTBMove(unsigned res, int* best_score)
-{
-	*best_score = TbValues[TB_GET_WDL(res)];
-	int retval = (TB_GET_FROM(res) << 6) | TB_GET_TO(res);
-	switch (TB_GET_PROMOTES(res))
-	{
-	case TB_PROMOTES_QUEEN:
-		return retval | FlagPQueen;
-	case TB_PROMOTES_ROOK:
-		return retval | FlagPRook;
-	case TB_PROMOTES_BISHOP:
-		return retval | FlagPBishop;
-	case TB_PROMOTES_KNIGHT:
-		return retval | FlagPKnight;
-	}
-	return retval;
-}
-#undef LOCK
-#undef UNLOCK
-
-unsigned tb_probe_root_fwd(
-	uint64 _white,
-	uint64 _black,
-	uint64 _kings,
-	uint64 _queens,
-	uint64 _rooks,
-	uint64 _bishops,
-	uint64 _knights,
-	uint64 _pawns,
-	unsigned _rule50,
-	unsigned _ep,
-	bool     _turn)
-{
-	return tb_probe_root_impl(_white, _black, _kings, _queens, _rooks, _bishops, _knights, _pawns, _rule50, _ep, _turn, nullptr);
-}
-
-unsigned tb_probe_wdl_fwd(
-	uint64 _white,
-	uint64 _black,
-	uint64 _kings,
-	uint64 _queens,
-	uint64 _rooks,
-	uint64 _bishops,
-	uint64 _knights,
-	uint64 _pawns,
-	unsigned _rule50,
-	unsigned _castling,
-	unsigned _ep,
-	bool     _turn)
-{
-	return tb_probe_wdl(_white, _black, _kings, _queens, _rooks, _bishops, _knights, _pawns, _rule50, _castling, _ep, _turn);
+		    board.Pawn(White) | board.Pawn(Black), 0, state.current_->turn ^ 1);
 }
 
 unsigned tb_probe_force_init_fwd()
 {
-	return tb_probe_wdl(0x80, 0x0120, 0xA0, 0, 0, 0, 0, 0x0100, 25, 0, 0, false);
+	return tb_probe_wdl(0x80, 0x0120, 0xA0, 0, 0, 0, 0, 0x0100, 25, false);
 }
 
-bool tb_init_fwd(const char* path)
-{
-	return tb_init(path);
-}
 
 #endif
+

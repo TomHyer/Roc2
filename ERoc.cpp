@@ -1,4 +1,6 @@
 
+#ifdef BE_ETHEREAL
+
 /// Roc and Platform
 #include "Base/Platform.h"
 #include <array>
@@ -217,7 +219,7 @@ int backmost(int colour, uint64 bb) {
     return colour == WHITE ? lsb(bb) : msb(bb);
 }
 
-int poplsb(uint64* bb) {
+inline int poplsb(uint64* bb) {
     int retval = lsb(*bb);
     *bb &= *bb - 1;
     return retval;
@@ -3474,8 +3476,7 @@ void tablebasesProbeDTZ(State* state, Limits* limits)
 
     // We cannot probe when there are castling rights, or when
     // we have more pieces than our largest Tablebase has pieces
-    if (state->castleRooks
-        || popcount(white | black) > TB_LARGEST)
+    if (state->castleRooks || popcount(white | black) > TB_LARGEST)
         return;
 
     // Tap into Pyrrhic's API. Pyrrhic takes the state representation and the
@@ -6206,8 +6207,8 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
         // Step 5. Probe the Syzygy Tablebases. tablebasesProbeWDL() handles all of
         // the conditions about the state, the existance of tables, the probe depth,
         // as well as to not probe at the Root. The return is defined by the Pyrrhic API
-        if ((tbresult = tablebasesProbeWDL(state, depth, thread->height)) != TB_RESULT_FAILED) {
-
+        if ((tbresult = tablebasesProbeWDL(state, depth, thread->height)) != TB_RESULT_FAILED) 
+        {
             thread->tbhits++; // Increment tbhits counter for this thread
 
             // Convert the WDL value to a score. We consider blessed losses
@@ -7812,4 +7813,6 @@ int e_main(int argc, char** argv)
 
     return 0;
 }
+
+#endif
 
