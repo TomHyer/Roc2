@@ -37,9 +37,6 @@ typedef std::chrono::high_resolution_clock::time_point time_point;
 #undef max
 #include <assert.h>
 template<class T> std::string Str(const T& src) { return std::to_string(src); }
-// Windows-specific
-typedef HANDLE mutex_t;
-typedef HANDLE event_t;
 
 #include "Base/Platform.h"
 #include "Chess/Chess.h"
@@ -77,7 +74,7 @@ constexpr int SeeThreshold = 40 * CP_EVAL;
 constexpr int DrawCapConstant = 110 * CP_EVAL;
 constexpr int DrawCapLinear = 0;	// numerator; denominator is 64
 constexpr int DeltaDecrement = (3 * CP_SEARCH) / 2;	// 5 (+91/3) vs 3
-int TBMinDepth = 9;
+int TBMinDepth = 2;
 
 constexpr int InitiativeConst = int(1.5 * CP_SEARCH);
 constexpr int InitiativePhase = int(4.5 * CP_SEARCH);
@@ -169,14 +166,14 @@ struct SearchInfo_
 	bool change_, early_, failLow_, failHigh_;
 };
 
-constexpr int N_PAWN_HASH = 1 << 20;
+constexpr int N_PAWN_HASH = 1 << 17;
 constexpr int PAWN_HASH_MASK = N_PAWN_HASH - 1;
 
 
 struct State_
 {
-	std::array<GData, MAX_HEIGHT> stack_;
-	GData* current_;
+	std::array<PlyState_, MAX_HEIGHT> stack_;
+	PlyState_* current_;
 	Board_ board_;
 	SearchInfo_ searchInfo_;
 	std::vector<uint64> hashHist_;
@@ -192,7 +189,7 @@ struct State_
 
 	void ClearStack() 
 	{ 
-		memset(&stack_[1], 0, (MAX_HEIGHT - 1) * sizeof(GData)); 
+		memset(&stack_[1], 0, (MAX_HEIGHT - 1) * sizeof(PlyState_)); 
 		current_ = &stack_[0];
 	}
 	void Reset(const State_& exemplar)
@@ -218,7 +215,7 @@ struct State_
 			pawnHash_ = exemplar.pawnHash_;
 	}
 
-	INLINE const GData& operator[](int lookback) const { return *(current_ - lookback); }
+	INLINE const PlyState_& operator[](int lookback) const { return *(current_ - lookback); }
 	INLINE int Height() const { return static_cast<int>(current_ - &stack_[0]); }
 
 	INLINE const Board_& operator()() const { return board_; }
@@ -258,7 +255,6 @@ enum
 	r_checks,
 	r_none
 };
-constexpr int StageNone = (1 << s_none) | (1 << e_none) | (1 << r_none);
 
 inline Progress_ Progress(const Board_& board) { return Progress_(popcnt(board.Piece(White)), popcnt(board.Piece(Black))); }
 
@@ -287,7 +283,7 @@ typedef struct
 	uint8 ex_depth;
 } GPVEntry;
 constexpr GPVEntry NullPVEntry = { 0, 0, 0, 1, 0, 0, 0, 0, 0 };
-constexpr int N_PV_HASH = 1 << 20;
+constexpr int N_PV_HASH = 1 << 19;
 constexpr int PV_CLUSTER = 1 << 2;
 constexpr int PV_HASH_MASK = N_PV_HASH - PV_CLUSTER;
 constexpr int MAX_MOVES = 256;
@@ -626,17 +622,6 @@ INLINE void UpdateCheckRef(State_* state, int ref_move)
 		dst[0] = ref_move;
 	}
 }
-/*  global-looking stuff
-char info_string[1024];
-char score_string[16];
-char mstring[65536];
-*/
-int MultiPV[256];
-int pvp;
-int pv_length;
-sint64 LastSpeed;
-int PVN, PVHashing = 1, SearchMoves, SMPointer, Previous;
-
 
 
 #ifdef CPU_TIMING
@@ -706,7 +691,7 @@ template<int N> constexpr array<packed_t, N / 4> PackAll(const array<int, N>& sr
 
 // pawn, knight, bishop, rook, queen, pair
 constexpr array<int, 6> MatLinear = { 39, -11, -14, 86, -15, -1 };
-constexpr int MatWinnable = 160;
+constexpr int MatWinnable = 1;
 
 // T(pawn), pawn, knight, bishop, rook, queen
 const int MatQuadMe[21] = { // tuner: type=array, var=1000, active=0
@@ -779,15 +764,15 @@ namespace StormValues
 namespace PasserValues
 {
 	// not much point in using 3 parameters for 4 degrees of freedom
-	constexpr array<packed_t, 7> Candidate = { 0ull, 0ull, 0ull, Pack(10, 10, 9, 0), Pack(26, 24, 21, 0), Pack(49, 42, 34, 0), Pack(79, 64, 50, 0) };
+	constexpr array<packed_t, 7> Candidate = { 0ull, 0ull, 0ull, Pack(10, 10, 0, 0), Pack(26, 24, 5, 0), Pack(49, 42, 17, 0), Pack(79, 64, 37, 0) };	// 3-wide group where our pawns outnumber his
 	constexpr array<packed_t, 7> General = { 0ull, 0ull, 0ull, Pack(6, 4, 3, 14), Pack(31, 16, 6, 11), Pack(56, 48, 18, 7), Pack(81, 91, 36, 4) };
-	constexpr array<packed_t, 7> Protected = { 0ull, 0ull, 0ull, Pack(0, 5, 28, 11), Pack(23, 53, 66, 26), Pack(91, 138, 148, 10), Pack(174, 242, 261, 0) };
-	constexpr array<packed_t, 7> Outside = { 0ull, 0ull, 0ull, Pack(20, 18, 10, 3), Pack(54, 40, 20, 0), Pack(87, 76, 21, 0), Pack(120, 123, 16, 0) };
-	constexpr array<packed_t, 7> Blocked = { 0ull, 0ull, 0ull, Pack(21, 18, 19, 21), Pack(58, 51, 37, 20), Pack(103, 113, 61, 15), Pack(154, 189, 89, 11) };
-	constexpr array<packed_t, 7> Clear = { 0ull, 0ull, 0ull, Pack(3, 1, 0, 0), Pack(3, 0, 0, 0), Pack(2, 0, 0, 0), Pack(3, 0, 0, 0) };
-	constexpr array<packed_t, 7> Connected = { 0ull, 0ull, 0ull, Pack(29, 23, 34, 0), Pack(72, 69, 80, 0), Pack(139, 160, 137, 31), Pack(225, 271, 193, 87) };
-	constexpr array<packed_t, 7> Free = { 0ull, 0ull, 0ull, Pack(53, 49, 72, 0), Pack(95, 124, 166, 0), Pack(116, 274, 360, 3), Pack(121, 468, 611, 6) };
-	constexpr array<packed_t, 7> Supported = { 0ull, 0ull, 0ull, Pack(41, 36, 33, 5), Pack(90, 84, 77, 2), Pack(141, 157, 172, 0), Pack(194, 246, 297, 0) };
+	constexpr array<packed_t, 7> Protected = { 0ull, 0ull, 0ull, Pack(0, 5, 28, 11), Pack(23, 53, 66, 26), Pack(91, 138, 148, 10), Pack(174, 242, 261, 0) };	// supported by our pawn
+	constexpr array<packed_t, 7> Outside = { 0ull, 0ull, 0ull, Pack(20, 18, 10, 3), Pack(54, 40, 20, 0), Pack(87, 76, 21, 0), Pack(120, 123, 16, 0) };	// is easternmost/westernmost of all pawns
+	constexpr array<packed_t, 7> Movable = { 0ull, 0ull, 0ull, Pack(21, 18, 19, 21), Pack(58, 51, 37, 20), Pack(103, 113, 61, 15), Pack(154, 189, 89, 11) };	// can be pushed now
+	constexpr array<packed_t, 7> Clear = { 0ull, 0ull, 0ull, Pack(10, 11, 12, 0), Pack(30, 33, 36, 0), Pack(68, 74, 80, 0), Pack(121, 131, 142, 0) };	// no opponent pieces in path
+	constexpr array<packed_t, 7> Connected = { 0ull, 0ull, 0ull, Pack(29, 23, 27, 0), Pack(72, 69, 72, 0), Pack(139, 160, 137, 31), Pack(225, 271, 193, 87) }; // clear && directly beside another passer
+	constexpr array<packed_t, 7> Free = { 0ull, 0ull, 0ull, Pack(53, 49, 72, 0), Pack(95, 124, 166, 0), Pack(116, 274, 378, 3), Pack(121, 468, 672, 6) };	// clear && no sq
+	constexpr array<packed_t, 7> Supported = { 0ull, 0ull, 0ull, Pack(41, 36, 33, 5), Pack(90, 84, 77, 2), Pack(141, 157, 172, 0), Pack(194, 246, 297, 0) };	// clear && directly backed by major
 }
 
 // type (2: att, def) * scaling (2: linear, log) 
@@ -888,7 +873,7 @@ namespace Values
 }
 
 constexpr array<int, 12> KingAttackWeight = {  // tuner: type=array, var=51, active=0
-	56, 88, 44, 64, 60, 104, 116, 212, 16, 192, 256, 64 };
+	65, 79, 50, 58, 70, 94, 137, 191, 16, 192, 256, 64 };
 constexpr uint16 KingAttackThreshold = 48;
 
 constexpr array<uint64, 2> Outpost = { 0x00007E7E3C000000ull, 0x0000003C7E7E0000ull };
@@ -956,66 +941,6 @@ int get_num_cpus()
 	return sysinfo.dwNumberOfProcessors;
 }
 
-mutex_t mutex_init()
-{
-	SECURITY_ATTRIBUTES attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.nLength = sizeof(attr);
-	attr.bInheritHandle = TRUE;
-	mutex_t retval = CreateMutex(&attr, FALSE, NULL);
-	if (retval == NULL)
-		error_msg("failed to create mutex (%d)", GetLastError());
-	return retval;
-}
-
-void mutex_lock0(mutex_t *mutex)
-{
-	if (WaitForSingleObject(*mutex, INFINITE) != WAIT_OBJECT_0)
-		error_msg("failed to lock mutex (%d)", GetLastError());
-}
-static bool mutex_try_lock(mutex_t *mutex, uint64 timeout)
-{
-	switch (WaitForSingleObject(*mutex, (DWORD)timeout))
-	{
-	case WAIT_OBJECT_0:
-		return true;
-	case WAIT_TIMEOUT:
-		return false;
-	default:
-		error_msg("failed to lock mutex (%d)", GetLastError());
-	}
-}
-
-void mutex_unlock0(mutex_t *mutex)
-{
-	if (!ReleaseMutex(*mutex))
-		error_msg("failed to unlock mutex (%d)", GetLastError());
-}
-
-void mutex_discard(mutex_t* mutex)
-{
-	mutex_unlock0(mutex);
-	//	CloseHandle(mutex);
-}
-
-event_t event_init()
-{
-	SECURITY_ATTRIBUTES attr;
-	memset(&attr, 0, sizeof(attr));
-	attr.nLength = sizeof(attr);
-	attr.bInheritHandle = TRUE;
-	event_t retval = CreateEvent(&attr, TRUE, FALSE, NULL);
-	if (retval == NULL)
-		error_msg("failed to create event (%d)", GetLastError());
-	return retval;
-}
-
-void event_discard(event_t* event)
-{
-	if (event)
-		CloseHandle(event);
-}
-
 string object_name(const char *basename, int id, int idx)
 {
 	return "Local\\Roc" + to_string(id) + basename + to_string(idx);
@@ -1050,221 +975,11 @@ static DWORD forward_input(void* param)
 	}
 }
 
-bool get_line(char *line, unsigned linelen, DWORD timeout)
-{
-	static char buf[4 * PIPE_BUF];
-	static unsigned ptr = 0, end = 0;
-	unsigned i = 0;
-
-	static HANDLE handle = INVALID_HANDLE_VALUE;
-	static event_t event = NULL;
-	static bool init = false;
-	if (!init)
-	{
-		handle = GetStdHandle(STD_INPUT_HANDLE);
-		if (GetFileType(handle) == FILE_TYPE_PIPE)
-		{
-			char name[256];
-			int res = snprintf(name, sizeof(name) - 1, "\\\\.\\pipe\\Roc%u_pipe", GetCurrentProcessId());
-			if (res < 0 || res >= sizeof(name) - 1)
-				error_msg("failed to create pipe name");
-			HANDLE out = CreateNamedPipe(name,
-				PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-				PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 2,
-				4 * PIPE_BUF, 4 * PIPE_BUF, 0, NULL);
-			if (out == INVALID_HANDLE_VALUE)
-				error_msg("failed to create named pipe #1 (%d)", GetLastError());
-			handle = CreateFile(name, GENERIC_READ, 0, NULL,
-				OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
-			if (handle == INVALID_HANDLE_VALUE)
-				error_msg("failed to create named pipe #2 (%d)", GetLastError());
-			HANDLE thread = CreateThread(NULL, 0, forward_input, (LPVOID)out, 0, NULL);
-			if (thread == NULL)
-				error_msg("failed to create thread (%d)", GetLastError());
-		}
-		event = event_init();
-		init = true;
-	}
-
-	while (true)
-	{
-		bool space = false;
-		while (ptr < end)
-		{
-			if (i >= linelen)
-				error_msg("input buffer overflow");
-			char c = buf[ptr++];
-			switch (c)
-			{
-			case ' ': case '\r': case '\t': case '\n':
-				if (!space)
-				{
-					line[i++] = ' ';
-					space = true;
-				}
-				if (c == '\n')
-				{
-					line[i - 1] = '\0';
-					return false;
-				}
-				continue;
-			default:
-				space = false;
-				line[i++] = c;
-				continue;
-			}
-		}
-
-		OVERLAPPED overlapped;
-		memset(&overlapped, 0, sizeof(overlapped));
-		overlapped.hEvent = event;
-		DWORD len;
-		if (!ReadFile(handle, buf, sizeof(buf), &len, &overlapped))
-		{
-			if (GetLastError() != ERROR_IO_PENDING)
-				error_msg("failed to read input (%d)", GetLastError());
-			bool timedout = false;
-
-			switch (WaitForSingleObject(event, timeout))
-			{
-			case WAIT_TIMEOUT:
-				if (!CancelIo(handle))
-					error_msg("failed to cancel input (%d)", GetLastError());
-				timedout = true;
-				break;
-			case WAIT_OBJECT_0:
-				break;
-			default:
-				error_msg("failed to wait for input (%d)", GetLastError());
-			}
-			if (!GetOverlappedResult(handle, &overlapped, &len, FALSE))
-			{
-				if (timedout && GetLastError() == ERROR_OPERATION_ABORTED)
-					return true;
-				error_msg("failed to get input result (%d)", GetLastError());
-			}
-		}
-
-		if (len == 0)
-		{
-			line[0] = EOF;
-			return false;
-		}
-
-		ptr = 0;
-		end = len;
-	}
-}
-
-static void put_line(const char *line, size_t linelen)
-{
-	if (linelen > PIPE_BUF)
-	{
-		log_msg("warning: output \"%s\" too long (max is %u, got %u)\n", line, PIPE_BUF, linelen);
-		return;
-	}
-	HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
-	DWORD len;
-	if (!WriteFile(handle, line, (DWORD)linelen, &len, NULL) || len != linelen)
-		error_msg("failed to write output (%d)", GetLastError());
-	FlushFileBuffers(handle);
-}
-
-typedef struct
-{
-	char name[256];
-	HANDLE handle;
-} GHandleInfo;
-vector<GHandleInfo> MyHandles;
-
-void* init_object_ex(const char *mapping_name, size_t true_size, void *addr, bool create, bool readonly, const void *value)
-{
-	size_t size = size_to_page(true_size);
-	DWORD access = readonly && !value ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
-	HANDLE handle = INVALID_HANDLE_VALUE;
-	if (mapping_name)
-	{
-		if (create)
-		{
-			handle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE, (DWORD)(size >> 32), (DWORD)(size & 0xFFFFFFFF), mapping_name);
-			GHandleInfo hi;
-			hi.handle = handle;
-			strncpy(hi.name, mapping_name, sizeof(hi.name) - 1);
-			MyHandles.push_back(hi);
-		}
-		else
-		{
-			handle = OpenFileMapping(access, FALSE, mapping_name);
-		}
-	}
-	else
-		handle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, (DWORD)(size >> 32), (DWORD)(size & 0xFFFFFFFF), NULL);
-
-	if ((handle == INVALID_HANDLE_VALUE || handle == NULL) && (create || GetLastError() != ERROR_ALREADY_EXISTS))
-		error_msg("failed to open file mapping \"%s\" (%d)", mapping_name, GetLastError());
-	void* ptr = MapViewOfFileEx(handle, access, 0, 0, size, addr);
-	if (!ptr)
-		error_msg("failed to map file mapping \"%s\" (%d)", mapping_name, GetLastError());
-	if (value)
-	{
-		memcpy(ptr, value, true_size);
-		DWORD old_prot;
-		if (readonly && !VirtualProtect(ptr, size, PAGE_READONLY, &old_prot))
-			error_msg("failed to protect object \"%s\" (%d)", mapping_name, GetLastError());
-	}
-	if (!create || !mapping_name)
-		CloseHandle(handle);
-	return ptr;
-}
-
-void* share_object_ex(const char *mapping_name, void *addr, bool readonly)
-{
-	DWORD access = readonly ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
-	HANDLE handle = OpenFileMapping(access, FALSE, mapping_name);
-	if ((handle == INVALID_HANDLE_VALUE || handle == NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
-		error_msg("failed to open file mapping \"%s\" (%d)", mapping_name, GetLastError());
-	void* ptr = MapViewOfFileEx(handle, access, 0, 0, 0, addr);
-	if (!ptr)
-		error_msg("failed to map file mapping \"%s\" (%d)", mapping_name, GetLastError());
-	CloseHandle(handle);
-	return ptr;
-}
-
-template<class T_> T_* init_object(T_* base_addr, const char *object, bool create, bool readonly, size_t n = 1, const T_* value = nullptr)
-{
-	return reinterpret_cast<T_*>(init_object_ex(object, n * sizeof(T_), base_addr, create, readonly, value));
-}
-template<class T_> T_* share_object(T_* base_addr, const char *object, bool readonly)
-{
-	return reinterpret_cast<T_*>(share_object_ex(object, base_addr, readonly));
-}
-
-void remove_object(const char *object)
-{
-	for (auto&& hi : MyHandles)
-	{
-		if (strcmp(hi.name, object) == 0)
-		{
-			hi.name[0] = '\0';
-			CloseHandle(hi.handle);
-			hi.handle = NULL;
-			return;
-		}
-	}
-	error_msg("failed to remove object \"%s\"", object);
-}
-
-void event_signal(event_t* event)
-{
-	SetEvent(*event);
-	ResetEvent(*event);
-}
-
 struct AspirationState_
 {
 	int depth_, alpha_, beta_, delta_;
 };
-constexpr AspirationState_ ASPIRATION_INIT = { 0, -200, 200, 50 };
+constexpr AspirationState_ ASPIRATION_INIT = { 2, -200, 200, 50 };
 
 struct RootScores_
 {
@@ -1282,7 +997,11 @@ struct RootScores_
 		if (depth >= results_.size())
 			results_.resize(depth + 1, { 0, 0, -MateValue, -MateValue });
 		if (score >= results_[depth].lower_)
+		{
 			results_[depth] = { depth, move, score, score < beta ? score : MateValue };
+			if (TheShare.depth_ < depth)
+				TheShare.depth_ = depth;
+		}
 	}
 	void clear() { results_.clear(); }
 	bool empty() const 
@@ -1349,58 +1068,6 @@ struct Settings_
 	string tbPath;
 } SETTINGS;
 
-void mutex_lock1(mutex_t *mutex, int lineno)
-{
-	mutex_lock0(mutex);
-	if (SHARED && !SHARED->working.Empty())
-	{
-		string what = "id name locked to " + Str(GetCurrentProcessId()) + " at " + Str(lineno) + "\n";
-		put_line(what.c_str(), what.size());
-	}
-}
-void mutex_unlock1(mutex_t *mutex, int lineno)
-{
-	if (SHARED && !SHARED->search_.stopAll_)
-	{
-		char line[64];
-		int len = snprintf(line, sizeof(line) - 1, "id name unlocked by %d at %d\n", GetCurrentProcessId(), lineno);
-		put_line(line, len);
-	}
-	mutex_unlock0(mutex);
-}
-
-#define mutex_lock(M) mutex_lock1(M, __LINE__)
-#define mutex_unlock(M) mutex_unlock1(M, __LINE__)
-
-
-struct SharedLock_
-{
-	int line_;
-	SharedLock_(int line) : line_(line)
-	{
-		mutex_lock0(&SHARED->mutex);
-	}
-	~SharedLock_()
-	{
-		mutex_unlock0(&SHARED->mutex);
-	}
-};
-#define LOCK_SHARED SharedLock_ _(__LINE__);
-
-void Say(const string& what)
-{
-	if (SHARED)
-		mutex_lock0(&SHARED->outMutex);
-	put_line(what.c_str(), what.size());
-	if (SHARED)
-		mutex_unlock0(&SHARED->outMutex);
-}
-#ifdef VERBOSE
-#define VSAY Say
-static int debug_loc = 0;
-#else
-#define VSAY(x)
-#endif
 
 vector<GEntry> TheHash(SETTINGS.nHashClusters * HASH_CLUSTER);
 INLINE GEntry* HashStart(uint64 key)
@@ -1580,7 +1247,7 @@ static std::ofstream SHOUT("C:\\dev\\debug.txt");
 constexpr int TheMemorySize = 200;
 struct MemEntry_
 {
-	GData d_;
+	PlyState_ d_;
 	Board_ b_;
 	int line_;
 };
@@ -1598,7 +1265,7 @@ struct MoveScope_
 };
 void AccessViolation(const State_& state, uint64 seed)	// any nonzero input should fail
 {
-	Say(Str(state[0].patt[(seed >> 32) | (seed << 32)]));
+	cout << (Str(state[0].patt[(seed >> 32) | (seed << 32)]));
 }
 void UpdateDebug(const State_& state, int line)
 {
@@ -2011,11 +1678,14 @@ void init_eval(CommonData_* data)
 	init_mobility(MobCoeffsBishop, &data->MobBishop);
 	init_mobility(MobCoeffsRook, &data->MobRook);
 	init_mobility(MobCoeffsQueen, &data->MobQueen);
-	data->LocusK = MakeLoci(Locus::KDist, N_LOCUS);
-	data->LocusQ = MakeLoci(Locus::MinorDist_(QMask, 7.0, 4.0, 1.6), N_LOCUS);
-	data->LocusR = MakeLoci(Locus::RDist_(3.0, 4.0), N_LOCUS);
-	data->LocusB = MakeLoci(Locus::MinorDist_(BMask, 9.0, 5.0, 1.6), N_LOCUS);
-	data->LocusN = MakeLoci(Locus::MinorDist_(NAtt, 2.0, 1.0, 1.6), N_LOCUS);
+	for (int me = 0; me < 2; ++me)
+	{
+		data->LocusK[me] = MakeLoci(Locus::KDist, N_LOCUS);
+		data->LocusQ[me] = MakeLoci(Locus::MinorDist_(me, QMask, 7.0, 4.0, 1.6, 0.0), N_LOCUS);
+		data->LocusR[me] = MakeLoci(Locus::RDist_(3.0, 4.0), N_LOCUS);
+		data->LocusB[me] = MakeLoci(Locus::MinorDist_(me, BMask, 9.0, 5.0, 1.6, 0.0), N_LOCUS);
+		data->LocusN[me] = MakeLoci(Locus::MinorDist_(me, NAtt, 2.0, 1.0, 1.6, 0.0), N_LOCUS);
+	}
 
 	for (int i = 0; i < 3; ++i)
 		for (int j = 7; j >= 0; --j)
@@ -2851,7 +2521,7 @@ void setup_board(std::array<uint8, 64> squares, State_* state)
 {
 	int i;
 
-	GData* current = state->current_;
+	PlyState_* current = state->current_;
 	Board_* board = &state->board_;
 	current->material = 0;
 	board->square = squares;
@@ -2897,7 +2567,7 @@ const char* get_board(const char* fen, State_* state)
 
 	state->current_ = &state->stack_[0];
 	memset(&state->board_, 0, sizeof(Board_));
-	memset(state->current_, 0, sizeof(GData));
+	memset(state->current_, 0, sizeof(PlyState_));
 	pos = 0;
 	c = fen[pos];
 	while (c == ' ') c = fen[++pos];
@@ -2974,6 +2644,8 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 	state->DeltaVals = {};
 	state->Ref = {};
 	state->ClearStack();
+	TheShare.depth_ = 0;
+	TheShare.firstMove_ = true;
 	if (clear_hash)
 	{
 		TheShare.date_ = 1;
@@ -2990,7 +2662,7 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 	SetRootMoves(info);
 }
 
-INLINE GEntry* probe_hash(const GData& current)
+INLINE GEntry* probe_hash(const PlyState_& current)
 {
 	GEntry* start = HashStart(current.key);
 	for (GEntry* Entry = start; Entry < start + HASH_CLUSTER; ++Entry)
@@ -3002,7 +2674,7 @@ INLINE GEntry* probe_hash(const GData& current)
 	return nullptr;
 }
 
-INLINE GPVEntry* probe_pv_hash(const GData& current)
+INLINE GPVEntry* probe_pv_hash(const PlyState_& current)
 {
 	GPVEntry* start = &ThePVHash[High32(current.key) & PV_HASH_MASK];
 	for (GPVEntry* PVEntry = start; PVEntry < start + PV_CLUSTER; ++PVEntry)
@@ -3033,8 +2705,8 @@ template<bool me> void do_move(State_* state, int move)
 	GEntry* Entry;
 	GPawnEntry* PawnEntry;
 	int from, to, piece, capture;
-	GData* current = state->current_;
-	GData* next = state->current_ + 1;
+	PlyState_* current = state->current_;
+	PlyState_* next = state->current_ + 1;
 	Board_* board = &state->board_;
 	uint64 u, mask_from, mask_to;
 
@@ -3228,7 +2900,7 @@ template<bool me> void undo_move(State_* state, int move)
 	const int from = From(move), to = To(move);
 	uint64 bFrom = Bit(from), bTo = Bit(to);
 	int piece;
-	GData* current = state->current_;
+	PlyState_* current = state->current_;
 	Board_* board = &state->board_;
 
 	if (IsPromotion(move))
@@ -3285,8 +2957,8 @@ INLINE void undo_move(State_* state, bool me, int move)
 
 void do_null(State_* state)
 {
-	GData* current = state->current_;
-	GData* next = state->current_ + 1;
+	PlyState_* current = state->current_;
+	PlyState_* next = state->current_ + 1;
 
 	next->key = current->key ^ RO->TurnKey;
 	GEntry* Entry = HashStart(next->key);
@@ -3517,7 +3189,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 				}
 			}
 		}
-		if (open && F(PIsolated[file] & Forward[me][rank] & board.Pawn(opp)))
+		if (open && F(PCone[me][sq] & board.Pawn(opp)))
 		{
 			PawnEntry->passer[me] |= (uint8)(1 << file);
 			if (rrank < 3) 
@@ -3654,8 +3326,8 @@ template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI, const State
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobQueen[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusQ[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
-		IncV(EI.score, RO->MobQueen[1][pop(control & RO->LocusQ[EI.king[opp]])]);
+		FakeV(EI.score, (64 * pop(control & RO->LocusQ[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
+		IncV(EI.score, RO->MobQueen[1][pop(control & RO->LocusQ[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalQueenPawn);
 		if (control & board.Minor(opp))
@@ -3734,8 +3406,8 @@ template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const State_
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobRook[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusR[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
-		IncV(EI.score, RO->MobRook[1][pop(control & RO->LocusR[EI.king[opp]])]);
+		FakeV(EI.score, (64 * pop(control & RO->LocusR[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
+		IncV(EI.score, RO->MobRook[1][pop(control & RO->LocusR[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalRookPawn);
 		if (control & board.Minor(opp))
@@ -3839,8 +3511,8 @@ template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI, const Stat
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobBishop[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusB[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
-		IncV(EI.score, RO->MobBishop[1][pop(control & RO->LocusB[EI.king[opp]])]);
+		FakeV(EI.score, (64 * pop(control & RO->LocusB[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
+		IncV(EI.score, RO->MobBishop[1][pop(control & RO->LocusB[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalBishopPawn);
 		if (control & board.Knight(opp))
@@ -3883,8 +3555,8 @@ template<bool me, class POP> INLINE packed_t eval_knights(GEvalInfo& EI, const S
 		NOTICE(EI.score, pop(control));
 		IncV(EI.score, RO->MobKnight[0][pop(control)]);
 		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusN[EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
-		IncV(EI.score, RO->MobKnight[1][pop(control & RO->LocusN[EI.king[opp]])]);
+		FakeV(EI.score, (64 * pop(control & RO->LocusN[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
+		IncV(EI.score, RO->MobKnight[1][pop(control & RO->LocusN[me][EI.king[opp]])]);
 		if (control & board.Bishop(opp))
 			IncV(EI.score, Values::TacticalN2B);
 		if (att & EI.area[me])
@@ -3935,11 +3607,11 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI, const State_& 
 	// add a correction for defense-in-depth
 	if (adjusted > 1)
 	{
-		uint64 holes = RO->LocusK[EI.king[opp]] & ~state[0].att[opp];
+		uint64 holes = RO->LocusK[me][EI.king[opp]] & ~state[0].att[opp];
 		int nHoles = pop(holes);
 		int nIncursions = pop(holes & state[0].att[me]);
 		uint64 personnel = board.NonPawnKing(opp);
-		uint64 guards = RO->LocusK[EI.king[opp]] & personnel;
+		uint64 guards = RO->LocusK[me][EI.king[opp]] & personnel;
 		uint64 awol = personnel ^ guards;
 		int nGuards = pop(guards) + pop(guards & board.Queen(opp));
 		int nAwol = pop(awol) + pop(awol & board.Queen(opp));
@@ -3971,7 +3643,7 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const State_
 		if (rank <= 2)
 			continue;
 		if (!board.PieceAt(sq + Push[me]))
-			IncV(EI.score, PasserValues::Blocked[rank]);
+			IncV(EI.score, PasserValues::Movable[rank]);
 		uint64 way = PWay[me][sq];
 		int connected = 0, supported = 0, hooked = 0, unsupported = 0, free = 0;
 		if (!(way & board.Piece(opp)))
@@ -4140,7 +3812,7 @@ template<class POP> void evaluation(State_* state)
 	POP pop;
 	GEvalInfo EI;
 	const Board_& board = state->board_;
-	GData* current = state->current_;
+	PlyState_* current = state->current_;
 
 	if (current->eval_key == current->key)
 		return;
@@ -4196,8 +3868,6 @@ template<class POP> void evaluation(State_* state)
 	}
 	else
 	{
-		if (!EI.material)
-			Say("No material");
 		const GMaterial& mat = *EI.material;
 		PhasedScore_<POP> value(*state, mat);
 		current->score = mat.score + value(EI.score);
@@ -4577,7 +4247,7 @@ void hash_high_update(GEntry* Entry, int value, int depth)
 	}
 }
 
-void hash_high(const GData& current, int value, int depth, bool force_update)
+void hash_high(const PlyState_& current, int value, int depth, bool force_update)
 {
 	int i;
 	GEntry* best, *Entry;
@@ -4633,7 +4303,7 @@ int hash_low_update(GEntry* Entry, int move, int value, int depth)
 	return value;
 }
 
-int hash_low(const GData& current, int move, int value, int depth, bool force_update)
+int hash_low(const PlyState_& current, int move, int value, int depth, bool force_update)
 {
 	int i;
 	GEntry* best, *Entry;
@@ -4661,7 +4331,7 @@ int hash_low(const GData& current, int move, int value, int depth, bool force_up
 	return value;
 }
 
-void hash_exact(const GData& current, int move, int value, int depth, int exclusion, int ex_depth, int knodes)
+void hash_exact(const PlyState_& current, int move, int value, int depth, int exclusion, int ex_depth, int knodes)
 {
 	GPVEntry* best;
 	GPVEntry* PVEntry;
@@ -4706,7 +4376,7 @@ void hash_exact(const GData& current, int move, int value, int depth, int exclus
 	best->ply = current.ply;
 }
 
-template<bool me, bool pv> INLINE int extension(const GData& current, int move, int depth)
+template<bool me, bool pv> INLINE int extension(const PlyState_& current, int move, int depth)
 {
 	int from = From(move);
 	if (HasBit(current.passer, from))
@@ -4747,7 +4417,7 @@ template<class I> void sort_moves(I start, I finish)
 	stable_sort(start, finish, better);
 }
 
-INLINE int pick_move(GData* current)
+INLINE int pick_move(PlyState_* current)
 {
 	int move = *(current->current);
 	if (F(move))
@@ -4773,7 +4443,7 @@ INLINE void apply_wobble(void* p, int* move, int depth)
 	*move += (mp + depth + (static_cast<int>(reinterpret_cast<sint64>(p) >> 12))) % (SETTINGS.wobble + 1);	// (minimal) bonus for right parity
 }
 
-INLINE bool is_killer(const GData& current, uint16 move)
+INLINE bool is_killer(const PlyState_& current, uint16 move)
 {
 	for (int ik = 1; ik <= N_KILLER; ++ik)
 		if (move == current.killer[ik])
@@ -4815,7 +4485,7 @@ template<bool me> inline bool IsGoodCap(const State_& state, int move)
 
 template<bool me> void gen_next_moves(State_* state, int depth)
 {
-	GData* current = state->current_;
+	PlyState_* current = state->current_;
 	const Board_& board = state->board_;
 
 	int* p, *q, *r;
@@ -4897,7 +4567,9 @@ template<bool me> void gen_next_moves(State_* state, int depth)
 
 template<bool me> int NextMove(State_* state, int depth)
 {
-	GData* current = state->current_;
+	constexpr int StageNone = (1 << s_none) | (1 << e_none) | (1 << r_none);
+
+	PlyState_* current = state->current_;
 	int move;
 
 	for ( ; ; )
@@ -5163,7 +4835,7 @@ template<bool me> void gen_root_moves(State_* state)
 {
 	evaluate(state);	// populate attacks etc
 
-	GData& current = *state->current_;
+	PlyState_& current = *state->current_;
 	const Board_& board = state->board_;
 	int depth = -16;
 
@@ -5204,12 +4876,6 @@ template<bool me> void gen_root_moves(State_* state)
 			continue;
 		if (find(RootList.begin(), RootList.end(), move) != RootList.end())
 			continue;	// most like re-trying killer move
-		if (SearchMoves)
-		{
-			auto stop = &SMoves[SMPointer];
-			if (find(&SMoves[0], stop, move) == stop)
-				continue;
-		}
 		RootList.push_back(move);
 	}
 }
@@ -5397,13 +5063,13 @@ template<bool me> int* gen_evasions(State_* state)
 }
 
 
-template<bool me> INLINE uint64 PawnJoins(const GData& current)
+template<bool me> INLINE uint64 PawnJoins(const PlyState_& current)
 {
 	auto threat = current.att[opp] & current.passer;
 	return Shift<me>(current.passer) | ShiftW<opp>(threat) | ShiftE<opp>(threat);
 }
 
-INLINE bool can_castle(const GData& current, const uint64& occ, bool me, bool kingside)
+INLINE bool can_castle(const PlyState_& current, const uint64& occ, bool me, bool kingside)
 {
 	if (me == White)
 	{
@@ -5606,7 +5272,7 @@ template<bool me> int* gen_checks(int* list, const State_& state)
 template<bool me> int* gen_delta_moves(int* list, State_* state, int margin)
 {
 	const Board_& board = state->board_;
-	const GData& current = *state->current_;
+	const PlyState_& current = *state->current_;
 	uint64 occ = board.PieceAll(), free = ~occ;
 
 	if (me == White)
@@ -5676,7 +5342,7 @@ int time_to_stop(const SearchInfo_& SI, int time, int searching)
 		return 1;
 	if (time > TheTimeLimit.softLimit_)
 		return 1;
-	if (SI.change_ || SI.failLow_)
+	if (TheShare.firstMove_ || SI.change_ || SI.failLow_)
 		return 0;
 	if (time * 100 > TheTimeLimit.softLimit_ * TimeNoChangeMargin)
 		return 1;
@@ -5768,7 +5434,7 @@ inline void stop()
 template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
-	const GData& current = *state->current_;
+	const PlyState_& current = *state->current_;
 	int i, value, score, move, hash_move, hash_depth;
 	auto finish = [&](int score, bool did_delta_moves)
 	{
@@ -5976,8 +5642,8 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
-	const GData& current = *state->current_;
-	int i, value, pext, score, move, cnt, hash_move, hash_depth;
+	const PlyState_& current = *state->current_;
+	int i, value, pext = 0, score, move, cnt, hash_move, hash_depth;
 	int* p;
 
 	score = state->Height() - MateValue;
@@ -6027,7 +5693,6 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 		pext = 1;
 	else
 	{
-		pext = 0;
 		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
 		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
 		mark_evasions(state->current_->moves, state);
@@ -6146,7 +5811,7 @@ template<int me> void check_recapture(const State_& state, int to, int depth, in
 template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
-	const GData& current = *state->current_;
+	const PlyState_& current = *state->current_;
 
 	auto abort = [](int score) {return HashResult_({ true, score, 0, 0, }); };
 	if (flags & FlagCallEvaluation)
@@ -6350,7 +6015,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 template<bool me, bool exclusion, bool evasion> int scout(State_* state, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
-	const GData& current = *state->current_;
+	const PlyState_& current = *state->current_;
 
 	int height = state->Height();
 	if (height > 100)
@@ -6437,7 +6102,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 
 	bool forced = evasion && F(current.moves[1]);
 	int move_back = 0;
-	if (beta > 0 && current.ply >= 2 && F((*state)[1].move & 0xF000))
+	if (beta > 0 && height >= 2 && current.ply >= 2 && F((*state)[1].move & 0xF000))
 	{
 		int pvsMove = (*state)[1].move;
 		move_back = (To(pvsMove) << 6) | From(pvsMove);
@@ -6552,7 +6217,7 @@ void send_curr_move(int move, int cnt)
 	InfoTime = currTime;
 	char moveStr[16];
 	move_to_string(move, moveStr);
-	Say("info currmove " + string(moveStr) + " currmovenumber " + Str(cnt) + "\n");
+	printf("info currmove %s currmovenumber %d\n", moveStr, cnt);
 }
 
 void send_multipv(int depth, int curr_number)
@@ -6570,7 +6235,7 @@ struct Thread_
 
 template<bool me> int RootMove(Thread_* self, int depth)
 {
-	GData* current = self->state_.current_;
+	PlyState_* current = self->state_.current_;
 	int move = (*current->current) & 0xFFFF;
 	current->current++;
 	return move;
@@ -6582,7 +6247,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 {
 	bool RootList = false;	// hide global RootList; we use only self->own_.rootList_
 	State_* state = &self->state_;
-	const GData& current = *state->current_;
+	const PlyState_& current = *state->current_;
 	const Board_& board = state->board_;
 
 	int value, move, cnt, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
@@ -6626,7 +6291,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	{
 		hash_low(current, PVEntry->move, PVEntry->value, PVEntry->depth, true);
 		hash_high(current, PVEntry->value, PVEntry->depth, true);
-		if (PVEntry->depth >= depth && T(PVHashing))
+		if (PVEntry->depth >= depth)
 		{
 			if (PVEntry->move)
 				current.best = PVEntry->move;
@@ -6663,7 +6328,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	if (root)
 	{
 		hash_move = self->own_.rootList_[0];
-		hash_value = Previous;
+		hash_value = TheShare.pvsScore_;
 		hash_depth = Max(0, depth - 2);
 	}
 
@@ -6691,7 +6356,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			if (current.best)
 				hash_move = current.best;
 			hash_depth = new_depth;
-			hash_value = value;
+			TheShare.pvsScore_ = hash_value = value;
 		}
 	}
 	if (F(root) && IsCheck(*state, me))
@@ -6792,8 +6457,11 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		state->current_->current = state->current_->moves;
 
 	LMR_<1> reduction_n(depth);
+	bool rootIsBest = true;
 	while (move = (root ? RootMove<me>(self, depth) : NextMove<me>(state, depth)))
 	{
+		if (root && depth < TheShare.depth_)
+			break;
 		if (move == hash_move)
 			continue;
 		if (IsIllegal(*state, me, move))
@@ -6845,6 +6513,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			{
 				SetScore(&self->own_.rootList_[cnt - 1], cnt + 3);
 				state->searchInfo_.change_ = true;
+				rootIsBest = false;
 				state->searchInfo_.failLow_ = false;
 				hash_low(current, move, value, depth, false);
 				// only send PV on return to aspiration window
@@ -6855,20 +6524,19 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			alpha = value;
 		}
 	}
+	if (root && rootIsBest)
+		state->searchInfo_.change_ = false;
 	if (F(cnt) && !IsCheck(*state, me))
 	{
 		hash_exact(current, 0, 0, 127, 0, 0, 0);
 		return 0;
 	}
-	if (F(root) || F(SearchMoves))
-		hash_high(current, alpha, depth, false);
+	hash_high(current, alpha, depth, false);
 	if (alpha > old_alpha)
 	{
-		hash_low(current, current.best, alpha, depth, false);
 		if (current.best != hash_move)
 			ex_depth = 0;
-		if (F(root) || F(SearchMoves))
-			hash_exact(current, current.best, alpha, depth, ex_value, ex_depth, static_cast<int>(state->nodes_ >> 10) - start_knodes);
+		hash_exact(current, current.best, alpha, depth, ex_value, ex_depth, static_cast<int>(state->nodes_ >> 10) - start_knodes);
 	}
 	return alpha;
 }
@@ -7013,15 +6681,13 @@ void aspirationWindow(Thread_* thread)
 	constexpr int MinUpdateDepth = 10;
 
 	AspirationState_& window = thread->own_.window_;
-	window.delta_ = ExpandDelta(0);
-	auto update = [&](score_t score)
-		{
-			window.alpha_ = Max<int>(-MateValue, score - window.delta_);
-			window.beta_ = Min<int>(MateValue, score + window.delta_);
-		};
-
 	int depth = window.depth_;
-	if (auto h = probe_pv_hash(*thread->state_.current_))
+	if (auto best = thread->own_.results_.best(); best.move_ != 0 && best.lower_ > -MateValue)
+	{
+		window.alpha_ = Max(-MateValue, best.lower_ - window.delta_);
+		window.beta_ = best.upper_ + 1;
+	}
+	else if (auto h = probe_pv_hash(*thread->state_.current_))
 	{
 		if (h->move)
 			thread->own_.results_.Add(h->move, h->value, h->depth, h->value - 1, h->value + 1);
@@ -7046,8 +6712,12 @@ void aspirationWindow(Thread_* thread)
 		{
 			if (score > window.alpha_)
 			{
-				if (window.depth_ > MinUpdateDepth)
-					update(score);
+				if (depth > MinUpdateDepth)
+				{
+					window.delta_ = ExpandDelta(0);
+					window.alpha_ = Max<int>(-MateValue, score - window.delta_);
+					window.beta_ = Min<int>(MateValue, score + window.delta_);
+				}
 				return;
 			}
 
@@ -7078,20 +6748,17 @@ void iterativeDeepening(Thread_* thread, const LimitInputs_& limits)
 	// Bind when we expect to deal with NUMA
 	//if (thread->nthreads > 8)
 	//    bindThisThread(thread->index);
-	constexpr uint64 MAX_INDEX = 256, SKIP_INDEX = 1;
 
 	// Perform iterative deepening until exit conditions
 	try
 	{
 		AspirationState_& window = thread->own_.window_ = ASPIRATION_INIT;
-		window.depth_ = 2;
-		if (auto pvEntry = probe_pv_hash(*thread->state_.current_))
-			window.depth_ = pvEntry->depth;
 
 		for (; window.depth_ < MaxDepth; window.depth_ += 2)
 		{
-			if (thread->own_.iThread_ > 0 && ((Rand16() + 97 * thread->own_.iThread_) % MAX_INDEX) < SKIP_INDEX)
-				continue;
+			if (auto pvEntry = probe_pv_hash(*thread->state_.current_))
+				window.depth_ = Max(window.depth_, pvEntry->depth + 2);
+
 			// Perform a search for the current depth for each requested line of play
 			aspirationWindow(thread);
 			// if (IS_PONDERING) continue;
@@ -7150,7 +6817,7 @@ void get_position(char src[], State_* state)
 			else
 				do_move<0>(state, move);
 			// push this down the stack
-			memcpy(&state->stack_[0], state->current_, sizeof(GData));
+			memcpy(&state->stack_[0], state->current_, sizeof(PlyState_));
 			state->current_ = &state->stack_[0];
 			while (*ptr == ' ') ++ptr;
 		}
@@ -7185,7 +6852,7 @@ namespace Version
 
 void SetTimeLimit(const LimitInputs_& input, int ply = 0)
 {
-	constexpr int MovesTg = 32, TimeRatio = 120;
+	constexpr int MovesTg = 26, TimeRatio = 120;
 
 	int time_max = Max(input.time - Min(1000, (3 * input.time) / 4), 0);
 	int nmoves;
@@ -7213,6 +6880,7 @@ void SetTimeLimit(const LimitInputs_& input, int ply = 0)
 
 	TheTimeLimit.softLimit_ = softTimeLimit;
 	TheTimeLimit.hardLimit_ = hardTimeLimit;
+	printf("info time limits soft %d hard %d\n", softTimeLimit, hardTimeLimit);
 }
 
 
@@ -7342,9 +7010,6 @@ UCIResponse_ getBestMove(vector<Thread_>& threads, const State_& state, const Li
 	// somewhere to store the results of each iteration by the main, and
 	// our own copy of the state. Also, we reset the seach statistics
 
-	LastSpeed = 0;
-	PVN = 1;
-	SearchMoves = 0;
 	for (auto& thread : threads)
 	{
 		thread.state_.Reset(state);
@@ -7411,6 +7076,8 @@ void start_search_threads(vector<Thread_>* threads_in, const State_* state_in, c
 	char str[6];
 	move_to_string(uciMove.best, str);
 	printf("bestmove %s score %d", str, uciMove.score / CP_SEARCH);
+	TheShare.firstMove_ = false;
+	TheShare.pvsScore_ = uciMove.score;
 
 	// Report ponder move ( if we have one )
 	if (uciMove.ponder != 0) 

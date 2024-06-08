@@ -1,6 +1,4 @@
 
-#ifdef BE_ETHEREAL
-
 /// Roc and Platform
 #include "Base/Platform.h"
 #include <array>
@@ -686,17 +684,13 @@ constexpr array<uint64, N_SQUARES> BishopMagics = {
 };
 
 // Pyrrhic -- must see kingAttacks etc
-
-extern int TB_LARGEST;   // Set by Pyrrhic in tb_init()
+namespace
+{
+    extern int TB_LARGEST;   // Set by Pyrrhic in tb_init()
 #include "pyrrhic/tbprobe.cpp"
-using namespace std;    // only after pyrrhic
+    using namespace std;    // only after pyrrhic
+}   // leave local
 
-
-
-// these are from move.h
-
-
-/// masks.h
 
 /// masks.c
 
@@ -5561,10 +5555,10 @@ bool tt_probe(uint64 hash, int height, uint16_t* move, int* value, int* eval, in
     const uint16_t hash16 = hash >> 48;
     TTEntry* slots = Table.buckets[hash & Table.hashMask].slots;
 
-    for (int i = 0; i < TT_BUCKET_NB; i++) {
-
-        if (slots[i].hash16 == hash16) {
-
+    for (int i = 0; i < TT_BUCKET_NB; i++) 
+    {
+        if (slots[i].hash16 == hash16) 
+        {
             slots[i].generation = Table.generation | (slots[i].generation & TT_MASK_BOUND);
 
             *move = slots[i].move;
@@ -6127,7 +6121,7 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     int movesSeen = 0, quietsPlayed = 0, capturesPlayed = 0, played = 0;
     int ttHit = 0, ttValue = 0, ttEval = VALUE_NONE, ttDepth = 0, tbBound, ttBound = 0;
     int R, newDepth, rAlpha, rBeta, oldAlpha = alpha;
-    int inCheck, isQuiet, improving, extension, singular, skipQuiets = 0;
+    int inCheck, isQuiet, extension, singular, skipQuiets = 0;
     int eval, value, best = -MATE, syzygyMax = MATE, syzygyMin = -MATE, seeMargin[2];
     uint16_t move, ttMove = NONE_MOVE, bestMove = NONE_MOVE;
     uint16_t quietsTried[MAX_MOVES], capturesTried[MAX_MOVES];
@@ -6257,7 +6251,7 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     seeMargin[1] = SEEQuietMargin * depth;
 
     // Improving if our static eval increased in the last move
-    improving = !inCheck && eval > (ns - 2)->eval;
+    bool improving = !inCheck && eval > (ns - 2)->eval;
 
     // Reset Killer moves for our children
     std::fill(thread->killers[thread->height + 1].begin(), thread->killers[thread->height + 1].end(), NONE_MOVE);
@@ -7813,6 +7807,4 @@ int e_main(int argc, char** argv)
 
     return 0;
 }
-
-#endif
 
