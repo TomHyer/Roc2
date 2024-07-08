@@ -178,14 +178,14 @@ struct State_
 	SearchInfo_ searchInfo_;
 	std::vector<uint64> hashHist_;
 
-	array<array<array<uint16, 2>, 64>, 16> HistoryVals;
-	array<sint16, 16 * 4096> DeltaVals;
-	array<GRef, 16 * 64> Ref;
+	std::vector<array<array<uint16, 2>, 64>> historyVals_;
+	std::vector<sint16> deltaVals_;
+	std::vector<GRef> ref_;
 	uint64 nodes_, tbHits_;
 
 	std::vector<GPawnEntry> pawnHash_;
 
-	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH) {}
+	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH), historyVals_(16), deltaVals_(16 * 4096), ref_(16 * 64) {}
 
 	void ClearStack() 
 	{ 
@@ -200,15 +200,15 @@ struct State_
 		searchInfo_ = exemplar.searchInfo_;
 		hashHist_ = exemplar.hashHist_;
 
-		HistoryVals = exemplar.HistoryVals;
-		for (auto& hp : HistoryVals)
+		historyVals_ = exemplar.historyVals_;
+		for (auto& hp : historyVals_)
 			for (auto& hs: hp)
 				for (auto& hv: hs)
 					if (F(hv & 0x00FF))
 						hv = 1;
 
-		DeltaVals = exemplar.DeltaVals;
-		Ref = exemplar.Ref;
+		deltaVals_ = exemplar.deltaVals_;
+		ref_ = exemplar.ref_;
 		nodes_ = tbHits_ = 0;
 
 		if (exemplar.pawnHash_.size() == N_PAWN_HASH)
@@ -527,7 +527,7 @@ INLINE uint16 JoinFlag(uint16 move)
 }
 INLINE uint16& HistoryScore(State_* state, int join, int piece, int from, int to)
 {
-	return state->HistoryVals[piece][to][join];
+	return state->historyVals_[piece][to][join];
 }
 INLINE int HistoryMerit(uint16 hs)
 {
@@ -579,7 +579,7 @@ INLINE int* AddHistoryP(State_* state, int* list, int piece, int from, int to, i
 
 INLINE sint16& DeltaScore(State_* state, int piece, int from, int to)
 {
-	return state->DeltaVals[(piece << 12) | (from << 6) | to];
+	return state->deltaVals_[(piece << 12) | (from << 6) | to];
 }
 INLINE sint16& Delta(State_* state, int from, int to)
 {
@@ -598,7 +598,7 @@ INLINE int* AddCDeltaP(State_* state, int* list, int margin, int piece, int from
 
 INLINE GRef& RefPointer(State_* state, int piece, int from, int to)
 {
-	return state->Ref[((piece) << 6) | (to)];
+	return state->ref_[((piece) << 6) | (to)];
 }
 INLINE GRef& RefM(State_* state, int move)
 {
@@ -1492,9 +1492,8 @@ void gen_kpk(CommonData_* data)
 {
 	int turn, wp, wk, bk, to, cnt, old_cnt, un;
 	uint64 bwp, bwk, bbk, u;
-	uint8 Kpk_gen[2][64][64][64];
-
-	memset(Kpk_gen, 0, 2 * 64 * 64 * 64);
+	typedef array<array<array<uint8, 64>, 64>, 64> kpkgen_e;
+	vector<kpkgen_e> Kpk_gen(2);
 
 	cnt = 0;
 	old_cnt = 1;
@@ -2637,12 +2636,12 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 	for (int ip = 0; ip < 16; ++ip)
 		for (int it = 0; it < 64; ++it)
 		{
-			state->HistoryVals[ip][it][0] = (1 << 8) | 2;
-			state->HistoryVals[ip][it][1] = (1 << 8) | 2;
+			state->historyVals_[ip][it][0] = (1 << 8) | 2;
+			state->historyVals_[ip][it][1] = (1 << 8) | 2;
 		}
 
-	state->DeltaVals = {};
-	state->Ref = {};
+	std::fill(state->deltaVals_.begin(), state->deltaVals_.end(), 0);
+	std::fill(state->ref_.begin(), state->ref_.end(), GRef{});
 	state->ClearStack();
 	TheShare.depth_ = 0;
 	TheShare.firstMove_ = true;
@@ -6271,7 +6270,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		sort_moves(rootList.begin(), rootList.end());
 		for (auto& m : rootList)
 			m &= 0xFFFF;
-		SetScore(&rootList[0], 2);
+		SetMoveScore(&rootList[0], 2);
 	}
 	else
 	{
@@ -6497,7 +6496,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		{
 			if (root)
 			{
-				SetScore(&self->own_.rootList_[cnt - 1], 1);
+				SetMoveScore(&self->own_.rootList_[cnt - 1], 1);
 				state->searchInfo_.early_ = false;
 			}
 			new_depth = depth - 2 + ext;
@@ -6511,7 +6510,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		{
 			if (root)
 			{
-				SetScore(&self->own_.rootList_[cnt - 1], cnt + 3);
+				SetMoveScore(&self->own_.rootList_[cnt - 1], cnt + 3);
 				state->searchInfo_.change_ = true;
 				rootIsBest = false;
 				state->searchInfo_.failLow_ = false;

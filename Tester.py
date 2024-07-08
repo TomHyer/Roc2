@@ -14,7 +14,8 @@ from collections import defaultdict
 ResultFile = "TestResults.csv"
 TcecFile = 'D:/data/Ethereal_12_00_64-bit.commented.[1535].pgn'
 ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 12, [1000, 2500]
-ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Gull 3 x64 syzygy.exe', 'Ethereal11.25-x64-nopopcnt.exe']
+#ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Gull 3 x64 syzygy.exe', 'Ethereal11.25-x64-nopopcnt.exe']
+ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Gull 3 x64 syzygy.exe']
 #ENGINES = ['Base/Roc.exe', 'Test/Roc.exe', 'Ethereal11.25-x64-nopopcnt.exe']
 #ENGINES = ['Base/Roc.exe', 'Test/Roc.exe']
 SENTINEL_FN, HALT_MSG = 'tester.live', "No sentinel; halting"
