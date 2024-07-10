@@ -5946,12 +5946,12 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
         return evaluateBoard(thread, state);
 
     // Step 4. Probe the Transposition Table, adjust the value, and consider cutoffs
-    if ((ttHit = tt_probe(state->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) {
-
+    if ((ttHit = tt_probe(state->hash, thread->height, &ttMove, &ttValue, &ttEval, &ttDepth, &ttBound))) 
+    {
         // Table is exact or produces a cutoff
         if (ttBound == BOUND_EXACT
-            || (ttBound == BOUND_LOWER && ttValue >= beta)
-            || (ttBound == BOUND_UPPER && ttValue <= alpha))
+                || (ttBound == BOUND_LOWER && ttValue >= beta)
+                || (ttBound == BOUND_UPPER && ttValue <= alpha))
             return ttValue;
     }
 

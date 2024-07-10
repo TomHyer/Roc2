@@ -150,9 +150,8 @@ typedef struct
 
 typedef struct
 {
-	uint16 ref[2];
-	uint16 check_ref[2];
-} GRef;
+	array<uint16, 2> moves_;
+} Ref1_;
 
 struct TimeLimits_
 {
@@ -168,7 +167,7 @@ struct SearchInfo_
 
 constexpr int N_PAWN_HASH = 1 << 17;
 constexpr int PAWN_HASH_MASK = N_PAWN_HASH - 1;
-
+constexpr uint64 N_REF_1 = 4096, N_REF_MULTI = 62717;
 
 struct State_
 {
@@ -180,12 +179,12 @@ struct State_
 
 	std::vector<array<array<uint16, 2>, 64>> historyVals_;
 	std::vector<sint16> deltaVals_;
-	std::vector<GRef> ref_;
+	std::vector<Ref1_> ref1_;
 	uint64 nodes_, tbHits_;
 
 	std::vector<GPawnEntry> pawnHash_;
 
-	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH), historyVals_(16), deltaVals_(16 * 4096), ref_(16 * 64) {}
+	State_() : current_(&stack_[0]), pawnHash_(N_PAWN_HASH), historyVals_(16), deltaVals_(16 * 4096), ref1_(N_REF_1) {}
 
 	void ClearStack() 
 	{ 
@@ -208,7 +207,7 @@ struct State_
 						hv = 1;
 
 		deltaVals_ = exemplar.deltaVals_;
-		ref_ = exemplar.ref_;
+		ref1_ = exemplar.ref1_;
 		nodes_ = tbHits_ = 0;
 
 		if (exemplar.pawnHash_.size() == N_PAWN_HASH)
@@ -595,34 +594,6 @@ INLINE int* AddCDeltaP(State_* state, int* list, int margin, int piece, int from
 			? list
 			: AddMove(list, from, to, flags, (DeltaScore(state, piece, from, to) + 0x4000) << 16);
 }
-
-INLINE GRef& RefPointer(State_* state, int piece, int from, int to)
-{
-	return state->ref_[((piece) << 6) | (to)];
-}
-INLINE GRef& RefM(State_* state, int move)
-{
-	return RefPointer(state, state->board_.PieceAt(To(move)), From(move), To(move));
-}
-INLINE void UpdateRef(State_* state, int ref_move)
-{
-	auto& dst = RefM(state, (*state)[0].move).ref;
-	if (T((*state)[0].move) && dst[0] != ref_move)
-	{
-		dst[1] = dst[0];
-		dst[0] = ref_move;
-	}
-}
-INLINE void UpdateCheckRef(State_* state, int ref_move)
-{
-	auto& dst = RefM(state, (*state)[0].move).check_ref;
-	if (T((*state)[0].move) && dst[0] != ref_move)
-	{
-		dst[1] = dst[0];
-		dst[0] = ref_move;
-	}
-}
-
 
 #ifdef CPU_TIMING
 int CpuTiming = 0, UciMaxDepth = 0, UciMaxKNodes = 0, UciBaseTime = 1000, UciIncTime = 5;
@@ -1201,8 +1172,9 @@ INLINE int FileSpan(const uint64& occ)
 }
 
 
-bool IsIllegal(const State_& state, bool me, int move)
+bool IsIllegal(const State_& state, int move)
 {
+	int me = state.current_->turn;
 	const Board_& board = state();
 	return ((HasBit(state[0].xray[opp], From(move)) && F(Bit(To(move)) & FullLine[lsb(board.King(me))][From(move)])) ||
 		(IsEP(move) && T(Line[RankOf(From(move))] & board.King(me)) && T(Line[RankOf(From(move))] & board.Major(opp)) &&
@@ -1237,6 +1209,60 @@ uint64 Rand64()
 {
 	return static_cast<uint64>(Rand32()) << 32 | Rand32();
 }
+
+constexpr uint64 REF_TURN_MASK = 1, REF_CHECK_MASK = 2;
+INLINE Ref1_& FindRef1(State_* state, uint64_t hash_delta)
+{
+	return state->ref1_[hash_delta % N_REF_1];
+}
+INLINE const Ref1_& FindRef1(const State_& state, uint64_t hash_delta)
+{
+	return state.ref1_[hash_delta % N_REF_1];
+}
+
+template<bool CHECK> inline uint64 HashDelta(const State_& state, int height = 1)
+{
+	if (state.Height() < height)
+		return 0;
+	uint64 hash_delta = state.current_->key ^ (state.current_ - 1)->key;
+	if (state.current_->turn)
+		hash_delta ^= REF_TURN_MASK;
+	if (CHECK)
+		hash_delta ^= REF_CHECK_MASK;
+	return hash_delta;
+}
+
+template<bool CHECK> INLINE void UpdateRef(State_* state, int ref_move)
+{
+	uint64 hashDelta = HashDelta<CHECK>(*state);
+	if (!hashDelta)
+		return;
+	auto& dst = FindRef1(state, hashDelta);
+	if (dst.moves_[0] == ref_move)
+		dst.moves_[1] = ref_move;	// looks weird but works
+	else
+		dst.moves_[0] = ref_move;
+}
+
+template<bool me, bool CHECK> array<uint16, N_REF_TRY> Refutations(const State_& state)
+{
+	array<uint16, N_REF_TRY> retval = {};
+	int ii = 0;
+	auto append = [&](uint16 move)
+		{
+			if (!is_legal<me>(state, move) || IsIllegal(state, move))
+				return false;
+			retval[ii] = move;
+			return ii == N_REF_TRY;
+		};
+	if (uint64 delta = HashDelta<CHECK>(state))
+	{
+		for (auto move : FindRef1(state, delta).moves_)
+			append(move);
+	}
+	return retval;
+}
+
 
 // DEBUG debug cry for help
 static int debugLine;
@@ -2640,8 +2666,6 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 			state->historyVals_[ip][it][1] = (1 << 8) | 2;
 		}
 
-	std::fill(state->deltaVals_.begin(), state->deltaVals_.end(), 0);
-	std::fill(state->ref_.begin(), state->ref_.end(), GRef{});
 	state->ClearStack();
 	TheShare.depth_ = 0;
 	TheShare.firstMove_ = true;
@@ -2650,6 +2674,8 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 		TheShare.date_ = 1;
 		fill(TheHash.begin(), TheHash.end(), NullEntry);
 		fill(ThePVHash.begin(), ThePVHash.end(), NullPVEntry);
+		fill(state->deltaVals_.begin(), state->deltaVals_.end(), 0);
+		fill(state->ref1_.begin(), state->ref1_.end(), Ref1_{});
 	}
 	if (clear_board)
 		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", state);
@@ -4862,8 +4888,7 @@ template<bool me> void gen_root_moves(State_* state)
 	else
 	{
 		current.stage = stage_search;
-		current.ref[0] = RefM(state, current.move).ref[0];
-		current.ref[1] = RefM(state, current.move).ref[1];
+		current.ref = Refutations<me, false>(*state);
 	}
 	current.gen_flags = 0;
 	RootList.clear();
@@ -4871,7 +4896,7 @@ template<bool me> void gen_root_moves(State_* state)
 	current.moves[0] = 0;
 	while (int move = NextMove<me>(state, 0))
 	{
-		if (IsIllegal(*state, me, move))
+		if (IsIllegal(*state, move))
 			continue;
 		if (find(RootList.begin(), RootList.end(), move) != RootList.end())
 			continue;	// most like re-trying killer move
@@ -5514,7 +5539,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 				|| (depth >= -8 && (current.score + DeltaM(state, hash_move) > alpha || is_check<me>(*state, hash_move))))
 		{
 			move = hash_move;
-			if (is_legal<me>(*state, move) && !IsIllegal(*state, me, move))
+			if (is_legal<me>(*state, move) && !IsIllegal(*state, move))
 			{
 				if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 					++nTried;
@@ -5546,7 +5571,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	state->current_->current = state->current_->moves;
 	while (move = pick_move(state->current_))
 	{
-		if (move != hash_move && !IsIllegal(*state, me, move) && see<me>(*state, move, -SeeThreshold, SeeValue))
+		if (move != hash_move && !IsIllegal(*state, move) && see<me>(*state, move, -SeeThreshold, SeeValue))
 		{
 			if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 				++nTried;
@@ -5573,7 +5598,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	while (move = pick_move(state->current_))
 	{
 		if (move != hash_move 
-			&& !IsIllegal(*state, me, move) 
+			&& !IsIllegal(*state, move) 
 			&& !IsRepetition(*state, alpha + 1, move) 
 			&& see<me>(*state, move, -SeeThreshold, SeeValue))
 		{
@@ -5605,7 +5630,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	while (move = pick_move(state->current_))
 	{
 		if (move != hash_move 
-			&& !IsIllegal(*state, me, move)
+			&& !IsIllegal(*state, move)
 			&& !IsRepetition(*state, alpha + 1, move) 
 			&& see<me>(*state, move, -SeeThreshold, SeeValue))
 		{
@@ -5692,8 +5717,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 		pext = 1;
 	else
 	{
-		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
+		state->current_->ref = Refutations<me, true>(*state);
 		mark_evasions(state->current_->moves, state);
 		if (T(hash_move) && (T(Bit(To(hash_move)) & current.mask) || T(hash_move & 0xE000)))
 		{
@@ -5710,7 +5734,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 	cnt = 0;
 	while (move = pick_move(state->current_))
 	{
-		if (IsIllegal(*state, me, move))
+		if (IsIllegal(*state, move))
 			continue;
 		++cnt;
 		if (IsRepetition(*state, alpha + 1, move))
@@ -5755,9 +5779,8 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 		score = Min(beta, score);
 	if (F(state->board_.PieceAt(To(move))) && F(move & 0xE000))
 	{
-		if (evasion)
-			UpdateCheckRef(state, move);
-		else
+		UpdateRef<evasion>(state, move);
+		if (!evasion)
 		{
 			if (state->current_->killer[1] != move && F(flags & FlagNoKillerUpdate))
 			{
@@ -5771,7 +5794,6 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 			if (move != hash_move && state->current_->stage == s_quiet && !sp_init)
 				for (auto p = state->current_->start; p < (state->current_->current - 1); ++p)
 					HistoryBad(state, *p, depth);
-			UpdateRef(state, move);
 		}
 	}
 	return hash_low(*state->current_, move, score, depth, false);
@@ -5860,9 +5882,8 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 				current.best = Entry->move;
 				if (F(board.PieceAt(To(Entry->move))) && F(Entry->move & 0xE000))
 				{
-					if (evasion)
-						UpdateCheckRef(state, Entry->move);
-					else
+					UpdateRef<evasion>(state, Entry->move);
+					if (!evasion)
 					{
 						if (current.killer[1] != Entry->move && F(flags & FlagNoKillerUpdate))
 						{
@@ -5870,7 +5891,6 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 								state->current_->killer[jk] = state->current_->killer[jk - 1];
 							state->current_->killer[1] = Entry->move;
 						}
-						UpdateRef(state, Entry->move);
 					}
 				}
 				return abort(Entry->low);
@@ -5967,7 +5987,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 		int singular = 0;
 		auto succeed = [&](int score) {return HashResult_({ true, score, hash_move, 1, singular }); };
 		int move = hash_move;
-		if (is_legal<me>(*state, move) && !IsIllegal(*state, me, move))
+		if (is_legal<me>(*state, move) && !IsIllegal(*state, move))
 		{
 			int ext = evasion && F(current.moves[1])
 					? 2
@@ -6066,19 +6086,14 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 	// done with hash 
 	bool can_hash_d0 = !exclusion && !evasion;
 	const int margin = evasion ? 0 : RazoringThreshold(current.score, depth, height);	// not used if evasion
+	state->current_->ref = Refutations<me, evasion>(*state);
 	if (evasion)
-	{
-		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
 		mark_evasions(state->current_->moves, state);
-	}
 	else
 	{
 		state->current_->killer[0] = 0;
 		state->current_->stage = stage_search;
 		state->current_->gen_flags = 0;
-		state->current_->ref[0] = RefM(state, current.move).ref[0];
-		state->current_->ref[1] = RefM(state, current.move).ref[1];
 		if (margin < beta)
 		{
 			can_hash_d0 = false;
@@ -6114,7 +6129,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 	{
 		if (move == hash_move)
 			continue;
-		if (IsIllegal(*state, me, move))
+		if (IsIllegal(*state, move))
 			continue;
 		++cnt;
 		if ((move & 0xFFFF) == move_back && IsRepetition(*state, beta, move))
@@ -6439,14 +6454,12 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	if (!IsCheck(*state, me))
 	{
 		state->current_->stage = stage_search;
-		state->current_->ref[0] = RefM(state, current.move).ref[0];
-		state->current_->ref[1] = RefM(state, current.move).ref[1];
+		state->current_->ref = Refutations<me, false>(*state);
 	}
 	else
 	{
 		state->current_->stage = stage_evasion;
-		state->current_->ref[0] = RefM(state, current.move).check_ref[0];
-		state->current_->ref[1] = RefM(state, current.move).check_ref[1];
+		state->current_->ref = Refutations<me, true>(*state);
 	}
 	state->current_->killer[0] = 0;
 	state->current_->moves[0] = 0;
@@ -6463,7 +6476,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			break;
 		if (move == hash_move)
 			continue;
-		if (IsIllegal(*state, me, move))
+		if (IsIllegal(*state, move))
 			continue;
 		++cnt;
 		if (root)
