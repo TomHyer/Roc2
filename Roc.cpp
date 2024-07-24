@@ -181,6 +181,7 @@ struct State_
 	std::vector<sint16> deltaVals_;
 	std::vector<Ref1_> ref1_;
 	uint64 nodes_, tbHits_;
+	int selDepth_;
 
 	std::vector<GPawnEntry> pawnHash_;
 
@@ -998,8 +999,6 @@ struct ThreadOwn_
 {
 	uint16 iThread_;
 	AspirationState_ window_;
-	int PV[MAX_PV_LEN];
-	int depth, selDepth;
 	RootScores_ results_;
 	vector<int> rootList_;	// may be ordered different from RootList
 
@@ -2681,6 +2680,7 @@ void init_search(ThreadOwn_* info, State_* state, bool clear_hash, bool clear_bo
 		get_board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", state);
 	state->nodes_ = 0;
 	state->tbHits_ = 0;
+	state->selDepth_ = 0;
 	info->results_.clear();
 	info->lastTime_ = 0;
 	memset(&state->searchInfo_, 0, sizeof(SearchInfo_));
@@ -4169,53 +4169,6 @@ template<bool me> bool is_check(const State_& state, int move)
 	return false;
 }
 
-void pick_pv(ThreadOwn_* info, State_* state, int pvPtr, int pvLen)
-{
-	if (pvPtr >= Min(pvLen, MAX_PV_LEN))
-	{
-		info->PV[pvPtr] = 0;
-		return;
-	}
-	GEntry* Entry;
-	GPVEntry* PVEntry;
-	int move = 0, depth = -16;
-	if ((Entry = probe_hash(*state->current_)) && T(Entry->move) && Entry->low_depth > depth)
-	{
-		depth = Entry->low_depth;
-		move = Entry->move;
-	}
-	if ((PVEntry = probe_pv_hash(*state->current_)) && T(PVEntry->move) && PVEntry->depth > depth)
-	{
-		depth = PVEntry->depth;
-		move = PVEntry->move;
-	}
-	evaluate(state);
-	if (state->current_->att[state->current_->turn] & state->board_.King(state->current_->turn ^ 1))
-		info->PV[pvPtr] = 0;
-	else if (move && is_legal(*state, move))
-	{
-		info->PV[pvPtr] = move;
-		pvPtr++;
-		ScopedMove_ restore(state, move);
-		if (state->current_->ply < 100)
-		{
-			info->PV[pvPtr] = 1;
-			for (int i = 4; i <= state->current_->ply; i += 2)
-			{
-				if (state->hashHist_[state->hashHist_.size() - 1 - i] == state->current_->key)
-				{
-					info->PV[pvPtr] = 0;
-					break;
-				}
-			}
-			if (info->PV[pvPtr] != 0)
-				pick_pv(info, state, pvPtr, pvLen);
-		}
-	}
-	else
-		info->PV[pvPtr] = 0;
-}
-
 template<bool me> bool draw_in_pv(State_* state)
 {
 	if (state->Height() >= MAX_HEIGHT - 2)
@@ -5487,7 +5440,10 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	}
 #endif
 	if (flags & FlagCallEvaluation)
+	{
 		evaluate(state);
+		state->selDepth_ = Max(state->selDepth_, state->Height());
+	}
 	if (IsCheck(*state, me))
 		return q_evasion<me, pv>(state, alpha, beta, depth, FlagHashCheck);
 
@@ -6321,6 +6277,8 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		}
 		state->searchInfo_.hashDepth_ = hash_depth;
 	}
+	if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !root))
+		stop();	// will break the outer loop
 	check_for_stop();
 	if (GEntry* Entry = probe_hash(current))
 	{
@@ -6601,7 +6559,7 @@ void uciReport(const Thread_& thread, const vector<Thread_>* all_threads, const 
 			: bounded <= window.alpha_ ? " upperbound " : " ";
 
 	printf("info depth %d seldepth %d score %s %d%spv ",
-			window.depth_ / 2, static_cast<int>(pv.line_.size()), type, score / CP_SEARCH, bound);
+			window.depth_ / 2, thread.state_.selDepth_, type, score / CP_SEARCH, bound);
 
 	// Iterate over the PV and print each move
 	for (auto m: pv.line_)
@@ -6869,7 +6827,7 @@ void SetTimeLimit(const LimitInputs_& input, int ply = 0)
 	int time_max = Max(input.time - Min(1000, (3 * input.time) / 4), 0);
 	int nmoves;
 	int exp_moves = MovesTg - 1;
-	if (input.mtg != 0)
+	if (input.mtg > 0)
 		nmoves = Max(1, input.mtg - 1);
 	else
 	{

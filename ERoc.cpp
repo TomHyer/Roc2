@@ -1081,8 +1081,6 @@ struct TTable {
     uint8_t generation;
 };
 
-void tt_store(uint64 hash, int height, uint16_t move, int value, int eval, int depth, int bound);
-
 
 struct MovePicker {
     int split, noisy_size, quiet_size, i_killer;
@@ -5957,7 +5955,8 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
 
     // Save a history of the static evaluations
     eval = ns->eval = ttEval != VALUE_NONE
-        ? ttEval : evaluateBoard(thread, state);
+            ? ttEval 
+            : evaluateBoard(thread, state);
 
     // Toss the static evaluation into the TT if we won't overwrite something
     if (!ttHit && !state->kingAttackers)
@@ -5980,17 +5979,18 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
     // and return those which are winning via SEE, and also strong enough
     // to beat the margin computed in the Delta Pruning step found above
     init_noisy_picker(&ns->mp, thread, NONE_MOVE, Max(1, alpha - eval - QSSeeMargin));
-    while ((move = select_next(&ns->mp, thread, 1)) != NONE_MOVE) {
-
+    while ((move = select_next(&ns->mp, thread, 1)) != NONE_MOVE) 
+    {
         // Worst case which assumes we lose our piece immediately
         int pessimism = moveEstimatedValue(state->board_, move)
-            - SEEPieceValues[TypeOf(state->board_.at_[MoveFrom(move)])];
+               - SEEPieceValues[TypeOf(state->board_.at_[MoveFrom(move)])];
 
         // Search the next ply if the move is legal
         if (!apply(thread, state, move)) continue;
 
         // Short-circuit QS and assume a stand-pat matches the SEE
-        if (eval + pessimism > beta && abs(eval + pessimism) < MATE / 2) {
+        if (eval + pessimism > beta && abs(eval + pessimism) < MATE / 2) 
+        {
             revert(thread, state, move);
             pv->length = 1;
             pv->line[0] = move;
@@ -6001,24 +6001,24 @@ int qsearch(Thread* thread, PVariation* pv, int alpha, int beta)
         revert(thread, state, move);
 
         // Improved current value
-        if (value > best) {
-
+        if (value > best) 
+        {
             best = value;
             bestMove = move;
 
             // Improved current lower bound
-            if (value > alpha) {
+            if (value > alpha) 
+            {
                 alpha = value;
 
-                // Update the Principle Variation
+                // Update the Principal Variation
                 pv->length = 1 + lpv.length;
                 pv->line[0] = move;
                 memcpy(pv->line + 1, lpv.line, sizeof(uint16_t) * lpv.length);
-            }
 
-            // Search has failed high
-            if (alpha >= beta)
-                break;
+                if (alpha >= beta)
+                    break;  // Search has failed high
+            }
         }
     }
 
@@ -6219,8 +6219,8 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
             // Check to see if the WDL value would cause a cutoff
             if (tbBound == BOUND_EXACT
                 || (tbBound == BOUND_LOWER && value >= beta)
-                || (tbBound == BOUND_UPPER && value <= alpha)) {
-
+                || (tbBound == BOUND_UPPER && value <= alpha)) 
+            {
                 tt_store(state->hash, thread->height, NONE_MOVE, value, VALUE_NONE, depth, tbBound);
                 return value;
             }
@@ -6575,7 +6575,8 @@ int search(Thread* thread, PVariation* pv, int alpha, int beta, int depth, bool 
     // Step 23. Store results of search into the Transposition Table. We do not overwrite
     // the Root entry from the first line of play we examined. We also don't store into the
     // Transposition Table while attempting to veryify singularities
-    if (!ns->excluded && (!RootNode || !thread->multiPV)) {
+    if (!ns->excluded && (!RootNode || !thread->multiPV)) 
+    {
         ttBound = best >= beta ? BOUND_LOWER
             : best > oldAlpha ? BOUND_EXACT : BOUND_UPPER;
         bestMove = ttBound == BOUND_UPPER ? NONE_MOVE : bestMove;
