@@ -69,7 +69,7 @@ def RunMatch(arg):
             task = Command(cmd)
             result = task.run(60 * ROUNDS_PER_MATCH)
             result = str(result)
-            print(en1, "vs", en2, result.split("c1 vs c2")[-1].split("...")[0])
+            print(en1, "vs", en2, result.split("c1 vs c2")[-1].split("...")[0].strip())
             if (not result) or matchP.search(result):   # internal failure, don't trust the result
                 print("Ignoring that")
             else:

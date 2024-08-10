@@ -5408,7 +5408,7 @@ inline void stop()
     for (int ihc = 4; ihc <= state->current_->ply; ihc += 2) if (state->hashHist_[state->hashHist_.size() - 1 - ihc] == state->current_->key) return 0; \
 	if (state->Height() >= 126) {evaluate(state); return state->current_->score; }}
 
-template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int depth, int flags)
+template<bool me> int q_search(State_* state, int alpha, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
 	const PlyState_& current = *state->current_;
@@ -5442,10 +5442,12 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	if (flags & FlagCallEvaluation)
 	{
 		evaluate(state);
+		if (current.score > beta)
+			return current.score;
 		state->selDepth_ = Max(state->selDepth_, state->Height());
 	}
 	if (IsCheck(*state, me))
-		return q_evasion<me, pv>(state, alpha, beta, depth, FlagHashCheck);
+		return q_evasion<me>(state, alpha, beta, depth, FlagHashCheck);
 
 	int tempo = InitiativeConst;
 	if (F(board.NonPawnKing(me) | (current.passer & board.Pawn(me) & Shift<opp>(current.patt[me] | ~current.att[opp]))))
@@ -5470,7 +5472,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 			{
 				if (T(Entry->low_depth))
 				{
-					if (Entry->low >= beta && !pv)
+					if (Entry->low >= beta)
 						return Entry->low;
 					if (Entry->low_depth > hash_depth && T(Entry->move))
 					{
@@ -5478,7 +5480,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 						hash_depth = Entry->low_depth;
 					}
 				}
-				if (T(Entry->high_depth) && Entry->high <= alpha && !pv)
+				if (T(Entry->high_depth) && Entry->high <= alpha)
 					return Entry->high;
 				break;
 			}
@@ -5500,7 +5502,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 				if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 					++nTried;
 				do_move<me>(state, move);
-				value = -q_search<opp, pv>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+				value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 				undo_move<me>(state, move);
 				if (value > score)
 				{
@@ -5513,10 +5515,9 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 					}
 				}
 				if (F(Bit(To(hash_move)) & current.mask)
-					&& F(hash_move & 0xE000)
-					&& !pv
-					&& alpha >= beta - 1
-					&& (depth < -2 || depth <= -1 && current.score + Futility::HashCut<me>(*state, false) < alpha))
+						&& F(hash_move & 0xE000)
+						&& alpha >= beta - 1
+						&& (depth < -2 || depth <= -1 && current.score + Futility::HashCut<me>(*state, false) < alpha))
 					return alpha;
 			}
 		}
@@ -5532,7 +5533,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 			if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 				++nTried;
 			do_move<me>(state, move);
-			value = -q_search<opp, pv>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+			value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 			undo_move<me>(state, move);
 			if (value > score)
 			{
@@ -5559,7 +5560,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 			&& see<me>(*state, move, -SeeThreshold, SeeValue))
 		{
 			do_move<me>(state, move);
-			value = -q_evasion<opp, pv>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+			value = -q_evasion<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 			undo_move<me>(state, move);
 			if (value > score)
 			{
@@ -5592,7 +5593,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 		{
 			++nTried;
 			do_move<me>(state, move);
-			value = -q_search<opp, pv>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+			value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 			undo_move<me>(state, move);
 			if (value > score)
 			{
@@ -5619,7 +5620,7 @@ template<bool me, bool pv> int q_search(State_* state, int alpha, int beta, int 
 	return finish(score, true);
 }
 
-template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int depth, int flags)
+template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
 	const PlyState_& current = *state->current_;
@@ -5640,7 +5641,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 			{
 				if (T(Entry->low_depth))
 				{
-					if (Entry->low >= beta && !pv)
+					if (Entry->low >= beta)
 						return Entry->low;
 					if (Entry->low_depth > hash_depth && T(Entry->move))
 					{
@@ -5648,7 +5649,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 						hash_depth = Entry->low_depth;
 					}
 				}
-				if (T(Entry->high_depth) && Entry->high <= alpha && !pv)
+				if (T(Entry->high_depth) && Entry->high <= alpha)
 					return Entry->high;
 				break;
 			}
@@ -5658,7 +5659,7 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 	if (flags & FlagCallEvaluation)
 		evaluate(state);
 	current.mask = Filled;
-	if (current.score - 10 * CP_SEARCH <= alpha && !pv)
+	if (current.score - 10 * CP_SEARCH <= alpha)
 	{
 		score = current.score - 10 * CP_SEARCH;
 		current.mask = capture_margin_mask<me>(*state, alpha, &score);
@@ -5700,17 +5701,17 @@ template<bool me, bool pv> int q_evasion(State_* state, int alpha, int beta, int
 		}
 		if (F(board.PieceAt(To(move))) && F(move & 0xE000))
 		{
-			if (cnt > 3 && !is_check<me>(*state, move) && !pv)
+			if (cnt > 3 && !is_check<me>(*state, move))
 				continue;
 			value = current.score + DeltaM(state, move) + 10 * CP_SEARCH;
-			if (value <= alpha && !pv)
+			if (value <= alpha)
 			{
 				score = Max(value, score);
 				continue;
 			}
 		}
 		do_move<me>(state, move);
-		value = -q_search<opp, pv>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
+		value = -q_search<opp>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
 		undo_move<me>(state, move);
 		if (value > score)
 		{
@@ -5808,7 +5809,7 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 
 		value = current.score + Futility::HashCut<me>(*state, false);
 		if (value < beta && depth <= 3)
-			return abort(Max(value, q_search<me, 0>(state, beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
+			return abort(Max(value, q_search<me>(state, beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
 	}
 
 	int hash_move = current.best = flags & 0xFFFF;
@@ -5997,7 +5998,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 		++beta;
 
 	if (depth <= 1)
-		return (evasion ? q_evasion<me, 0> : q_search<me, 0>)(state, beta - 1, beta, 1, flags);
+		return (evasion ? q_evasion<me> : q_search<me>)(state, beta - 1, beta, 1, flags);
 	int score = height - MateValue;
 	if (flags & FlagHaltCheck)
 	{
@@ -6246,7 +6247,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	else
 	{
 		if (depth <= 1)
-			return q_search<me, 1>(state, alpha, beta, 1, FlagNeatSearch);
+			return q_search<me>(state, alpha, beta, 1, FlagNeatSearch);
 		if (state->Height() - MateValue >= beta)
 			return beta;
 		if (MateValue - state->Height() <= alpha)
