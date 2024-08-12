@@ -79,7 +79,14 @@ int TBMinDepth = 2;
 constexpr int InitiativeConst = int(1.5 * CP_SEARCH);
 constexpr int InitiativePhase = int(4.5 * CP_SEARCH);
 
-#define IncV(var, x) (me ? (var -= (x)) : (var += (x)))
+struct NoWatch_
+{
+	template<class T_> bool operator()(int, bool m, T_) const { return m; }
+};
+
+#define IncWatch(var, x, loc) (WATCH()(loc, me, x) ? (var -= (x)) : (var += (x)))
+#define IncV(var, x) IncWatch(var, x, __LINE__)				// support tuner
+//#define IncV(var, x) (me ? (var -= (x)) : (var += (x)))	// tournament mode
 #define DecV(var, x) IncV(var, -(x))
 #define NOTICE(var, x) 
 #define FakeV(var, x)
@@ -2043,6 +2050,7 @@ template<bool me> bool eval_stalemate(GEvalInfo& EI, const State_& state)
 
 template<bool me> void eval_pawns_only(GEvalInfo& EI, const State_& state, pop_func_t pop)
 {
+	using WATCH = NoWatch_;	// tuner can't see KpkValue, o well
 	int number = pop(state().Pawn(me));
 	int kOpp = lsb(state().King(opp));
 	int sq = FileOf(kOpp) <= 3 ? (me ? 0 : 56) : (me ? 7 : 63);
@@ -2256,6 +2264,8 @@ template<bool me> void eval_kqkrpx(GEvalInfo& EI, const State_& state, pop_func_
 
 void calc_material(int index, GMaterial& material)
 {
+	using WATCH = NoWatch_;
+
 	array<int, 2> pawns, knights, light, dark, rooks, queens, bishops, major, minor, tot, count, mat, mul, closed;
 	int i = index;
 	queens[White] = i % 3;
@@ -3050,7 +3060,7 @@ typedef struct
 	packed_t score;
 } GPawnEvalInfo;
 
-template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawnEvalInfo& PEI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawnEvalInfo& PEI, const State_& state)
 {
 	constexpr array<array<uint64, 2>, 2> RFileBlockMask = { array<uint64, 2>({0x0202000000000000, 0x8080000000000000}), array<uint64, 2>({0x0202, 0x8080}) };
 	POP pop;
@@ -3265,7 +3275,7 @@ template<bool me, class POP> INLINE void eval_pawns(GPawnEntry* PawnEntry, GPawn
 	PawnEntry->draw[me] = (7 - file_span) * Max(5 - pop(files), 0);
 }
 
-template<class POP> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEntry* PawnEntry, const State_& state)
+template<class POP, class WATCH> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEntry* PawnEntry, const State_& state)
 {
 	GPawnEvalInfo PEI;
 	for (int i = 0; i < sizeof(GPawnEntry) / sizeof(int); ++i)
@@ -3280,13 +3290,13 @@ template<class POP> INLINE void eval_pawn_structure(const GEvalInfo& EI, GPawnEn
 	PEI.king[Black] = EI.king[Black];
 	PEI.score = 0;
 
-	eval_pawns<White, POP>(PawnEntry, PEI, state);
-	eval_pawns<Black, POP>(PawnEntry, PEI, state);
+	eval_pawns<White, POP, WATCH>(PawnEntry, PEI, state);
+	eval_pawns<Black, POP, WATCH>(PawnEntry, PEI, state);
 
 	PawnEntry->score = PEI.score;
 }
 
-template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI, const State_& state)
+template<bool me, class WATCH> INLINE void eval_queens_xray(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	uint64 u, b;
@@ -3330,7 +3340,7 @@ template <bool me> INLINE void eval_queens_xray(GEvalInfo& EI, const State_& sta
 	}
 }
 
-template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_queens(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3362,7 +3372,7 @@ template <bool me, class POP> INLINE void eval_queens(GEvalInfo& EI, const State
 	}
 }
 
-template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI, const State_& state)
+template<bool me, class WATCH> INLINE void eval_rooks_xray(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	for (uint64 b, u = board.Rook(me); T(u); u ^= b)
@@ -3410,7 +3420,7 @@ template<bool me> INLINE void eval_rooks_xray(GEvalInfo& EI, const State_& state
 	}
 }
 
-template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_rooks(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3473,7 +3483,7 @@ template <bool me, class POP> INLINE void eval_rooks(GEvalInfo& EI, const State_
 	}
 }
 
-template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI, const State_& state)
+template<bool me, class WATCH> INLINE void eval_bishops_xray(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	for (uint64 b, u = board.Bishop(me); T(u); u ^= b)
@@ -3521,7 +3531,7 @@ template <bool me> INLINE void eval_bishops_xray(GEvalInfo& EI, const State_& st
 	}
 }
 
-template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_bishops(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3552,7 +3562,7 @@ template <bool me, class POP> INLINE void eval_bishops(GEvalInfo& EI, const Stat
 	}
 }
 
-template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI, const State_& state)
+template<bool me> INLINE void eval_knights_xray(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	for (uint64 u = board.Knight(me); T(u); Cut(u))
@@ -3563,7 +3573,7 @@ template <bool me> INLINE void eval_knights_xray(GEvalInfo& EI, const State_& st
 	}
 }
 
-template<bool me, class POP> INLINE packed_t eval_knights(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE packed_t eval_knights(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state.board_;
@@ -3607,7 +3617,7 @@ template<bool me, class POP> INLINE packed_t eval_knights(GEvalInfo& EI, const S
 constexpr array<uint16, 16> KingAttackScale = { 0, 1, 1, 2, 4, 5, 8, 12, 15, 19, 23, 28, 33, 37, 39, 39 };
 constexpr array<int, 8> KingCenterShift = { -5, -4, 5, 1 };	
 
-template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_king(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3653,7 +3663,7 @@ template<bool me, class POP> INLINE void eval_king(GEvalInfo& EI, const State_& 
 	NOTICE(EI.score, NO_INFO);
 }
 
-template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_passer(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	bool sr_me = board.Rook(me) && !board.Minor(me) && !board.Queen(me) && Single(board.Rook(me));
@@ -3720,7 +3730,7 @@ template<bool me, class POP> INLINE void eval_passer(GEvalInfo& EI, const State_
 }
 
 
-template <bool me, class POP> INLINE void eval_pieces(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> INLINE void eval_pieces(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	uint64 threat = state[0].att[opp] & (~state[0].att[me]) & state().Piece(me);
@@ -3734,7 +3744,7 @@ template <bool me, class POP> INLINE void eval_pieces(GEvalInfo& EI, const State
 		DecV(EI.score, Values::Threat);
 }
 
-template<class POP> void eval_unusual_material(GEvalInfo& EI, const State_& state)
+template<class POP, class WATCH> void eval_unusual_material(GEvalInfo& EI, const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3745,7 +3755,7 @@ template<class POP> void eval_unusual_material(GEvalInfo& EI, const State_& stat
 		+ SeeValue[WhiteQueen] * (pop(board.Queen(White)) - pop(board.Queen(Black)));
 }
 
-template<class POP, int me> int closure_x(const State_& state)
+template<int me, class POP> int closure_x(const State_& state)
 {
 	POP pop;
 	const Board_& board = state();
@@ -3768,25 +3778,10 @@ template<class POP, int me> int closure_x(const State_& state)
 template<class POP> int closure(const State_& state)
 {
 	// closure_x can return up to 16; we want to return about -128 to +128
-	return 4 * (closure_x<POP, 0>(state) + closure_x<POP, 1>(state));
+	return 4 * (closure_x<0, POP>(state) + closure_x<1, POP>(state));
 }
 
-template<bool me> void eval_castling(GEvalInfo& EI, const State_& state)
-{
-	constexpr array<int, 2> now = { 30, 10 };
-	constexpr array<int, 2> later = { 15, 5 };
-	uint64 occ = state().PieceAll();
-	if (can_castle(occ, me, true))
-		IncV(EI.score, Pack(now[0], 0, 0, 0));
-	else if (state[0].castle_flags & (me ? CanCastle_oo : CanCastle_OO))
-		IncV(EI.score, Pack(later[0], 0, 0, 0));
-	if (can_castle(occ, me, false))
-		IncV(EI.score, Pack(now[1], 0, 0, 0));
-	else if (state[0].castle_flags & (me ? CanCastle_ooo : CanCastle_OOO))
-		IncV(EI.score, Pack(later[1], 0, 0, 0));
-}
-
-template<bool me> void eval_xray(GEvalInfo& EI, const State_& state)
+template<bool me, class WATCH> void eval_xray(GEvalInfo& EI, const State_& state)
 {
 	EI.king_att[me] = 0;
 	if (uint64 pa = state[0].patt[me] & EI.area[opp])
@@ -3794,23 +3789,23 @@ template<bool me> void eval_xray(GEvalInfo& EI, const State_& state)
 		EI.king_att[me] = KingAttack + (Multiple(pa) ? KingPAttackInc : 0);
 	}
 	state[0].xray[me] = 0;
-	eval_queens_xray<me>(EI, state);
-	eval_rooks_xray<me>(EI, state);
-	eval_bishops_xray<me>(EI, state);
+	eval_queens_xray<me, WATCH>(EI, state);
+	eval_rooks_xray<me, WATCH>(EI, state);
+	eval_bishops_xray<me, WATCH>(EI, state);
 	eval_knights_xray<me>(EI, state);
 }
 
-template<bool me, class POP> void eval_sequential(GEvalInfo& EI, const State_& state)
+template<bool me, class POP, class WATCH> void eval_sequential(GEvalInfo& EI, const State_& state)
 {
 	const Board_& board = state();
 	EI.free[me] = board.Queen(opp) | board.King(opp) | (~(state[0].patt[opp] | board.Pawn(me) | board.King(me)));
 	DecV(EI.score, POP()(Shift<opp>(EI.occ) & board.Pawn(me)) * Values::PawnBlocked);
-	eval_queens<me, POP>(EI, state);
+	eval_queens<me, POP, WATCH>(EI, state);
 	EI.free[me] |= board.Rook(opp);
-	eval_rooks<me, POP>(EI, state);
+	eval_rooks<me, POP, WATCH>(EI, state);
 	EI.free[me] |= board.Minor(opp);
-	eval_bishops<me, POP>(EI, state);
-	eval_knights<me, POP>(EI, state);
+	eval_bishops<me, POP, WATCH>(EI, state);
+	eval_knights<me, POP, WATCH>(EI, state);
 }
 
 template<class POP> struct PhasedScore_
@@ -3832,7 +3827,7 @@ template<class POP> struct PhasedScore_
 };
 
 
-template<class POP> void evaluation(State_* state)
+template<class POP, class WATCH> void evaluation(State_* state)
 {
 	POP pop;
 	GEvalInfo EI;
@@ -3860,10 +3855,10 @@ template<class POP> void evaluation(State_* state)
 	else
 		EI.material = nullptr;
 
-	eval_xray<White>(EI, *state);
-	eval_xray<Black>(EI, *state);
-	eval_sequential<White, POP>(EI, *state);
-	eval_sequential<Black, POP>(EI, *state);
+	eval_xray<White, WATCH>(EI, *state);
+	eval_xray<Black, WATCH>(EI, *state);
+	eval_sequential<White, POP, WATCH>(EI, *state);
+	eval_sequential<Black, POP, WATCH>(EI, *state);
 
 	EI.pawnEntry_ = &state->pawnHash_[current->pawn_key & PAWN_HASH_MASK];
 	if (current->pawn_key == EI.pawnEntry_->key)
@@ -3871,24 +3866,24 @@ template<class POP> void evaluation(State_* state)
 	else
 	{
 		EI.pawnEntry_ = nullptr;
-		eval_pawn_structure<POP>(EI, &EI.pawnEval_, *state);
+		eval_pawn_structure<POP, WATCH>(EI, &EI.pawnEval_, *state);
 		state->pawnHash_[current->pawn_key & PAWN_HASH_MASK] = EI.pawnEval_;
 	}
 	EI.score += EI.pawnEval_.score;
 
-	eval_king<White, POP>(EI, *state);
-	eval_king<Black, POP>(EI, *state);
+	eval_king<White, POP, WATCH>(EI, *state);
+	eval_king<Black, POP, WATCH>(EI, *state);
 	current->att[White] |= KAtt[EI.king[White]];
 	current->att[Black] |= KAtt[EI.king[Black]];
 
-	eval_passer<White, POP>(EI, *state);
-	eval_pieces<White, POP>(EI, *state);
-	eval_passer<Black, POP>(EI, *state);
-	eval_pieces<Black, POP>(EI, *state);
+	eval_passer<White, POP, WATCH>(EI, *state);
+	eval_pieces<White, POP, WATCH>(EI, *state);
+	eval_passer<Black, POP, WATCH>(EI, *state);
+	eval_pieces<Black, POP, WATCH>(EI, *state);
 
 	if (current->material & FlagUnusualMaterial)
 	{
-		eval_unusual_material<POP>(EI, *state);
+		eval_unusual_material<POP, WATCH>(EI, *state);
 		current->score = (current->score * CP_SEARCH) / CP_EVAL;
 	}
 	else
@@ -3965,8 +3960,7 @@ template<class POP> void evaluation(State_* state)
 
 INLINE void evaluate(State_* state)
 {
-	evaluation<pop1_>(state);	// assume we have hardware popcount
-	BYE
+	evaluation<pop1_, NoWatch_>(state);	// assume we have hardware popcount
 }
 
 template<bool me> bool is_legal(const State_& state, int move)
@@ -4876,7 +4870,7 @@ template<class T_> T_* NullTerminate(T_* list)
 	return list;
 }
 
-template <bool me> int* gen_captures(int* list, const State_& state)
+template<bool me> int* gen_captures(int* list, const State_& state)
 {
 	static const int MvvLvaPromotion = MvvLva[WhiteQueen][BlackQueen];
 	static const int MvvLvaPromotionKnight = MvvLva[WhiteKnight][BlackKnight];
@@ -5408,7 +5402,7 @@ inline void stop()
     for (int ihc = 4; ihc <= state->current_->ply; ihc += 2) if (state->hashHist_[state->hashHist_.size() - 1 - ihc] == state->current_->key) return 0; \
 	if (state->Height() >= 126) {evaluate(state); return state->current_->score; }}
 
-template<bool me> int q_search(State_* state, int alpha, int beta, int depth, int flags)
+template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int flags)
 {
 	const Board_& board = state->board_;
 	const PlyState_& current = *state->current_;
@@ -5439,6 +5433,13 @@ template<bool me> int q_search(State_* state, int alpha, int beta, int depth, in
 			check_time(nullptr, 1);
 	}
 #endif
+	if (GEntry* entry = probe_hash(current))
+	{
+		if (entry->high_depth > 0 && entry->high < alpha)
+			return entry->high;
+		if (entry->low_depth > 0 && entry->low > beta)
+			return entry->low;
+	}
 	if (flags & FlagCallEvaluation)
 	{
 		evaluate(state);
@@ -5502,7 +5503,7 @@ template<bool me> int q_search(State_* state, int alpha, int beta, int depth, in
 				if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 					++nTried;
 				do_move<me>(state, move);
-				value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+				value = -QSearch<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 				undo_move<me>(state, move);
 				if (value > score)
 				{
@@ -5533,7 +5534,7 @@ template<bool me> int q_search(State_* state, int alpha, int beta, int depth, in
 			if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 				++nTried;
 			do_move<me>(state, move);
-			value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+			value = -QSearch<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 			undo_move<me>(state, move);
 			if (value > score)
 			{
@@ -5593,7 +5594,7 @@ template<bool me> int q_search(State_* state, int alpha, int beta, int depth, in
 		{
 			++nTried;
 			do_move<me>(state, move);
-			value = -q_search<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
+			value = -QSearch<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
 			undo_move<me>(state, move);
 			if (value > score)
 			{
@@ -5711,7 +5712,7 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 			}
 		}
 		do_move<me>(state, move);
-		value = -q_search<opp>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
+		value = -QSearch<opp>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
 		undo_move<me>(state, move);
 		if (value > score)
 		{
@@ -5809,14 +5810,14 @@ template<bool me, bool evasion> HashResult_ try_hash(State_* state, int beta, in
 
 		value = current.score + Futility::HashCut<me>(*state, false);
 		if (value < beta && depth <= 3)
-			return abort(Max(value, q_search<me>(state, beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
+			return abort(Max(value, QSearch<me>(state, beta - 1, beta, 1, FlagHashCheck | (flags & 0xFFFF))));
 	}
 
 	int hash_move = current.best = flags & 0xFFFF;
 	current.best = hash_move;
 	int high_depth = 0, hash_depth = -1;
 	int high_value = MateValue, hash_value = -MateValue;
-	if (GEntry * Entry = probe_hash(current))
+	if (GEntry* Entry = probe_hash(current))
 	{
 		if (Entry->high < beta && Entry->high_depth >= depth)
 			return abort(Entry->high);
@@ -5998,7 +5999,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 		++beta;
 
 	if (depth <= 1)
-		return (evasion ? q_evasion<me> : q_search<me>)(state, beta - 1, beta, 1, flags);
+		return (evasion ? q_evasion<me> : QSearch<me>)(state, beta - 1, beta, 1, flags);
 	int score = height - MateValue;
 	if (flags & FlagHaltCheck)
 	{
@@ -6247,7 +6248,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	else
 	{
 		if (depth <= 1)
-			return q_search<me>(state, alpha, beta, 1, FlagNeatSearch);
+			return QSearch<me>(state, alpha, beta, 1, FlagNeatSearch);
 		if (state->Height() - MateValue >= beta)
 			return beta;
 		if (MateValue - state->Height() <= alpha)
