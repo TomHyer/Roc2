@@ -4189,7 +4189,7 @@ template<bool me> bool draw_in_pv(State_* state)
 
 INLINE int HashMerit(int date, uint8 depth)
 {
-	return 8 * date + depth;
+	return 7 * date + depth;
 }
 inline int HashMerit(const GEntry& entry)
 {
@@ -5311,6 +5311,8 @@ int time_to_stop(const SearchInfo_& SI, int time, int searching)
 		return 0;
 	if (2 * time > TheTimeLimit.hardLimit_)
 		return 1;
+	if (TheShare.emaDepth_ > TheShare.depth_ + 2)
+		return 0;
 	if (time > TheTimeLimit.softLimit_)
 		return 1;
 	if (TheShare.firstMove_ || SI.change_ || SI.failLow_)
@@ -6824,7 +6826,7 @@ namespace Version
 
 void SetTimeLimit(const LimitInputs_& input, int ply = 0)
 {
-	constexpr int MovesTg = 26, TimeRatio = 120;
+	constexpr int MovesTg = 28, TimeRatio = 120;
 
 	int time_max = Max(input.time - Min(1000, (3 * input.time) / 4), 0);
 	int nmoves;
@@ -7050,6 +7052,11 @@ void start_search_threads(vector<Thread_>* threads_in, const State_* state_in, c
 	printf("bestmove %s score %d", str, uciMove.score / CP_SEARCH);
 	TheShare.firstMove_ = false;
 	TheShare.pvsScore_ = uciMove.score;
+	if (TheShare.emaDepth_ > 0.0)
+		TheShare.emaDepth_ += 0.2 * (TheShare.depth_ - TheShare.emaDepth_);
+	else
+		TheShare.emaDepth_ = TheShare.depth_;
+
 
 	// Report ponder move ( if we have one )
 	if (uciMove.ponder != 0) 
@@ -7193,6 +7200,7 @@ int main(int argc, char** argv)
 	unique_ptr<thread> pthreadsgo;
 	bool multiPV = false;
 	TheShare.stopAll_ = true;
+	TheShare.emaDepth_ = 0.0;
 
 	init_data(&DATA);
 
