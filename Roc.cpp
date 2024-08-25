@@ -4215,6 +4215,8 @@ void hash_high_update(GEntry* Entry, int value, int depth)
 			Entry->high_depth = depth;
 			Entry->high = value;
 			Entry->low = value;
+			Entry->low_depth = Entry->high_depth > 8 ? Min<uint8>(Entry->high_depth - 8, Entry->low_depth) : 0;
+			Entry->move = 0;
 		}
 	}
 }
@@ -4268,6 +4270,7 @@ int hash_low_update(GEntry* Entry, int move, int value, int depth)
 			Entry->low_depth = depth;
 			Entry->low = value;
 			Entry->high = value;
+			Entry->high_depth = depth > 8 ? Min<uint8>(depth - 8, Entry->high_depth) : 0;
 		}
 	}
 	else if (F(Entry->move))
@@ -5642,6 +5645,8 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 		{
 			if (Low32(current.key) == Entry->key)
 			{
+				if (T(Entry->high_depth) && Entry->high <= alpha)
+					return Entry->high;
 				if (T(Entry->low_depth))
 				{
 					if (Entry->low >= beta)
@@ -5652,8 +5657,6 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 						hash_depth = Entry->low_depth;
 					}
 				}
-				if (T(Entry->high_depth) && Entry->high <= alpha)
-					return Entry->high;
 				break;
 			}
 		}
