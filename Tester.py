@@ -17,8 +17,8 @@ ROUNDS_PER_MATCH, MATCHES_PER_PAIR = 12, [1000, 2500]
 ENGINES = [
 'Base/Roc.exe', 
 'Test/Roc.exe', 
-#'Gull 3 x64 syzygy.exe', 
-'Ethereal11.25-x64-nopopcnt.exe'
+'Gull 3 x64 syzygy.exe', 
+#'Ethereal11.25-x64-nopopcnt.exe'
 ]
 SENTINEL_FN, HALT_MSG = 'tester.live', "No sentinel; halting"
 

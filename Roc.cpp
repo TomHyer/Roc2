@@ -166,10 +166,26 @@ struct TimeLimits_
 	uint64 softLimit_, hardLimit_;
 } TheTimeLimit;
 
+template<typename T_, int N> struct Circle_
+{
+	array<T_, N> vals_ = {};
+	int loc_ = 0;
+	void push(T_ val)
+	{
+		vals_[loc_++] = val;
+		loc_ %= N;
+	}
+	bool same() const
+	{
+		return adjacent_find(vals_.begin(), vals_.end(), std::not_equal_to<T_>()) == vals_.end();
+	}
+};
+
 struct SearchInfo_
 {
 	int singular_, hashDepth_;
-	bool change_, early_, failLow_, failHigh_;
+	bool early_, failLow_, failHigh_;
+	Circle_<uint16, 3> moves_;
 };
 
 constexpr int N_PAWN_HASH = 1 << 17;
@@ -869,6 +885,7 @@ constexpr uint32 KingRAttack = Pack(2, KingAttackWeight[5]);
 constexpr uint32 KingQAttack1 = Pack(1, KingAttackWeight[6]);
 constexpr uint32 KingQAttack = Pack(2, KingAttackWeight[7]);
 constexpr uint32 KingPAttack = Pack(2, 0);
+constexpr uint32 KingPRestrict = Pack(2, 58);
 constexpr uint32 KingAttack = Pack(1, 0);
 constexpr uint32 KingPAttackInc = Pack(0, KingAttackWeight[8]);
 constexpr uint32 KingAttackSquare = KingAttackWeight[9];
@@ -1009,6 +1026,7 @@ struct ThreadOwn_
 	RootScores_ results_;
 	vector<int> rootList_;	// may be ordered different from RootList
 
+	vector<int> pvRefDepth_;
 	int lastTime_;
 };
 
@@ -1025,6 +1043,7 @@ void SetRootMoves(ThreadOwn_* info)
 		}
 	}
 	info->rootList_.push_back(0);
+	info->pvRefDepth_.clear();
 }
 
 
@@ -3350,7 +3369,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_queens(GEvalInfo& EI,
 		b = Bit(sq);
 		uint64 att = QueenAttacks(sq, EI.occ);
 
-		if (uint64 a = att & EI.area[opp])
+		if (uint64 a = att & EI.area[opp] & ~(state[0].patt[opp] & state[0].dbl_att[opp]))
 		{
 			EI.king_att[me] += Single(a) ? KingQAttack1 : KingQAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
@@ -3429,7 +3448,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_rooks(GEvalInfo& EI, 
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = RookAttacks(sq, EI.occ);
-		if (uint64 a = att & EI.area[opp])
+		if (uint64 a = att & EI.area[opp] & ~(state[0].patt[opp] & state[0].dbl_att[opp]))
 		{
 			EI.king_att[me] += Single(a) ? KingRAttack1 : KingRAttack;
 			for (uint64 v = att & EI.area[opp]; T(v); Cut(v))
@@ -3540,7 +3559,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_bishops(GEvalInfo& EI
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = BishopAttacks(sq, EI.occ);
-		if (uint64 a = att & EI.area[opp])
+		if (uint64 a = att & EI.area[opp] & ~(state[0].patt[opp] & state[0].dbl_att[opp]))
 			EI.king_att[me] += Single(a) ? KingBAttack1 : KingBAttack;
 		uint64 control = att & EI.free[me];
 		NOTICE(EI.score, pop(control));
@@ -3583,7 +3602,7 @@ template<bool me, class POP, class WATCH> INLINE packed_t eval_knights(GEvalInfo
 		int sq = lsb(u);
 		b = Bit(sq);
 		uint64 att = NAtt[sq];
-		if (uint64 a = att & EI.area[opp])
+		if (uint64 a = att & EI.area[opp] & ~(state[0].patt[opp] & state[0].dbl_att[opp]))
 			EI.king_att[me] += Single(a) ? KingNAttack1 : KingNAttack;
 		state[0].threat |= att & board.Major(opp);
 		uint64 control = att & EI.free[me];
@@ -3653,7 +3672,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_king(GEvalInfo& EI, c
 		adjusted += (adjusted * (max(0, nAwol - nGuards) + max(0, 3 * nIncursions + nHoles - 10))) / 32;
 	}
 
-	static constexpr array<int, 4> PHASE = { 21, 18, 3, -2 };
+	static constexpr array<int, 4> PHASE = { 23, 19, 3, -2 };
 	int op = ((PHASE[0] + kr) * adjusted) / 32;
 	int md = (PHASE[1] * adjusted) / 32;
 	int eg = (PHASE[2] * adjusted) / 32;
@@ -3787,6 +3806,11 @@ template<bool me, class WATCH> void eval_xray(GEvalInfo& EI, const State_& state
 	if (uint64 pa = state[0].patt[me] & EI.area[opp])
 	{
 		EI.king_att[me] = KingAttack + (Multiple(pa) ? KingPAttackInc : 0);
+		if (uint64 oppKing = state().King(opp); T(oppKing & Boundary))
+			if (Shift<me>(state().Pawn(opp)) & oppKing)
+				if (uint64 restrictingPawn = Shift<opp>(Shift<opp>(oppKing)) & state().Pawn(me))
+					if (T(state[0].patt[me] & restrictingPawn) || F(state[0].patt[opp] & restrictingPawn))
+						EI.king_att[me] += KingPRestrict;
 	}
 	state[0].xray[me] = 0;
 	eval_queens_xray<me, WATCH>(EI, state);
@@ -4392,24 +4416,18 @@ template<class I> void sort_moves(I start, I finish)
 	stable_sort(start, finish, better);
 }
 
-INLINE int pick_move(PlyState_* current)
+inline int pick_move(PlyState_* current)
 {
-	int move = *(current->current);
-	if (F(move))
-		return 0;
 	int* best = current->current;
+	if (F(*best))
+		return 0;
 	for (int* p = current->current + 1; T(*p); ++p)
 	{
-		if ((*p) > move)
-		{
+		if (*p > *best)
 			best = p;
-			move = *p;
-		}
 	}
-	*best = *(current->current);
-	*(current->current) = move;
-	current->current++;
-	return move & 0xFFFF;
+	std::swap(*best, *current->current);
+	return *(current->current++) & 0xFFFF;
 }
 
 INLINE void apply_wobble(void* p, int* move, int depth)
@@ -4454,7 +4472,7 @@ void mark_evasions(int* list, State_* state)
 template<bool me> inline bool IsGoodCap(const State_& state, int move)
 {
 	return (HasBit(state[0].xray[me], From(move)) && !HasBit(FullLine[lsb(state().King(opp))][From(move)], To(move)))
-		 || see<me>(state, move, 0, SeeValue);
+			|| see<me>(state, move, 0);
 }
 
 
@@ -4580,226 +4598,221 @@ template<bool me> int NextMove(State_* state, int depth)
 	}
 }
 
-template<bool me> bool see(const State_& state, int move, int margin, const uint16* mat_value)
+template<bool me> bool see(const State_& state, int move, int margin)
 {
 	const Board_& board = state.board_;
-	int from, to, piece, capture, delta, sq, pos;
-	uint64 clear, def, att, occ, b_area, r_slider_att, b_slider_att, r_slider_def, b_slider_def, r_area, u, new_att, my_bishop, opp_bishop;
-	from = From(move);
-	to = To(move);
-	piece = mat_value[board.PieceAt(from)];
-	capture = mat_value[board.PieceAt(to)];
-	delta = piece - capture;
-	if (delta <= -margin)
+	int from = From(move), to = To(move);
+	int piece = SeeValue[board.PieceAt(from)], capture = SeeValue[board.PieceAt(to)];
+	int cost = piece - capture + margin;
+	if (cost <= 0)
 		return 1;
-	if (piece == mat_value[WhiteKing])
+	if (piece == SeeValue[WhiteKing])
 		return 1;
 	if (HasBit(state[0].xray[me], from))
 		return 1;
-	if (piece > (mat_value[WhiteKing] >> 1))
+	if (piece > (SeeValue[WhiteKing] >> 1))
 		return 1;
 	if (IsEP(move))
 		return 1;
 	if (!HasBit(state[0].att[opp], to))
 		return 1;
-	att = PAtt[me][to] & board.Pawn(opp);
-	if (T(att) && delta + margin > mat_value[WhitePawn])
+	uint64 oppAtt = PAtt[me][to] & board.Pawn(opp);
+	if (T(oppAtt) && cost > SeeValue[WhitePawn])
 		return 0;
-	clear = ~Bit(from);
-	def = PAtt[opp][to] & board.Pawn(me) & clear;
-	if (T(def) && delta + mat_value[WhitePawn] + margin <= 0)
+	uint64 occ = board.PieceAll() & ~Bit(from);	// occupancy after the initial capture
+	uint64 myAtt = PAtt[opp][to] & board.Pawn(me) & occ;
+	if (T(myAtt) && cost + SeeValue[WhitePawn] <= 0)
 		return 1;
-	att |= NAtt[to] & board.Knight(opp);
-	if (T(att) && delta > mat_value[WhiteDark] - margin)
+	oppAtt |= NAtt[to] & board.Knight(opp);
+	if (T(oppAtt) && cost > SeeValue[WhiteDark])
 		return 0;
-	occ = board.PieceAll() & clear;
-	b_area = BishopAttacks(to, occ);
-	opp_bishop = board.Bishop(opp);
-	if (delta > mat_value[IDark[me]] - margin)
+	uint64 b_area = BishopAttacks(to, occ);
+	uint64 opp_bishop = board.Bishop(opp);
+	if (cost > SeeValue[IDark[me]])
 		if (b_area & opp_bishop)
 			return 0;
-	my_bishop = board.Bishop(me);
-	b_slider_att = BMask[to] & (opp_bishop | board.Queen(opp));
-	r_slider_att = RMask[to] & board.Major(opp);
-	b_slider_def = BMask[to] & (my_bishop | board.Queen(me)) & clear;
-	r_slider_def = RMask[to] & board.Major(me) & clear;
-	att |= (b_slider_att & b_area);
-	def |= NAtt[to] & board.Knight(me) & clear;
-	r_area = RookAttacks(to, occ);
-	att |= (r_slider_att & r_area);
-	def |= (b_slider_def & b_area);
-	def |= (r_slider_def & r_area);
-	att |= KAtt[to] & board.King(opp);
-	def |= KAtt[to] & board.King(me) & clear;
+	uint64 my_bishop = board.Bishop(me);
+	uint64 oppSliderB = BMask[to] & (opp_bishop | board.Queen(opp));
+	uint64 oppSliderR = RMask[to] & board.Major(opp);
+	uint64 mySliderB = BMask[to] & (my_bishop | board.Queen(me)) & occ;
+	uint64 mySliderR = RMask[to] & board.Major(me) & occ;
+	oppAtt |= (oppSliderB & b_area);
+	myAtt |= NAtt[to] & board.Knight(me) & occ;
+	uint64 r_area = RookAttacks(to, occ);
+	oppAtt |= (oppSliderR & r_area);
+	myAtt |= (mySliderB & b_area);
+	myAtt |= (mySliderR & r_area);
+	oppAtt |= KAtt[to] & board.King(opp);
+	myAtt |= KAtt[to] & board.King(me);	// by now we know the initial capturer wasn't a king
 	while (true)
 	{
-		if (u = (att & board.Pawn(opp)))
+		if (uint64 u = (oppAtt & board.Pawn(opp)))
 		{
 			capture -= piece;
-			piece = mat_value[WhitePawn];
-			sq = lsb(u);
+			piece = SeeValue[WhitePawn];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			att ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			oppAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & oppSliderB & (occ ^ oppAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					att |= Bit(pos);
+					oppAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (att & board.Knight(opp)))
+		else if (uint64 u = (oppAtt & board.Knight(opp)))
 		{
 			capture -= piece;
-			piece = mat_value[WhiteKnight];
-			att ^= (~(u - 1)) & u;
+			piece = SeeValue[WhiteKnight];
+			oppAtt ^= (~(u - 1)) & u;
 		}
-		else if (u = (att & opp_bishop))
+		else if (uint64 u = (oppAtt & opp_bishop))
 		{
 			capture -= piece;
-			piece = mat_value[WhiteDark];
-			sq = lsb(u);
+			piece = SeeValue[WhiteDark];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			att ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & b_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			oppAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & oppSliderB & (occ ^ oppAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					att |= Bit(pos);
+					oppAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (att & board.Rook(opp)))
+		else if (uint64 u = (oppAtt & board.Rook(opp)))
 		{
 			capture -= piece;
-			piece = mat_value[WhiteRook];
-			sq = lsb(u);
+			piece = SeeValue[WhiteRook];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			att ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & r_slider_att & occ & (~att); T(new_att); Cut(new_att))
+			oppAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & oppSliderR & (occ ^ oppAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					att |= Bit(pos);
+					oppAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (att & board.Queen(opp)))
+		else if (uint64 u = (oppAtt & board.Queen(opp)))
 		{
 			capture -= piece;
-			piece = mat_value[WhiteQueen];
-			sq = lsb(u);
+			piece = SeeValue[WhiteQueen];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			att ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & (r_slider_att | b_slider_att) & occ & (~att); T(new_att); Cut(new_att))
+			oppAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & (oppSliderR | oppSliderB) & (occ ^ oppAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					att |= Bit(pos);
+					oppAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (att & board.King(opp)))
+		else if (uint64 u = (oppAtt & board.King(opp)))
 		{
 			capture -= piece;
-			piece = mat_value[WhiteKing];
+			piece = SeeValue[WhiteKing];
 		}
 		else
 			return 1;
-		if (capture < -(mat_value[WhiteKing] >> 1))
+		if (capture < -(SeeValue[WhiteKing] >> 1))
 			return 0;
 		if (piece + capture < margin)
 			return 0;
-		if (u = (def & board.Pawn(me)))
+		if (uint64 u = (myAtt & board.Pawn(me)))
 		{
 			capture += piece;
-			piece = mat_value[WhitePawn];
-			sq = lsb(u);
+			piece = SeeValue[WhitePawn];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			def ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			myAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & mySliderB & (occ ^ myAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					def |= Bit(pos);
+					myAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (def & board.Knight(me)))
+		else if (uint64 u = (myAtt & board.Knight(me)))
 		{
 			capture += piece;
-			piece = mat_value[WhiteKnight];
-			def ^= (~(u - 1)) & u;
+			piece = SeeValue[WhiteKnight];
+			myAtt ^= (~(u - 1)) & u;
 		}
-		else if (u = (def & my_bishop))
+		else if (uint64 u = (myAtt & my_bishop))
 		{
 			capture += piece;
-			piece = mat_value[WhiteDark];
-			sq = lsb(u);
+			piece = SeeValue[WhiteDark];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			def ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & b_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			myAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & mySliderB & (occ ^ myAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					def |= Bit(pos);
+					myAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (def & board.Rook(me)))
+		else if (uint64 u = (myAtt & board.Rook(me)))
 		{
 			capture += piece;
-			piece = mat_value[WhiteRook];
-			sq = lsb(u);
+			piece = SeeValue[WhiteRook];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			def ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & r_slider_def & occ & (~att); T(new_att); Cut(new_att))
+			myAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & mySliderR & (occ ^ myAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					def |= Bit(pos);
+					myAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (def & board.Queen(me)))
+		else if (uint64 u = (myAtt & board.Queen(me)))
 		{
 			capture += piece;
-			piece = mat_value[WhiteQueen];
-			sq = lsb(u);
+			piece = SeeValue[WhiteQueen];
+			int sq = lsb(u);
 			occ ^= Bit(sq);
-			def ^= Bit(sq);
-			for (new_att = FullLine[to][sq] & (r_slider_def | b_slider_def) & occ & (~att); T(new_att); Cut(new_att))
+			myAtt ^= Bit(sq);
+			for (uint64 new_att = FullLine[to][sq] & (mySliderR | mySliderB) & (occ ^ myAtt); T(new_att); Cut(new_att))
 			{
-				pos = lsb(new_att);
+				int pos = lsb(new_att);
 				if (F(Between[to][pos] & occ))
 				{
-					def |= Bit(pos);
+					myAtt |= Bit(pos);
 					break;
 				}
 			}
 		}
-		else if (u = (def & board.King(me)))
+		else if (uint64 u = (myAtt & board.King(me)))
 		{
 			capture += piece;
-			piece = mat_value[WhiteKing];
+			piece = SeeValue[WhiteKing];
 		}
 		else
 			return 0;
-		if (capture > (mat_value[WhiteKing] >> 1))
+		if (capture > (SeeValue[WhiteKing] >> 1))
 			return 1;
 		if (capture - piece >= margin)
 			return 1;
@@ -5318,7 +5331,7 @@ int time_to_stop(const SearchInfo_& SI, int time, int searching)
 		return 0;
 	if (time > TheTimeLimit.softLimit_)
 		return 1;
-	if (TheShare.firstMove_ || SI.change_ || SI.failLow_)
+	if (TheShare.firstMove_ || !SI.moves_.same() || SI.failLow_)
 		return 0;
 	if (time * 100 > TheTimeLimit.softLimit_ * TimeNoChangeMargin)
 		return 1;
@@ -5411,7 +5424,7 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 {
 	const Board_& board = state->board_;
 	const PlyState_& current = *state->current_;
-	int i, value, score, move, hash_move, hash_depth;
+	int value, score, move, hash_move, hash_depth;
 	auto finish = [&](int score, bool did_delta_moves)
 	{
 		if (depth >= -2 
@@ -5438,13 +5451,6 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 			check_time(nullptr, 1);
 	}
 #endif
-	if (GEntry* entry = probe_hash(current))
-	{
-		if (entry->high_depth > 0 && entry->high < alpha)
-			return entry->high;
-		if (entry->low_depth > 0 && entry->low > beta)
-			return entry->low;
-	}
 	if (flags & FlagCallEvaluation)
 	{
 		evaluate(state);
@@ -5471,26 +5477,28 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 	hash_move = hash_depth = 0;
 	if (flags & FlagHashCheck)
 	{
-		GEntry* Entry = nullptr;
-		for (i = 0, Entry = HashStart(current.key); i < HASH_CLUSTER; ++Entry, ++i)
+		if (GEntry* Entry = probe_hash(current))
 		{
-			if (Low32(current.key) == Entry->key)
+			if (T(Entry->high_depth) && Entry->high <= alpha)
+				return Entry->high;
+			if (T(Entry->low_depth))
 			{
-				if (T(Entry->low_depth))
+				if (Entry->low >= beta)
+					return Entry->low;
+				if (Entry->low_depth > hash_depth && T(Entry->move))
 				{
-					if (Entry->low >= beta)
-						return Entry->low;
-					if (Entry->low_depth > hash_depth && T(Entry->move))
-					{
-						hash_move = Entry->move;
-						hash_depth = Entry->low_depth;
-					}
+					hash_move = Entry->move;
+					hash_depth = Entry->low_depth;
 				}
-				if (T(Entry->high_depth) && Entry->high <= alpha)
-					return Entry->high;
-				break;
+			}
+			else
+			{
+				Entry->low_depth = 1;
+				Entry->low = alpha;
 			}
 		}
+		if (auto pvEntry = probe_pv_hash(current))
+			return pvEntry->value;
 	}
 
 	current.mask = capture_margin_mask<me>(*state, alpha, &score);
@@ -5534,7 +5542,7 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 	state->current_->current = state->current_->moves;
 	while (move = pick_move(state->current_))
 	{
-		if (move != hash_move && !IsIllegal(*state, move) && see<me>(*state, move, -SeeThreshold, SeeValue))
+		if (move != hash_move && !IsIllegal(*state, move) && see<me>(*state, move, -SeeThreshold))
 		{
 			if (SeeValue[board.PieceAt(To(move))] > SeeValue[board.PieceAt(From(move))])
 				++nTried;
@@ -5563,7 +5571,7 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 		if (move != hash_move 
 			&& !IsIllegal(*state, move) 
 			&& !IsRepetition(*state, alpha + 1, move) 
-			&& see<me>(*state, move, -SeeThreshold, SeeValue))
+			&& see<me>(*state, move, -SeeThreshold))
 		{
 			do_move<me>(state, move);
 			value = -q_evasion<opp>(state, -beta, -alpha, depth - 1, FlagNeatSearch);
@@ -5595,7 +5603,7 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 		if (move != hash_move 
 			&& !IsIllegal(*state, move)
 			&& !IsRepetition(*state, alpha + 1, move) 
-			&& see<me>(*state, move, -SeeThreshold, SeeValue))
+			&& see<me>(*state, move, -SeeThreshold))
 		{
 			++nTried;
 			do_move<me>(state, move);
@@ -5630,36 +5638,31 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 {
 	const Board_& board = state->board_;
 	const PlyState_& current = *state->current_;
-	int i, value, pext = 0, score, move, cnt, hash_move, hash_depth;
-	int* p;
-
-	score = state->Height() - MateValue;
+	
+	int score = state->Height() - MateValue;
 	if (flags & FlagHaltCheck)
 		HALT_CHECK(state);
 
-	hash_move = hash_depth = 0;
+	int hash_move = 0, hash_depth = 0;
 	if (flags & FlagHashCheck)
 	{
-		GEntry* Entry;
-		for (i = 0, Entry = HashStart(current.key); i < HASH_CLUSTER; ++Entry, ++i)
+		if (GEntry* Entry = probe_hash(current))
 		{
-			if (Low32(current.key) == Entry->key)
+			if (T(Entry->high_depth) && Entry->high <= alpha)
+				return Entry->high;
+			if (T(Entry->low_depth))
 			{
-				if (T(Entry->high_depth) && Entry->high <= alpha)
-					return Entry->high;
-				if (T(Entry->low_depth))
+				if (Entry->low >= beta)
+					return Entry->low;
+				if (Entry->low_depth > hash_depth && T(Entry->move))
 				{
-					if (Entry->low >= beta)
-						return Entry->low;
-					if (Entry->low_depth > hash_depth && T(Entry->move))
-					{
-						hash_move = Entry->move;
-						hash_depth = Entry->low_depth;
-					}
+					hash_move = Entry->move;
+					hash_depth = Entry->low_depth;
 				}
-				break;
 			}
 		}
+		if (auto pvEntry = probe_pv_hash(current))
+			return pvEntry->value;
 	}
 
 	if (flags & FlagCallEvaluation)
@@ -5676,15 +5679,14 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 	state->current_->current = state->current_->moves;
 	if (F(current.moves[0]))
 		return score;
-	if (F(current.moves[1]))
-		pext = 1;
-	else
+	int pext = F(current.moves[1]);
+	if (!pext)
 	{
 		state->current_->ref = Refutations<me, true>(*state);
 		mark_evasions(state->current_->moves, state);
 		if (T(hash_move) && (T(Bit(To(hash_move)) & current.mask) || T(hash_move & 0xE000)))
 		{
-			for (p = state->current_->moves; T(*p); ++p)
+			for (auto p = state->current_->moves; T(*p); ++p)
 			{
 				if (((*p) & 0xFFFF) == hash_move)
 				{
@@ -5694,8 +5696,8 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 			}
 		}
 	}
-	cnt = 0;
-	while (move = pick_move(state->current_))
+	int cnt = 0;
+	while (int move = pick_move(state->current_))
 	{
 		if (IsIllegal(*state, move))
 			continue;
@@ -5709,15 +5711,14 @@ template<bool me> int q_evasion(State_* state, int alpha, int beta, int depth, i
 		{
 			if (cnt > 3 && !is_check<me>(*state, move))
 				continue;
-			value = current.score + DeltaM(state, move) + 10 * CP_SEARCH;
-			if (value <= alpha)
+			if (int value = current.score + DeltaM(state, move) + 10 * CP_SEARCH; value <= alpha)
 			{
 				score = Max(value, score);
 				continue;
 			}
 		}
 		do_move<me>(state, move);
-		value = -QSearch<opp>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
+		int value = -QSearch<opp>(state, -beta, -alpha, depth - 1 + pext, FlagNeatSearch);
 		undo_move<me>(state, move);
 		if (value > score)
 		{
@@ -5747,7 +5748,8 @@ template<bool exclusion, bool evasion> int cut_search(State_* state, int move, i
 		{
 			if (state->current_->killer[1] != move && F(flags & FlagNoKillerUpdate))
 			{
-				for (int jk = N_KILLER; jk > 1; --jk) state->current_->killer[jk] = state->current_->killer[jk - 1];
+				for (int jk = N_KILLER; jk > 1; --jk) 
+					state->current_->killer[jk] = state->current_->killer[jk - 1];
 				state->current_->killer[1] = move;
 			}
 			if (state->current_->stage == s_quiet && (move & 0xFFFF) == (*(state->current_->current - 1) & 0xFFFF))
@@ -6104,7 +6106,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 		int ext;
 		if (evasion && forced)
 			ext = 2;
-		else if (check && see<me>(*state, move, 0, SeeValue))
+		else if (check && see<me>(*state, move, 0))
 			ext = check_extension<me, 0>(move, depth);
 		else
 			ext = extension<me, 0>(current, move, depth);
@@ -6125,7 +6127,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 						reduction = Max(0, reduction - 1);
 					if (reduction >= 2 && !(board.Queen(White) | board.Queen(Black)) && popcnt(board.NonPawnKingAll()) <= 4)
 						reduction += reduction / 2;
-					if (!evasion && new_depth - reduction > 3 && !see<me>(*state, move, -SeeThreshold, SeeValue))
+					if (!evasion && new_depth - reduction > 3 && !see<me>(*state, move, -SeeThreshold))
 						reduction += 2;
 					if (!evasion && reduction == 1 && new_depth > 4)
 						reduction = cnt > 3 ? 2 : 0;
@@ -6146,13 +6148,13 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 					continue;
 				}
 			}
-			if (!evasion && depth <= 9 && T(board.NonPawnKing(me)) && !see<me>(*state, move, -SeeThreshold, SeeValue))
+			if (!evasion && depth <= 9 && T(board.NonPawnKing(me)) && !see<me>(*state, move, -SeeThreshold))
 				continue;
 		}
 		else if (!evasion && !check && depth <= 9)
 		{
 			if ((current.stage == s_bad_cap && depth <= 5)
-				|| (current.stage == r_cap && !see<me>(*state, move, -SeeThreshold, SeeValue)))
+				|| (current.stage == r_cap && !see<me>(*state, move, -SeeThreshold)))
 				continue;
 		}
 
@@ -6230,8 +6232,9 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	int value, move, cnt, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
 			hash_depth, old_alpha = alpha, ex_depth = 0, ex_value = 0;
 	int start_knodes = static_cast<int>(state->nodes_ >> 10);
+	int height = state->Height();
 
-	if (!self->own_.results_.empty() && (root || depth > 8 || depth > 2 + state->Height()))
+	if (!self->own_.results_.empty() && (root || depth > 8 || depth > 2 + height))
 	{	// don't bother checking for stop until we can make some move
 		self->own_.lastTime_ = millisecs(TheTimeLimit.start_, now());
 		if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !root))
@@ -6254,9 +6257,9 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	{
 		if (depth <= 1)
 			return QSearch<me>(state, alpha, beta, 1, FlagNeatSearch);
-		if (state->Height() - MateValue >= beta)
+		if (height - MateValue >= beta)
 			return beta;
-		if (MateValue - state->Height() <= alpha)
+		if (MateValue - height <= alpha)
 			return alpha;
 		HALT_CHECK(state);
 	}
@@ -6343,8 +6346,8 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		current.mask = Filled;
 		(void)gen_evasions<me>(state);
 		if (F(current.moves[0]))
-			return state->Height() - MateValue;
-		alpha = Max(2 + state->Height() - MateValue, alpha);
+			return height - MateValue;
+		alpha = Max(2 + height - MateValue, alpha);
 		if (F(current.moves[1]))
 			pext = 2;
 	}
@@ -6377,6 +6380,13 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			}
 		}
 		new_depth = depth - 2 + ext;
+		if constexpr (root)
+		{
+			if (height < self->own_.pvRefDepth_.size())
+				new_depth = self->own_.pvRefDepth_[height] = Max(new_depth, self->own_.pvRefDepth_[height]);
+			else
+				self->own_.pvRefDepth_.resize(height + 1, new_depth);
+		}
 		do_move<me>(state, move);
 		evaluate(state);
 		if (state->current_->att[opp] & state->board_.King(me))
@@ -6489,7 +6499,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			if (root)
 			{
 				SetMoveScore(&self->own_.rootList_[cnt - 1], cnt + 3);
-				state->searchInfo_.change_ = true;
+				state->searchInfo_.moves_.push(0);
 				rootIsBest = false;
 				state->searchInfo_.failLow_ = false;
 				hash_low(current, move, value, depth, false);
@@ -6502,7 +6512,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		}
 	}
 	if (root && rootIsBest)
-		state->searchInfo_.change_ = false;
+		state->searchInfo_.moves_.push(hash_move);
 	if (F(cnt) && !IsCheck(*state, me))
 	{
 		hash_exact(current, 0, 0, 127, 0, 0, 0);
@@ -6677,7 +6687,7 @@ void aspirationWindow(Thread_* thread)
 		// Perform a search and consider reporting results
 		bool haveMove = F(thread->own_.results_.empty());
 		score_t score = search(thread, haveMove ? window.alpha_ : -MateValue, haveMove ? window.beta_: MateValue, depth, FALSE);
-		if (!!thread->peeps_)
+		if (!thread->own_.iThread_)
 			if ((score > window.alpha_ && score < window.beta_) || millisecs(TheTimeLimit.start_, now()) >= MinUpdateMS)
 			{
 				PVariation pv = PVFromHash(score, thread->state_, 0);
@@ -6883,7 +6893,7 @@ void resetThreadPool(vector<Thread_>* threads, bool clear_hash)
 
 	for (auto& thread: *threads)
 	{
-		init_search(&thread.own_, &thread.state_, clear_hash && !!thread.peeps_, true);	// POSTPONED:  delete this?
+		init_search(&thread.own_, &thread.state_, clear_hash && !thread.own_.iThread_, true);	// POSTPONED:  delete this?
 	}
 }
 
