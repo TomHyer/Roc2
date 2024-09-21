@@ -81,15 +81,17 @@ constexpr int InitiativePhase = int(4.5 * CP_SEARCH);
 
 struct NoWatch_
 {
-	template<class T_> bool operator()(int, bool m, T_) const { return m; }
+	template<class T_> bool operator()(const char*, bool m, T_) const { return m; }
+	template<class T_> void operator()(const char*, T_) const {}
 };
 
-#define IncWatch(var, x, loc) (WATCH()(loc, me, x) ? (var -= (x)) : (var += (x)))
-#define IncV(var, x) IncWatch(var, x, __LINE__)				// support tuner
+#define IncWatch(var, x, n, loc) (WATCH()(loc, me, x) ? (var -= (n) * (x)) : (var += (n) * (x)))
+#define IncVMultiple(var, n, x) IncWatch(var, x, n, #x)				// support tuner
+#define IncV(var, x) IncWatch(var, x, 1, #x)				// support tuner
 //#define IncV(var, x) (me ? (var -= (x)) : (var += (x)))	// tournament mode
 #define DecV(var, x) IncV(var, -(x))
-#define NOTICE(var, x) 
-#define FakeV(var, x)
+#define NOTICE(x) WATCH()(#x, x) 
+
 
 constexpr sint16 KpkValue = 300 * CP_EVAL;
 constexpr sint16 EvalValue = 30000;
@@ -765,7 +767,7 @@ namespace PasserValues
 	constexpr array<packed_t, 7> Outside = { 0ull, 0ull, 0ull, Pack(20, 18, 10, 3), Pack(54, 40, 20, 0), Pack(87, 76, 21, 0), Pack(120, 123, 16, 0) };	// is easternmost/westernmost of all pawns
 	constexpr array<packed_t, 7> Movable = { 0ull, 0ull, 0ull, Pack(21, 18, 19, 21), Pack(58, 51, 37, 20), Pack(103, 113, 61, 15), Pack(154, 189, 89, 11) };	// can be pushed now
 	constexpr array<packed_t, 7> Clear = { 0ull, 0ull, 0ull, Pack(10, 11, 12, 0), Pack(30, 33, 36, 0), Pack(68, 74, 80, 0), Pack(121, 131, 142, 0) };	// no opponent pieces in path
-	constexpr array<packed_t, 7> Connected = { 0ull, 0ull, 0ull, Pack(29, 23, 27, 0), Pack(72, 69, 72, 0), Pack(139, 160, 137, 31), Pack(225, 271, 193, 87) }; // clear && directly beside another passer
+	constexpr array<packed_t, 7> Connected = { 0ull, 0ull, 0ull, Pack(12, 10, 11, 0), Pack(30, 29, 30, 0), Pack(57, 66, 56, 13), Pack(92, 112, 79, 36) }; // clear && directly beside another passer
 	constexpr array<packed_t, 7> Free = { 0ull, 0ull, 0ull, Pack(53, 49, 72, 0), Pack(95, 124, 166, 0), Pack(116, 274, 378, 3), Pack(121, 468, 672, 6) };	// clear && no sq
 	constexpr array<packed_t, 7> Supported = { 0ull, 0ull, 0ull, Pack(41, 36, 33, 5), Pack(90, 84, 77, 2), Pack(141, 157, 172, 0), Pack(194, 246, 297, 0) };	// clear && directly backed by major
 }
@@ -2462,12 +2464,22 @@ void calc_material(int index, GMaterial& material)
 					mat[me] = 1;
 				if (bishops[me] == 1)
 				{
-					if (minor[opp] == 1 && bishops[opp] == 1 && light[me] != light[opp])
+					if (minor[opp] == 1)
 					{
-						mul[me] = Min(mul[me], 15);
-						if (pawns[me] - pawns[opp] <= 1)
-							mul[me] = Min(mul[me], 11);
+						if (knights[opp] == 1)
+							mul[me] += 8;
+						else if (light[me] != light[opp])
+						{
+							mul[me] = Min(mul[me], 15);
+							if (pawns[me] - pawns[opp] <= 1)
+								mul[me] = Min(mul[me], 11);
+						}
 					}
+				}
+				else
+				{	// I have only knight
+					if (knights[opp] == 0 && bishops[opp] == 1)
+						mul[me] += 9;
 				}
 			}
 			else if (!pawns[me] && knights[me] == 2 && !bishops[me])
@@ -3195,7 +3207,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_pawns(GPawnEntry* Paw
 			}
 			if (rrank >= 3 && (b & (File[2] | File[3] | File[4] | File[5])) && next != IPawn[opp] && (PIsolated[file] & Line[rank] & board.Pawn(me)))
 			{
-				IncV(PEI.score, Values::PawnChainLinear * (rrank - 4));
+				IncVMultiple(PEI.score, rrank - 4, Values::PawnChainLinear);
 				IncV(PEI.score, Values::PawnChain);
 			}
 		}
@@ -3217,11 +3229,10 @@ template<bool me, class POP, class WATCH> INLINE void eval_pawns(GPawnEntry* Paw
 		}
 		else
 		{
-			NOTICE(PEI.score, rrank);
+			NOTICE(rrank);
 			if (open && (F(board.Pawn(opp) & PIsolated[file]) || pop(board.Pawn(me) & PIsolated[file]) >= pop(board.Pawn(opp) & PIsolated[file])))
 				IncV(PEI.score, PasserValues::Candidate[rrank]);  // IDEA: more precise pawn counting for the case of, say,
 														  // white e5 candidate with black pawn on f5 or f4...
-			NOTICE(PEI.score, NO_INFO);
 		}
 
 		if (F(PEI.patt[me] & b) && next == IPawn[opp])  // unprotected and can't advance
@@ -3253,7 +3264,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_pawns(GPawnEntry* Paw
 			//	int deficit = (me ? 1 : -1) * Material[state[0].material].imbalance;
 			//	if (rrank <= deficit) continue;
 			//}
-			NOTICE(PEI.score, rrank);
+			NOTICE(rrank);
 			IncV(PEI.score, PasserValues::General[rrank]);
 			if (PEI.patt[me] & b)
 				IncV(PEI.score, PasserValues::Protected[rrank]);
@@ -3266,7 +3277,6 @@ template<bool me, class POP, class WATCH> INLINE void eval_pawns(GPawnEntry* Paw
 				- dist_def * RO->PasserDef[rrank] - RO->LogDist[dist_def] * RO->PasserDefLog[rrank];  // IDEA -- incorporate side-to-move in closer-king check?
 			// IDEA -- scale down rook pawns?
 			IncV(PEI.score, Pack(0, value / 256));
-			NOTICE(PEI.score, NO_INFO);
 		}
 	}
 	if (T(board.Rook(opp)) && !((kf * kr) % 7))
@@ -3377,10 +3387,8 @@ template<bool me, class POP, class WATCH> INLINE void eval_queens(GEvalInfo& EI,
 					EI.king_att[me]++;
 		}
 		uint64 control = att & EI.free[me];
-		NOTICE(EI.score, pop(control));
+		NOTICE(pop(control));
 		IncV(EI.score, RO->MobQueen[0][pop(control)]);
-		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusQ[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobQueen[1][pop(control & RO->LocusQ[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalQueenPawn);
@@ -3457,10 +3465,8 @@ template<bool me, class POP, class WATCH> INLINE void eval_rooks(GEvalInfo& EI, 
 		}
 		state[0].threat |= att & board.Queen(opp);
 		uint64 control = att & EI.free[me];
-		NOTICE(EI.score, pop(control));
+		NOTICE(pop(control));
 		IncV(EI.score, RO->MobRook[0][pop(control)]);
-		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusR[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobRook[1][pop(control & RO->LocusR[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalRookPawn);
@@ -3478,9 +3484,9 @@ template<bool me, class POP, class WATCH> INLINE void eval_rooks(GEvalInfo& EI, 
 				{
 					if (!(state[0].patt[opp] & target))
 					{
-						IncV(EI.score, force * Values::RookOfMinorHanging);
+						IncVMultiple(EI.score, force, Values::RookOfMinorHanging);
 						if (PWay[me][sq] & board.King(opp))
-							IncV(EI.score, force * Values::RookOfKingAtt);
+							IncVMultiple(EI.score, force, Values::RookOfKingAtt);
 					}
 				}
 			}
@@ -3488,7 +3494,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_rooks(GEvalInfo& EI, 
 			{
 				int square = lsb(attP);
 				if (!(PSupport[opp][square] & board.Pawn(opp)))
-					IncV(EI.score, force * Values::RookHofWeakPAtt);
+					IncVMultiple(EI.score, force, Values::RookHofWeakPAtt);
 			}
 		}
 		if ((b & OwnLine<me>(6)) && ((board.King(opp) | board.Pawn(opp)) & (OwnLine<me>(6) | OwnLine<me>(7))))
@@ -3562,10 +3568,8 @@ template<bool me, class POP, class WATCH> INLINE void eval_bishops(GEvalInfo& EI
 		if (uint64 a = att & EI.area[opp] & ~(state[0].patt[opp] & state[0].dbl_att[opp]))
 			EI.king_att[me] += Single(a) ? KingBAttack1 : KingBAttack;
 		uint64 control = att & EI.free[me];
-		NOTICE(EI.score, pop(control));
+		NOTICE(pop(control));
 		IncV(EI.score, RO->MobBishop[0][pop(control)]);
-		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusB[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobBishop[1][pop(control & RO->LocusB[me][EI.king[opp]])]);
 		if (control & board.Pawn(opp))
 			IncV(EI.score, Values::TacticalBishopPawn);
@@ -3606,10 +3610,8 @@ template<bool me, class POP, class WATCH> INLINE packed_t eval_knights(GEvalInfo
 			EI.king_att[me] += Single(a) ? KingNAttack1 : KingNAttack;
 		state[0].threat |= att & board.Major(opp);
 		uint64 control = att & EI.free[me];
-		NOTICE(EI.score, pop(control));
+		NOTICE(pop(control));
 		IncV(EI.score, RO->MobKnight[0][pop(control)]);
-		NOTICE(EI.score, NO_INFO);
-		FakeV(EI.score, (64 * pop(control & RO->LocusN[me][EI.king[opp]]) - N_LOCUS * pop(control)) * Pack4(1, 1, 1, 1));
 		IncV(EI.score, RO->MobKnight[1][pop(control & RO->LocusN[me][EI.king[opp]])]);
 		if (control & board.Bishop(opp))
 			IncV(EI.score, Values::TacticalN2B);
@@ -3677,9 +3679,8 @@ template<bool me, class POP, class WATCH> INLINE void eval_king(GEvalInfo& EI, c
 	int md = (PHASE[1] * adjusted) / 32;
 	int eg = (PHASE[2] * adjusted) / 32;
 	int cl = (PHASE[3] * adjusted) / 32;
-	NOTICE(EI.score, cnt);
+	NOTICE(cnt);
 	IncV(EI.score, Pack(op, md, eg, cl));
-	NOTICE(EI.score, NO_INFO);
 }
 
 template<bool me, class POP, class WATCH> INLINE void eval_passer(GEvalInfo& EI, const State_& state)
@@ -3723,7 +3724,7 @@ template<bool me, class POP, class WATCH> INLINE void eval_passer(GEvalInfo& EI,
 			}
 			if (connected)
 			{
-				IncV(EI.score, PasserValues::Connected[rank] * min(file + 2, 9 - file));
+				IncVMultiple(EI.score, 7 + min(file, 7 - file), PasserValues::Connected[rank]);
 			}
 			if (!hooked && !(state[0].att[opp] & way))
 			{
