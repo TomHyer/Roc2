@@ -5773,7 +5773,7 @@ INLINE int RazoringThreshold(int score, int depth, int height)
 template<int PV = 0> struct LMR_
 {
 	const double scale_;
-	LMR_(int depth) : scale_(0.118 + 0.001 * depth) {}
+	LMR_(int depth) : scale_(0.114 + 0.0035 * depth) {}
 	INLINE int operator()(int cnt) const
 	{
 		return cnt > 2 ? int(scale_ * msb(Square(Square(Square(uint64(cnt)))))) - PV : 0;
@@ -6121,7 +6121,7 @@ template<bool me, bool exclusion, bool evasion> int scout(State_* state, int bet
 					state->current_->gen_flags &= ~FlagSort;
 					continue;
 				}
-				if (!evasion)
+				if (!evasion && !check && F(board.PieceAt(To(move))))
 				{
 					int reduction = reduction_n(cnt);
 					if (!evasion && move == current.ref[0] || move == current.ref[1])
@@ -6466,13 +6466,15 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		ext = Max(pext, extension<me, 1>(current, move, depth));
 		check_recapture<1>(*state, To(move), depth, &ext);
 		new_depth = depth - 2 + ext;
-		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (T(root) || !is_killer(current, move) || T(IsCheck(*state, me))) && cnt > 3)
+		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (root || !is_killer(current, move)) && F(IsCheck(*state, me)) && cnt > 3)
 		{
 			int reduction = reduction_n(cnt);
 			if (move == current.ref[0] || move == current.ref[1])
 				reduction = Max(0, reduction - 1);
 			if (reduction >= 2 && !(board.Queen(White) | board.Queen(Black)) && popcnt(board.NonPawnKingAll()) <= 4)
 				reduction += reduction / 2;
+			if (reduction > 2 && state->Height() < 2)
+				reduction += 2 - state->Height();
 			new_depth = Max(3, new_depth - reduction);
 		}
 
