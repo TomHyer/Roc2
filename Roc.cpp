@@ -372,11 +372,11 @@ inline uint64 RookAttacks(int sq, const uint64& occ)
 #else
 inline uint64 BishopAttacks(int sq, const uint64& occ)
 {
-	return RO->BMagic_.Attacks[Magic::BOffset[sq] + (((RO->BMagic_.Mask[sq] & occ) * Magic::BMagic[sq]) >> Magic::BShift[sq])];
+	return RO->BMagic_.attacks_[Magic::BOffset[sq] + (((RO->BMagic_.masks_[sq] & occ) * Magic::BMagic[sq]) >> Magic::BShift[sq])];
 }
 inline uint64 RookAttacks(int sq, const uint64& occ)
 {
-	return RO->RMagic_.Attacks[Magic::ROffset[sq] + (((RO->RMagic_.Mask[sq] & occ) * Magic::RMagic[sq]) >> Magic::RShift[sq])];
+	return RO->RMagic_.attacks_[Magic::ROffset[sq] + (((RO->RMagic_.masks_[sq] & occ) * Magic::RMagic[sq]) >> Magic::RShift[sq])];
 }
 #endif
 INLINE uint64 QueenAttacks(int sq, const uint64& occ)
@@ -1439,13 +1439,14 @@ constexpr uint64 XRMagicAttacks(const std::array<std::array<uint64, 64>, 64>& be
 }
 
 
-constexpr Magic::Magic_<B_MAGIC_SIZE> MakeBMagic()
+Magic::Magic_ MakeBMagic()
 {
-	Magic::Magic_<B_MAGIC_SIZE> retval;
+	Magic::Magic_ retval;
+	retval.attacks_.resize(B_MAGIC_SIZE);
 	for (int i = 0; i < 64; ++i)
 	{
-		retval.Mask[i] = BMask[i] & Interior;
-		array<int, 16> bit_list = ListBits(retval.Mask[i]);
+		retval.masks_[i] = BMask[i] & Interior;
+		array<int, 16> bit_list = ListBits(retval.masks_[i]);
 		int bits = 64 - Magic::BShift[i];
 		for (int j = 0; j < Bit(bits); ++j)
 		{
@@ -1454,27 +1455,28 @@ constexpr Magic::Magic_<B_MAGIC_SIZE> MakeBMagic()
 				if (Odd(j >> k))
 					u |= Bit(bit_list[k]);
 			int index = static_cast<int>(Magic::BOffset[i] + ((Magic::BMagic[i] * u) >> Magic::BShift[i]));
-			retval.Attacks[index] = XBMagicAttacks(Between, i, u);
+			retval.attacks_[index] = XBMagicAttacks(Between, i, u);
 		}
 	}
 	return retval;
 }
-constexpr Magic::Magic_<R_MAGIC_SIZE> MakeRMagic()
+Magic::Magic_ MakeRMagic()
 {
-	Magic::Magic_<R_MAGIC_SIZE> retval;
+	Magic::Magic_ retval;
+	retval.attacks_.resize(R_MAGIC_SIZE);
 	for (int i = 0; i < 64; ++i)
 	{
-		retval.Mask[i] = RMask[i];
+		retval.masks_[i] = RMask[i];
 		if (FileOf(i) > 0)
-			retval.Mask[i] &= ~File[0];
+			retval.masks_[i] &= ~File[0];
 		if (RankOf(i) > 0)
-			retval.Mask[i] &= ~Line[0];
+			retval.masks_[i] &= ~Line[0];
 		if (FileOf(i) < 7)
-			retval.Mask[i] &= ~File[7];
+			retval.masks_[i] &= ~File[7];
 		if (RankOf(i) < 7)
-			retval.Mask[i] &= ~Line[7];
+			retval.masks_[i] &= ~Line[7];
 
-		array<int, 16> bit_list = ListBits(retval.Mask[i]);
+		array<int, 16> bit_list = ListBits(retval.masks_[i]);
 		int bits = 64 - Magic::RShift[i];
 		for (int j = 0; j < Bit(bits); ++j)
 		{
@@ -1483,7 +1485,7 @@ constexpr Magic::Magic_<R_MAGIC_SIZE> MakeRMagic()
 				if (Odd(j >> k))
 					u |= Bit(bit_list[k]);
 			int index = static_cast<int>(Magic::ROffset[i] + ((Magic::RMagic[i] * u) >> Magic::RShift[i]));
-			retval.Attacks[index] = XRMagicAttacks(Between, i, u);
+			retval.attacks_[index] = XRMagicAttacks(Between, i, u);
 		}
 	}
 	return retval;
@@ -1491,55 +1493,6 @@ constexpr Magic::Magic_<R_MAGIC_SIZE> MakeRMagic()
 //constexpr Magic::Magic_<B_MAGIC_SIZE> BMagic = MakeBMagic();
 //constexpr Magic::Magic_<R_MAGIC_SIZE> RMagic = MakeRMagic();
 
-
-void init_magic(Magic::Magic_<B_MAGIC_SIZE>* b_magic, Magic::Magic_<R_MAGIC_SIZE>* r_magic)
-{
-	for (int i = 0; i < 64; ++i)
-	{
-		b_magic->Mask[i] = BMask[i] & Interior;
-		array<int, 16> bit_list = ListBits(b_magic->Mask[i]);
-		int bits = 64 - Magic::BShift[i];
-		for (int j = 0; j < Bit(bits); ++j)
-		{
-			uint64 u = 0;
-			for (int k = 0; k < bits; ++k)
-				if (Odd(j >> k))
-					u |= Bit(bit_list[k]);
-#ifndef HNI
-			int index = static_cast<int>(Magic::BOffset[i] + ((Magic::BMagic[i] * u) >> Magic::BShift[i]));
-#else
-			int index = static_cast<int>(Magic::BOffset[i] + _pext_u64(u, b_magic->Mask[i]));
-#endif
-			b_magic->Attacks[index] = XBMagicAttacks(Between, i, u);
-		}
-
-		r_magic->Mask[i] = RMask[i];
-		if (FileOf(i) > 0)
-			r_magic->Mask[i] &= ~File[0];
-		if (RankOf(i) > 0)
-			r_magic->Mask[i] &= ~Line[0];
-		if (FileOf(i) < 7)
-			r_magic->Mask[i] &= ~File[7];
-		if (RankOf(i) < 7)
-			r_magic->Mask[i] &= ~Line[7];
-
-		bit_list = ListBits(r_magic->Mask[i]);
-		bits = 64 - Magic::RShift[i];
-		for (int j = 0; j < Bit(bits); ++j)
-		{
-			uint64 u = 0;
-			for (int k = 0; k < bits; ++k)
-				if (Odd(j >> k))
-					u |= Bit(bit_list[k]);
-#ifndef HNI
-			int index = static_cast<int>(Magic::ROffset[i] + ((Magic::RMagic[i] * u) >> Magic::RShift[i]));
-#else
-			int index = static_cast<int>(Magic::ROffset[i] + _pext_u64(u, r_magic->Mask[i]));
-#endif
-			r_magic->Attacks[index] = XRMagicAttacks(Between, i, u);
-		}
-	}
-}
 
 void gen_kpk(CommonData_* data)
 {
@@ -2559,15 +2512,17 @@ void calc_material(int index, GMaterial& material)
 
 void init_material(CommonData_* dst)
 {
-	memset(&dst->Material[0], 0, TotalMat * sizeof(GMaterial));
+	dst->material_.resize(TotalMat);
+	memset(&dst->material_[0], 0, TotalMat * sizeof(GMaterial));
 	for (int index = 0; index < TotalMat; ++index)
-		calc_material(index, dst->Material[index]);
+		calc_material(index, dst->material_[index]);
 }
 
 void init_data(CommonData_* dst)
 {
 	init_misc(dst);
-	init_magic(&dst->BMagic_, &dst->RMagic_);
+	dst->BMagic_ = MakeBMagic();
+	dst->RMagic_ = MakeRMagic();
 	gen_kpk(dst);
 	init_eval(dst);
 	init_material(dst);
@@ -2854,7 +2809,7 @@ template<bool me> void do_move(State_* state, int move)
 			next->pawn_key ^= RO->CastleKey[current->castle_flags] ^ RO->CastleKey[next->castle_flags];
 		}
 		if (F(next->material & FlagUnusualMaterial))
-			prefetch(&RO->Material[next->material]);
+			prefetch(&RO->material_[next->material]);
 		if (current->ep_square)
 			next->key ^= RO->EPKey[FileOf(current->ep_square)];
 		next->ply = 0;
@@ -3876,7 +3831,7 @@ template<class POP, class WATCH> void evaluation(State_* state)
 	current->threat = (current->patt[White] & board.NonPawn(Black)) | (current->patt[Black] & board.NonPawn(White));
 	EI.score = current->pst;
 	if (F(current->material & FlagUnusualMaterial))
-		EI.material = &RO->Material[current->material];
+		EI.material = &RO->material_[current->material];
 	else
 		EI.material = nullptr;
 
@@ -5466,7 +5421,7 @@ template<bool me> int QSearch(State_* state, int alpha, int beta, int depth, int
 	if (F(board.NonPawnKing(me) | (current.passer & board.Pawn(me) & Shift<opp>(current.patt[me] | ~current.att[opp]))))
 		tempo = 0;
 	else if (F(current.material & FlagUnusualMaterial) && current.material < TotalMat)
-		tempo += (InitiativePhase * RO->Material[current.material].phase) / MAX_PHASE;
+		tempo += (InitiativePhase * RO->material_[current.material].phase) / MAX_PHASE;
 	score = current.score + tempo;
 	if (score > alpha)
 	{
