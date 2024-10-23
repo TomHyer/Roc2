@@ -6177,8 +6177,20 @@ template<bool me> int RootMove(Thread_* self, int depth)
 }
 
 
+struct AtRoot_
+{
+	enum {ROOT = 1};
+	using out_t = pair<sint16, uint16>;
+	out_t Output(sint16 score, uint16 move) const { return make_pair(score, move); }
+};
+struct NotRoot_
+{
+	enum {ROOT = 0};
+	using out_t = sint16;
+	out_t Output(sint16 score, uint16 ) const { return score; }
+};
 
-template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, int depth, int flags)
+template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self, int alpha, int beta, int depth, int flags)
 {
 	bool RootList = false;	// hide global RootList; we use only self->own_.rootList_
 	State_* state = &self->state_;
@@ -6190,19 +6202,19 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	int start_knodes = static_cast<int>(state->nodes_ >> 10);
 	int height = state->Height();
 
-	if (!self->own_.results_.empty() && (root || depth > 8 || depth > 2 + height))
+	if (!self->own_.results_.empty() && (where.ROOT || depth > 8 || depth > 2 + height))
 	{	// don't bother checking for stop until we can make some move
 		self->own_.lastTime_ = millisecs(TheTimeLimit.start_, now());
-		if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !root))
+		if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !where.ROOT))
 			stop();	// will break the outer loop
 	}
-	if (root)
+	if constexpr (where.ROOT)
 	{
 		auto& rootList = self->own_.rootList_;
 		depth = Max(depth, 2);
 		flags |= ExtToFlag(1);
 		if (F(rootList[0]))
-			return 0;
+			return where.Output(0, 0);
 
 		sort_moves(rootList.begin(), rootList.end());
 		for (auto& m : rootList)
@@ -6212,12 +6224,13 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	else
 	{
 		if (depth <= 1)
-			return QSearch<me>(state, alpha, beta, 1, FlagNeatSearch);
+			return where.Output(QSearch<me>(state, alpha, beta, 1, FlagNeatSearch), 0);
 		if (height - MateValue >= beta)
-			return beta;
+			return where.Output(beta, 0);
 		if (MateValue - height <= alpha)
-			return alpha;
-		HALT_CHECK(state);
+			return where.Output(alpha, 0);
+		if constexpr (!where.ROOT)
+			HALT_CHECK(state);
 	}
 
 	// check hash
@@ -6233,7 +6246,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				current.best = PVEntry->move;
 			if ((current.ply <= PliesToEvalCut && PVEntry->ply <= PliesToEvalCut) || (current.ply >= PliesToEvalCut && PVEntry->ply >= PliesToEvalCut))
 				if (!PVEntry->value || !draw_in_pv<me>(state))
-					return PVEntry->value;
+					return where.Output(PVEntry->value, PVEntry->move);
 		}
 		if (T(PVEntry->move) && PVEntry->depth > hash_depth)
 		{
@@ -6243,7 +6256,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		}
 		state->searchInfo_.hashDepth_ = hash_depth;
 	}
-	if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !root))
+	if (time_to_stop(state->searchInfo_, self->own_.lastTime_, !where.ROOT))
 		stop();	// will break the outer loop
 	check_for_stop();
 	if (GEntry* Entry = probe_hash(current))
@@ -6263,7 +6276,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		hash_low(current, 0, TbValues[res], TbDepth(depth), true);
 	}
 
-	if (root)
+	if constexpr (where.ROOT)
 	{
 		hash_move = self->own_.rootList_[0];
 		hash_value = TheShare.pvsScore_;
@@ -6272,10 +6285,10 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 
 	evaluate(state);
 
-	if (F(root) && depth >= 6 && (F(hash_move) || hash_value <= alpha || hash_depth < depth - 8))
+	if (F(where.ROOT) && depth >= 6 && (F(hash_move) || hash_value <= alpha || hash_depth < depth - 8))
 	{
 		new_depth = depth - (T(hash_move) ? 4 : 2);
-		value = pv_search<me, 0>(self, alpha, beta, new_depth, hash_move);
+		value = pv_search<me>(NotRoot_(), self, alpha, beta, new_depth, hash_move);
 		bool accept = value > alpha || alpha < -EvalValue;
 		if (!accept)
 		{
@@ -6297,12 +6310,12 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			TheShare.pvsScore_ = hash_value = value;
 		}
 	}
-	if (F(root) && IsCheck(*state, me))
+	if (F(where.ROOT) && IsCheck(*state, me))
 	{
 		current.mask = Filled;
 		(void)gen_evasions<me>(state);
 		if (F(current.moves[0]))
-			return height - MateValue;
+			return where.Output(height - MateValue, 0);
 		alpha = Max(2 + height - MateValue, alpha);
 		if (F(current.moves[1]))
 			pext = 2;
@@ -6312,7 +6325,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	if (hash_move && is_legal<me>(*state, move = hash_move))
 	{
 		++cnt;
-		if (root)
+		if (where.ROOT)
 		{
 			state->ClearStack();
 			if (self->peeps_)
@@ -6325,18 +6338,18 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			int margin_one = hash_value - ExclSingle(depth);
 			int margin_two = hash_value - ExclDouble(depth);
 			int prev_ext = ExtFromFlag(flags);
-			singular = singular_extension<me>(state, root ? 0 : ext, root ? 0 : prev_ext, margin_one, margin_two, new_depth, hash_move);
+			singular = singular_extension<me>(state, where.ROOT ? 0 : ext, where.ROOT ? 0 : prev_ext, margin_one, margin_two, new_depth, hash_move);
 			if (singular)
 			{
 				ext = Max(ext, singular + (prev_ext < 1) - (singular >= 2 && prev_ext >= 2));
-				if (root)
+				if constexpr (where.ROOT)
 					state->searchInfo_.singular_ = singular;
 				ex_depth = new_depth;
 				ex_value = (singular >= 2 ? margin_two : margin_one) - 1;
 			}
 		}
 		new_depth = depth - 2 + ext;
-		if constexpr (root)
+		if constexpr (where.ROOT)
 		{
 			if (height < self->own_.pvRefDepth_.size())
 				new_depth = self->own_.pvRefDepth_[height] = Max(new_depth, self->own_.pvRefDepth_[height]);
@@ -6352,14 +6365,14 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		}
 		else
 		{
-			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp>(NotRoot_(), self, -beta, -alpha, new_depth, ExtToFlag(ext));
 			undo_move<me>(state, move);
 			++played;
-			if (root)
+			if constexpr (where.ROOT)
 				self->own_.results_.Add(move, value, depth, alpha, beta);
 			if (value > alpha)
 			{
-				if (root)
+				if constexpr (where.ROOT)
 				{
 					state->searchInfo_.failLow_ = false;
 					state->searchInfo_.failHigh_ = state->searchInfo_.early_ = value >= beta;
@@ -6368,10 +6381,10 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 				}
 				current.best = move;
 				if (value >= beta)
-					return hash_low(current, move, value, depth, false);
+					return where.Output(hash_low(current, move, value, depth, false), move);
 				alpha = value;
 			}
-			else if (root)
+			else if constexpr (where.ROOT)
 			{
 				state->searchInfo_.failLow_ = true;
 				state->searchInfo_.failHigh_ = false;
@@ -6394,23 +6407,23 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 	}
 	state->current_->killer[0] = 0;
 	state->current_->moves[0] = 0;
-	if (root)
+	if constexpr (where.ROOT)
 		state->current_->current = &self->own_.rootList_[1];
 	else
 		state->current_->current = state->current_->moves;
 
 	LMR_<1> reduction_n(depth);
-	bool rootIsBest = true;
-	while (move = (root ? RootMove<me>(self, depth) : NextMove<me>(state, depth)))
+	bool firstIsBest = true;
+	while (move = (where.ROOT ? RootMove<me>(self, depth) : NextMove<me>(state, depth)))
 	{
-		if (root && depth < TheShare.depth_)
+		if (where.ROOT && depth < TheShare.depth_)
 			break;
 		if (move == hash_move)
 			continue;
 		if (IsIllegal(*state, move))
 			continue;
 		++cnt;
-		if (root)
+		if constexpr (where.ROOT)
 		{
 			state->ClearStack();
 			if (self->peeps_)
@@ -6421,7 +6434,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 		ext = Max(pext, extension<me, 1>(current, move, depth));
 		check_recapture<1>(*state, To(move), depth, &ext);
 		new_depth = depth - 2 + ext;
-		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (root || !is_killer(current, move)) && F(IsCheck(*state, me)) && cnt > 3)
+		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (where.ROOT || !is_killer(current, move)) && F(IsCheck(*state, me)) && cnt > 3)
 		{
 			int reduction = reduction_n(cnt);
 			if (move == current.ref[0] || move == current.ref[1])
@@ -6435,46 +6448,46 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 
 		do_move<me>(state, move);  // now current != state->current_, until undo_move below
 		if (new_depth <= 1)
-			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp>(NotRoot_(), self, -beta, -alpha, new_depth, ExtToFlag(ext));
 		else
 			value = -scout<opp, 0, 0>(state, -alpha, new_depth, FlagNeatSearch | ExtToFlag(ext));
 		if (value > alpha && new_depth > 1)
 		{
-			if (root)
+			if constexpr (where.ROOT)
 			{
 				SetMoveScore(&self->own_.rootList_[cnt - 1], 1);
 				state->searchInfo_.early_ = false;
 			}
 			new_depth = depth - 2 + ext;
-			value = -pv_search<opp, 0>(self, -beta, -alpha, new_depth, ExtToFlag(ext));
+			value = -pv_search<opp>(NotRoot_(), self, -beta, -alpha, new_depth, ExtToFlag(ext));
 		}
 		undo_move<me>(state, move);
 		++played;
-		if (root)
+		if constexpr (where.ROOT)
 			self->own_.results_.Add(move, value, depth, alpha, beta);
 		if (value > alpha)
 		{
-			if (root)
+			if constexpr (where.ROOT)
 			{
 				SetMoveScore(&self->own_.rootList_[cnt - 1], cnt + 3);
 				state->searchInfo_.moves_.push(0);
-				rootIsBest = false;
+				firstIsBest = false;
 				state->searchInfo_.failLow_ = false;
 				hash_low(current, move, value, depth, false);
 				// only send PV on return to aspiration window
 			}
 			current.best = move;
 			if (value >= beta)
-				return hash_low(current, move, value, depth, false);
+				return where.Output(hash_low(current, move, value, depth, false), move);
 			alpha = value;
 		}
 	}
-	if (root && rootIsBest)
+	if (where.ROOT && firstIsBest)
 		state->searchInfo_.moves_.push(hash_move);
 	if (F(cnt) && !IsCheck(*state, me))
 	{
 		hash_exact(current, 0, 0, 127, 0, 0, 0);
-		return 0;
+		return where.Output(0, 0);
 	}
 	hash_high(current, alpha, depth, false);
 	if (alpha > old_alpha)
@@ -6483,7 +6496,7 @@ template<bool me, bool root> int pv_search(Thread_* self, int alpha, int beta, i
 			ex_depth = 0;
 		hash_exact(current, current.best, alpha, depth, ex_value, ex_depth, static_cast<int>(state->nodes_ >> 10) - start_knodes);
 	}
-	return alpha;
+	return where.Output(alpha, current.best);
 }
 
 
@@ -6551,13 +6564,13 @@ void uciReport(const Thread_& thread, const vector<Thread_>* all_threads, const 
 }
 
 
-score_t search(Thread_* self, score_t alpha, score_t beta, int depth, bool cutnode)
+AtRoot_::out_t search(Thread_* self, score_t alpha, score_t beta, int depth, bool cutnode)
 {
 	State_* state = &self->state_;
 	// NodeState* ns = &thread->states[thread->height];
 
-	auto func = state->current_->turn ? pv_search<Black, true> : pv_search<White, true>;
-	return func(self, alpha, beta, depth, FlagNeatSearch);
+	auto func = state->current_->turn ? pv_search<Black, AtRoot_> : pv_search<White, AtRoot_>;
+	return func(AtRoot_(), self, alpha, beta, depth, FlagNeatSearch);
 }
 
 
@@ -6626,11 +6639,11 @@ void aspirationWindow(Thread_* thread)
 	constexpr int MinUpdateDepth = 10;
 
 	AspirationState_& window = thread->own_.window_;
-	int depth = window.depth_;
+	int depthIn = window.depth_;
 	if (auto best = thread->own_.results_.best(); best.move_ != 0 && best.lower_ > -MateValue)
 	{
 		window.alpha_ = Max(-MateValue, best.lower_ - window.delta_);
-		window.beta_ = best.upper_ + 1;
+		window.beta_ = Min<int>(MateValue, best.upper_ + window.delta_);
 	}
 	else if (auto h = probe_pv_hash(*thread->state_.current_))
 	{
@@ -6640,11 +6653,11 @@ void aspirationWindow(Thread_* thread)
 		window.beta_ = Min<int>(MateValue, h->value + window.delta_);
 	}
 
+	bool failedLow = false, failedHigh = false;
 	for ( ; ; )
 	{
 		// Perform a search and consider reporting results
-		bool haveMove = F(thread->own_.results_.empty());
-		score_t score = search(thread, haveMove ? window.alpha_ : -MateValue, haveMove ? window.beta_: MateValue, depth, FALSE);
+		auto [score, move] = search(thread, window.alpha_, window.beta_, window.depth_, false);
 		if (!thread->own_.iThread_)
 			if ((score > window.alpha_ && score < window.beta_) || millisecs(TheTimeLimit.start_, now()) >= MinUpdateMS)
 			{
@@ -6657,7 +6670,7 @@ void aspirationWindow(Thread_* thread)
 		{
 			if (score > window.alpha_)
 			{
-				if (depth > MinUpdateDepth)
+				if (window.depth_ > MinUpdateDepth)
 				{
 					window.delta_ = ExpandDelta(0);
 					window.alpha_ = Max<int>(-MateValue, score - window.delta_);
@@ -6667,16 +6680,18 @@ void aspirationWindow(Thread_* thread)
 			}
 
 			// Search failed low, adjust window and reset depth
-			//window.beta_ = window.alpha_ + 1;
+			failedLow = true;
 			window.alpha_ = Max(-MateValue + window.delta_, window.alpha_) - window.delta_;
-			depth = window.depth_;
+			if (!failedHigh)
+				window.beta_ = window.alpha_ + 1;
+			window.depth_ = depthIn;
 		}
 		else
 		{	// Search failed high, adjust window and reduce depth
-			//window.alpha_ = window.beta_ - 1;
+			failedHigh = true;
 			window.beta_ = Min(MateValue - window.delta_, window.beta_) + window.delta_;
-			if (abs(score) <= MateValue / 2 && depth > 1)
-				--depth;
+			if (!failedLow)
+				window.alpha_ = window.beta_ - 1;
 		}
 		if (window.alpha_ < -MateValue)
 			window.alpha_ = -MateValue;
