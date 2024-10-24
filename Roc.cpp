@@ -1009,7 +1009,7 @@ struct RootScores_
 				return false;
 		return true;
 	}
-	Record_ best() const
+	Record_ Best() const
 	{
 		for (auto r = results_.rbegin(); r != results_.rend(); ++r)
 		{
@@ -1391,14 +1391,6 @@ constexpr std::array<std::array<uint64, 64>, 2> MakePSupport()
 	return retval;
 }
 constexpr std::array<std::array<uint64, 64>, 2> BishopForward = MakeBishopForward(), PCone = MakePCone(), PSupport = MakePSupport();
-
-//#define MOVING MoveScope_ debugMoveScope; UpdateDebug(debugLine);
-//#define HI UpdateDebug(__LINE__);
-//#define BYE UpdateDebug(__LINE__);
-//#define MOVING UpdateDebug(__LINE__);
-#define HI
-#define BYE
-#define MOVING
 
 void init_misc(CommonData_* data)
 {
@@ -2721,7 +2713,6 @@ bool IsValid(const Board_& board)
 
 template<bool me> void do_move(State_* state, int move)
 {
-	MOVING
 	assert(IsValid(state->board_));
 	GEntry* Entry;
 	GPawnEntry* PawnEntry;
@@ -2905,7 +2896,6 @@ template<bool me> void do_move(State_* state, int move)
 	state->current_ = next;
 	++state->nodes_;
 	assert(IsValid(*board));
-	BYE
 }
 INLINE void do_move(State_* state, bool me, int move)
 {
@@ -2917,7 +2907,6 @@ INLINE void do_move(State_* state, bool me, int move)
 
 template<bool me> void undo_move(State_* state, int move)
 {
-	MOVING
 	const int from = From(move), to = To(move);
 	uint64 bFrom = Bit(from), bTo = Bit(to);
 	int piece;
@@ -2966,7 +2955,6 @@ template<bool me> void undo_move(State_* state, int move)
 	}
 	--state->current_;
 	state->hashHist_.pop_back();
-	BYE
 }
 INLINE void undo_move(State_* state, bool me, int move)
 {
@@ -6197,7 +6185,7 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 	const PlyState_& current = *state->current_;
 	const Board_& board = state->board_;
 
-	int value, move, cnt, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
+	int value, move, pext = 0, ext, hash_value = -MateValue, margin, singular = 0, played = 0, new_depth, hash_move,
 			hash_depth, old_alpha = alpha, ex_depth = 0, ex_value = 0;
 	int start_knodes = static_cast<int>(state->nodes_ >> 10);
 	int height = state->Height();
@@ -6321,15 +6309,15 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 			pext = 2;
 	}
 
-	cnt = 0;
+	int nPlayed = 0;
 	if (hash_move && is_legal<me>(*state, move = hash_move))
 	{
-		++cnt;
+		++nPlayed;
 		if (where.ROOT)
 		{
 			state->ClearStack();
 			if (self->peeps_)
-				send_curr_move(move, cnt);
+				send_curr_move(move, nPlayed);
 		}
 		ext = Max(pext, extension<me, 1>(*state->current_, move, depth));
 		check_recapture<1>(*state, To(move), depth, &ext);
@@ -6361,7 +6349,7 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 		if (state->current_->att[opp] & state->board_.King(me))
 		{
 			undo_move<me>(state, move);
-			--cnt;
+			--nPlayed;
 		}
 		else
 		{
@@ -6377,7 +6365,6 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 					state->searchInfo_.failLow_ = false;
 					state->searchInfo_.failHigh_ = state->searchInfo_.early_ = value >= beta;
 					hash_low(current, move, value, depth, false);
-					// only send info on return to aspiration window
 				}
 				current.best = move;
 				if (value >= beta)
@@ -6389,7 +6376,6 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 				state->searchInfo_.failLow_ = true;
 				state->searchInfo_.failHigh_ = false;
 				state->searchInfo_.singular_ = 0;
-				// only send PV on return to aspiration window
 			}
 		}
 	}
@@ -6417,26 +6403,26 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 	while (move = (where.ROOT ? RootMove<me>(self, depth) : NextMove<me>(state, depth)))
 	{
 		if (where.ROOT && depth < TheShare.depth_)
-			break;
+			break;  // someone is already searching deeper
 		if (move == hash_move)
 			continue;
 		if (IsIllegal(*state, move))
 			continue;
-		++cnt;
+		++nPlayed;
 		if constexpr (where.ROOT)
 		{
 			state->ClearStack();
 			if (self->peeps_)
-				send_curr_move(move, cnt);
+				send_curr_move(move, nPlayed);
 		}
 		if (IsRepetition(*state, alpha + 1, move))
 			continue;
 		ext = Max(pext, extension<me, 1>(current, move, depth));
 		check_recapture<1>(*state, To(move), depth, &ext);
 		new_depth = depth - 2 + ext;
-		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (where.ROOT || !is_killer(current, move)) && F(IsCheck(*state, me)) && cnt > 3)
+		if (depth >= 6 && F(move & 0xE000) && F(board.PieceAt(To(move))) && (where.ROOT || !is_killer(current, move)) && F(IsCheck(*state, me)) && nPlayed > 3)
 		{
-			int reduction = reduction_n(cnt);
+			int reduction = reduction_n(nPlayed);
 			if (move == current.ref[0] || move == current.ref[1])
 				reduction = Max(0, reduction - 1);
 			if (reduction >= 2 && !(board.Queen(White) | board.Queen(Black)) && popcnt(board.NonPawnKingAll()) <= 4)
@@ -6455,7 +6441,7 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 		{
 			if constexpr (where.ROOT)
 			{
-				SetMoveScore(&self->own_.rootList_[cnt - 1], 1);
+				SetMoveScore(&self->own_.rootList_[nPlayed - 1], 1);
 				state->searchInfo_.early_ = false;
 			}
 			new_depth = depth - 2 + ext;
@@ -6469,7 +6455,7 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 		{
 			if constexpr (where.ROOT)
 			{
-				SetMoveScore(&self->own_.rootList_[cnt - 1], cnt + 3);
+				SetMoveScore(&self->own_.rootList_[nPlayed - 1], nPlayed + 3);
 				state->searchInfo_.moves_.push(0);
 				firstIsBest = false;
 				state->searchInfo_.failLow_ = false;
@@ -6484,7 +6470,7 @@ template<bool me, class T_> typename T_::out_t pv_search(T_ where, Thread_* self
 	}
 	if (where.ROOT && firstIsBest)
 		state->searchInfo_.moves_.push(hash_move);
-	if (F(cnt) && !IsCheck(*state, me))
+	if (F(nPlayed) && !IsCheck(*state, me))
 	{
 		hash_exact(current, 0, 0, 127, 0, 0, 0);
 		return where.Output(0, 0);
@@ -6586,17 +6572,25 @@ struct LimitInputs_
 };
 
 
-uint16 move_from_hash(const State_& state, size_t height = 0)
+uint16 move_from_hash(const State_& state, size_t height, sint16* score)
 {
 	if (GPVEntry* PVEntry = probe_pv_hash(state.stack_[height]))
 	{
 		if (PVEntry->move)
+		{
+			if (score)
+				*score = PVEntry->value;
 			return PVEntry->move;
+		}
 	}
 	if (GEntry* Entry = probe_hash(state.stack_[height]))
 	{
 		if (Entry->move)
+		{
+			if (score)
+				*score = Entry->low;
 			return Entry->move;
+		}
 	}
 	return 0;
 }
@@ -6611,7 +6605,9 @@ PVariation PVFromHash(score_t score, const State_& state_in, int best_move)
 	tempState.Reset(state_in);
 	while (pv.line_.size() < MAX_PV_LEN)
 	{
-		uint16 move = pv.line_.empty() && T(best_move) ? best_move : move_from_hash(tempState, pv.line_.size());
+		uint16 move = pv.line_.empty() && T(best_move) 
+				? best_move 
+				: move_from_hash(tempState, pv.line_.size(), nullptr);
 		if (move && !is_legal(tempState, move))
 			move = 0;
 		if (!move)
@@ -6626,21 +6622,21 @@ PVariation PVFromHash(score_t score, const State_& state_in, int best_move)
 	return pv;
 }
 
-sint16 ExpandDelta(sint16 delta)
+sint16 ExpandDelta(sint16 delta, bool is_fail_low)
 {
 	return delta > EvalValue / 2
 			? EvalValue / 2
-			: 4 * CP_SEARCH + delta + max(0, delta - 10 * CP_SEARCH);
+			: 4 * CP_SEARCH + delta + max(0, delta - (is_fail_low ? 1 : 10) * CP_SEARCH);
 }
 
 void aspirationWindow(Thread_* thread)
 {
-	constexpr size_t MinUpdateMS = 2500;
+	constexpr size_t MinUpdateMS = 250;
 	constexpr int MinUpdateDepth = 10;
 
 	AspirationState_& window = thread->own_.window_;
 	int depthIn = window.depth_;
-	if (auto best = thread->own_.results_.best(); best.move_ != 0 && best.lower_ > -MateValue)
+	if (auto best = thread->own_.results_.Best(); best.move_ != 0 && best.lower_ > -MateValue)
 	{
 		window.alpha_ = Max(-MateValue, best.lower_ - window.delta_);
 		window.beta_ = Min<int>(MateValue, best.upper_ + window.delta_);
@@ -6670,12 +6666,7 @@ void aspirationWindow(Thread_* thread)
 		{
 			if (score > window.alpha_)
 			{
-				if (window.depth_ > MinUpdateDepth)
-				{
-					window.delta_ = ExpandDelta(0);
-					window.alpha_ = Max<int>(-MateValue, score - window.delta_);
-					window.beta_ = Min<int>(MateValue, score + window.delta_);
-				}
+				window.delta_ = ExpandDelta(0, false);	 // prepare for next iteration
 				return;
 			}
 
@@ -6697,7 +6688,7 @@ void aspirationWindow(Thread_* thread)
 			window.alpha_ = -MateValue;
 		if (window.beta_ > MateValue)
 			window.beta_ = MateValue;
-		window.delta_ = ExpandDelta(window.delta_);
+		window.delta_ = ExpandDelta(window.delta_, failedLow);
 	}
 }
 
@@ -6735,6 +6726,91 @@ void iterativeDeepening(Thread_* thread, const LimitInputs_& limits)
 	}
 	catch (Abort_)
 	{	
+		return;
+	}
+}
+
+constexpr int Delta0Low = 28, Delta0High = 20;
+AspirationState_ NextWindow(const AspirationState_& pvs, score_t score)
+{
+	if (score > pvs.alpha_ && score < pvs.beta_)
+	{	// successful search
+		return AspirationState_({ pvs.depth_ + 2, score - Delta0Low, score + Delta0High, 0 });
+	}
+	if (score >= pvs.beta_)
+	{	// fail high
+		return AspirationState_({ pvs.depth_, (pvs.alpha_ + pvs.beta_) / 2, 2 * pvs.beta_ - pvs.alpha_, 1 });
+	}
+	// fail low
+	return AspirationState_({ pvs.depth_, 3 * pvs.alpha_ - 2 * pvs.beta_, (pvs.alpha_ + pvs.beta_) / 2, 1 });
+}
+
+
+template<bool NOTIFY> void IterativeSearch(Thread_* thread, const LimitInputs_& limits)
+{
+	constexpr int MinWindow = 12;
+	constexpr size_t MinUpdateMS = 2500;
+	constexpr int MinUpdateDepth = 10;
+
+	vector<AspirationState_> history;
+	thread->own_.window_ = ASPIRATION_INIT;
+	// Bind when we expect to deal with NUMA
+	//if (thread->nthreads > 8)
+	//    bindThisThread(thread->index);
+
+	// Perform iterative deepening until exit conditions
+	try
+	{
+		for ( ; ; )
+		{
+			AspirationState_& task = thread->own_.window_;
+			if (!task.delta_)
+			{
+				if (auto pvEntry = probe_pv_hash(*thread->state_.current_); pvEntry && pvEntry->depth + 2 > task.depth_)
+				{
+					task.depth_ = pvEntry->depth + 2;
+					task.alpha_ = pvEntry->value - Delta0Low;
+					task.beta_ = pvEntry->value + Delta0High;
+				}
+				if (auto entry = probe_hash(*thread->state_.current_); entry && entry->low_depth + 2 > task.depth_)
+				{
+					task.alpha_ = Max(task.alpha_, entry->low - Delta0Low);
+					task.beta_ = Min(task.beta_, entry->high + Delta0High);
+					if (task.beta_ < task.alpha_ + MinWindow)
+					{
+						task.alpha_ = task.beta_ - Delta0Low;
+						task.beta_ = task.alpha_ + Delta0High;
+					}
+				}
+			}
+
+			auto [score, move] = search(thread, Max(-MateValue, task.alpha_), Min(+MateValue, task.beta_), task.depth_, false);
+			auto elapsed = millisecs(TheTimeLimit.start_, now());
+			if (NOTIFY && ((score > task.alpha_ && score < task.beta_) || elapsed >= MinUpdateMS))
+			{
+				PVariation pv = PVFromHash(score, thread->state_, 0);
+				uciReport(*thread, nullptr, pv);
+			}
+			thread->own_.results_.Add(move, score, task.depth_, task.alpha_, task.beta_);
+
+			// if (IS_PONDERING) continue;
+
+			// Check for termination by any of the possible limits
+			if ((limits.limitedBySelf && time_to_stop(thread->state_.searchInfo_, thread->own_.lastTime_, false))
+				|| (limits.limitedByDepth && task.depth_ >= 2 * limits.depthLimit)
+				|| (limits.limitedByTime && elapsed >= limits.timeLimit))
+			{
+				stop();  // stop all threads
+				break;
+			}
+
+			// decide the next search to try
+			history.push_back(task);
+			thread->own_.window_ = NextWindow(task, score);
+		}
+	}
+	catch (Abort_)
+	{
 		return;
 	}
 }
@@ -6915,12 +6991,12 @@ UCIResponse_ select_from_threads(const vector<Thread_>& threads, const State_& s
 	RootScores_::Record_ best = { 0, 0, -MateValue, -MateValue };
 	for (const auto& t : threads)
 	{
-		auto result = t.own_.results_.best();
+		auto result = t.own_.results_.Best();
 		if (result.move_ == 0)
 			continue;
 		char move[6];
 		move_to_string(result.move_, move);
-		printf("info best from thread %d: %s %d %d \n", t.own_.iThread_, move, result.lower_, result.depth_);
+		printf("info best from thread %d: %s %d %d %d \n", t.own_.iThread_, move, result.lower_, result.depth_ / 2, result.depth_ & 1);
 
 		if (bestThread)
 		{
@@ -6938,7 +7014,7 @@ UCIResponse_ select_from_threads(const vector<Thread_>& threads, const State_& s
 	if (best.move_ == 0)
 	{
 		printf("info No best thread, choosing via hash");
-		best.move_ = move_from_hash(threads[0].state_, 0);
+		best.move_ = move_from_hash(threads[0].state_, 0, &best.lower_);
 	}
 	if (best.move_ == 0)
 	{
@@ -6992,8 +7068,8 @@ UCIResponse_ getBestMove(vector<Thread_>& threads, const State_& state, const Li
 	// us from having the current thread eating CPU time while waiting
 	vector<unique_ptr<thread>> pthreads;
 	for (int i = 1; i < threads.size(); i++)
-		pthreads.emplace_back(new thread(&iterativeDeepening, &threads[i], limits));
-	iterativeDeepening(&threads[0], limits);
+		pthreads.emplace_back(new thread(&IterativeSearch<false>, &threads[i], limits));
+	IterativeSearch<true>(&threads[0], limits);
 
 	// When the main thread exits it should signal for the helpers to
 	// shutdown. Wait until all helpers have finished before moving on
