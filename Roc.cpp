@@ -5728,7 +5728,7 @@ INLINE int RazoringThreshold(int score, int depth, int height)
 template<int PV = 0> struct LMR_
 {
 	const double scale_;
-	LMR_(int depth) : scale_(0.114 + 0.0055 * depth) {}
+	LMR_(int depth) : scale_(0.118 + 0.001 * depth) {}
 	INLINE int operator()(int cnt, int stage) const
 	{
 		if (cnt <= 2 || stage < s_quiet)
